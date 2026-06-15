@@ -1,7 +1,16 @@
 import asyncio
+import subprocess
+import sys
 import unittest
+import warnings
+from unittest.mock import patch
 
 import numpy as np
+
+warnings.filterwarnings(
+    "ignore",
+    message="Using `httpx` with `starlette.testclient` is deprecated",
+)
 from fastapi.testclient import TestClient
 
 import server
@@ -22,6 +31,26 @@ class FakePipeline:
 
 
 class AudioCoreTests(unittest.TestCase):
+    def test_server_module_can_import_without_torch(self):
+        script = """
+import builtins
+real_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == "torch":
+        raise ImportError("blocked for unit test")
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+import server
+assert server.torch is None
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=server.os.path.dirname(server.__file__),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_combines_segments_with_silence(self):
         combined = server._combine_audio_segments(
             [
@@ -53,6 +82,8 @@ class AudioCoreTests(unittest.TestCase):
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        self.print_patcher = patch("builtins.print")
+        self.print_patcher.start()
         self.original_pipeline = server.pipeline
         self.original_british_pipeline = server.british_pipeline
         server.pipeline = FakePipeline()
@@ -63,6 +94,7 @@ class ApiTests(unittest.TestCase):
     def tearDown(self):
         server.pipeline = self.original_pipeline
         server.british_pipeline = self.original_british_pipeline
+        self.print_patcher.stop()
 
     def test_tts_returns_wav_and_uses_requested_settings(self):
         response = self.client.post(

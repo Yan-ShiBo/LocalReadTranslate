@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Kokoro TTS 划词朗读
 // @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.2.0
+// @version      1.3.0
 // @description  选中英文文本，一键使用本地 Kokoro TTS 进行高质量朗读
-// @author       You
+// @author       Yan-ShiBo
 // @match        *://*/*
+// @downloadURL  https://raw.githubusercontent.com/Yan-ShiBo/local-tts-env/main/tts-userscript.js
+// @updateURL    https://raw.githubusercontent.com/Yan-ShiBo/local-tts-env/main/tts-userscript.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_getValue
@@ -14,6 +16,63 @@
 // @noframes
 // ==/UserScript==
 
+const KokoroTTSCore = (() => {
+  function createRequestGate() {
+    let generation = 0;
+    let request = null;
+
+    function abortRequest() {
+      if (request) {
+        request.abort();
+        request = null;
+      }
+    }
+
+    return {
+      begin() {
+        generation += 1;
+        abortRequest();
+        return generation;
+      },
+      attach(id, nextRequest) {
+        if (id !== generation) {
+          nextRequest.abort();
+          return false;
+        }
+        request = nextRequest;
+        return true;
+      },
+      isCurrent(id) {
+        return id === generation;
+      },
+      finish(id) {
+        if (id === generation) request = null;
+      },
+      cancel() {
+        generation += 1;
+        abortRequest();
+      },
+    };
+  }
+
+  function releaseAudio(audio, urlApi = URL) {
+    if (!audio) return;
+    audio.pause();
+    audio.src = "";
+    if (audio._blobUrl) {
+      urlApi.revokeObjectURL(audio._blobUrl);
+      audio._blobUrl = null;
+    }
+  }
+
+  return { createRequestGate, releaseAudio };
+})();
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = KokoroTTSCore;
+}
+
+if (typeof window !== "undefined" && typeof document !== "undefined") {
 (function () {
   "use strict";
 
@@ -25,48 +84,28 @@
   const API_URL = API_BASE + "/tts";
   const SHORTCUT = { ctrl: true, shift: true, key: "S" }; // Ctrl+Shift+S
 
-  // Default settings (overridden by localStorage)
+  /* CATALOG:START */
+  const TTS_CATALOG = {"default_voice":"af_bella","default_speed":0.8,"speeds":[0.6,0.7,0.8,0.9,1.0,1.1,1.2],"groups":[{"id":"american_female","label_en":"American Female","label_zh":"美式女声","lang_code":"a","voices":[{"id":"af_bella","label_en":"Sweet","label_zh":"甜美"},{"id":"af_heart","label_en":"Warm","label_zh":"温暖"},{"id":"af_sky","label_en":"Bright","label_zh":"明亮活泼"},{"id":"af_nova","label_en":"Clear","label_zh":"自然清晰"},{"id":"af_jessica","label_en":"Professional","label_zh":"专业"},{"id":"af_alloy","label_en":"Neutral","label_zh":"中性"},{"id":"af_aoede","label_en":"Elegant","label_zh":"典雅"},{"id":"af_kore","label_en":"Crisp","label_zh":"清脆"},{"id":"af_nicole","label_en":"Soft","label_zh":"柔和"},{"id":"af_river","label_en":"Smooth","label_zh":"流畅"}]},{"id":"american_male","label_en":"American Male","label_zh":"美式男声","lang_code":"a","voices":[{"id":"am_adam","label_en":"Clear","label_zh":"年轻清晰"},{"id":"am_liam","label_en":"Warm","label_zh":"温暖阳光"},{"id":"am_michael","label_en":"Mature","label_zh":"成熟稳重"},{"id":"am_eric","label_en":"Energetic","label_zh":"活力感"},{"id":"am_echo","label_en":"Natural","label_zh":"自然流畅"},{"id":"am_fenrir","label_en":"Deep","label_zh":"低沉有力"}]},{"id":"british_female","label_en":"British Female","label_zh":"英式女声","lang_code":"b","voices":[{"id":"bf_emma","label_en":"British","label_zh":"标准英式"}]}]};
+  /* CATALOG:END */
+
+  // Default settings (overridden by GM storage)
   const DEFAULTS = {
-    voice: "af_bella",
-    speed: 0.8,
+    voice: TTS_CATALOG.default_voice,
+    speed: TTS_CATALOG.default_speed,
   };
 
-  // Voice catalog
-  const VOICES = [
-    { group: "American Female", voices: [
-      { id: "af_bella",   label: "af_bella - Sweet" },
-      { id: "af_heart",   label: "af_heart - Warm" },
-      { id: "af_sky",     label: "af_sky - Bright" },
-      { id: "af_nova",    label: "af_nova - Clear" },
-      { id: "af_jessica", label: "af_jessica - Pro" },
-      { id: "af_alloy",   label: "af_alloy - Neutral" },
-      { id: "af_aoede",   label: "af_aoede - Elegant" },
-      { id: "af_kore",    label: "af_kore - Crisp" },
-      { id: "af_nicole",  label: "af_nicole - Soft" },
-      { id: "af_river",   label: "af_river - Smooth" },
-    ]},
-    { group: "American Male", voices: [
-      { id: "am_adam",    label: "am_adam - Clear" },
-      { id: "am_liam",    label: "am_liam - Warm" },
-      { id: "am_michael", label: "am_michael - Mature" },
-      { id: "am_eric",    label: "am_eric - Energetic" },
-      { id: "am_echo",    label: "am_echo - Natural" },
-      { id: "am_fenrir",  label: "am_fenrir - Deep" },
-    ]},
-    { group: "British Female", voices: [
-      { id: "bf_emma", label: "bf_emma - British" },
-    ]},
-  ];
+  const VOICES = TTS_CATALOG.groups.map((group) => ({
+    group: group.label_en,
+    voices: group.voices.map((voice) => ({
+      id: voice.id,
+      label: `${voice.id} - ${voice.label_en}`,
+    })),
+  }));
 
-  const SPEEDS = [
-    { value: 0.6, label: "0.6x" },
-    { value: 0.7, label: "0.7x" },
-    { value: 0.8, label: "0.8x (default)" },
-    { value: 0.9, label: "0.9x" },
-    { value: 1.0, label: "1.0x" },
-    { value: 1.1, label: "1.1x" },
-    { value: 1.2, label: "1.2x" },
-  ];
+  const SPEEDS = TTS_CATALOG.speeds.map((value) => ({
+    value,
+    label: `${value}x${value === DEFAULTS.speed ? " (default)" : ""}`,
+  }));
 
   // ════════════════════════════════════════════════════════
   //  State
@@ -74,8 +113,7 @@
 
   let floatingBtn = null;
   let currentAudio = null;
-  let currentRequest = null;
-  let requestGeneration = 0;
+  const requestGate = KokoroTTSCore.createRequestGate();
   let isLoading = false;
   let settingsPanel = null;
   let settingsVisible = false;
@@ -493,22 +531,13 @@
 
   function stopAudio() {
     if (currentAudio) {
-      currentAudio.pause();
-      currentAudio.src = "";
-      if (currentAudio._blobUrl) {
-        URL.revokeObjectURL(currentAudio._blobUrl);
-        currentAudio._blobUrl = null;
-      }
+      KokoroTTSCore.releaseAudio(currentAudio);
       currentAudio = null;
     }
   }
 
   function cancelRequest() {
-    requestGeneration += 1;
-    if (currentRequest) {
-      currentRequest.abort();
-      currentRequest = null;
-    }
+    requestGate.cancel();
     isLoading = false;
   }
 
@@ -581,10 +610,9 @@
    * Call TTS API and play audio
    */
   async function speak(text, btnElement) {
-    cancelRequest();
     stopAudio();
     isLoading = true;
-    const generation = requestGeneration;
+    const generation = requestGate.begin();
     const buttonContainer = btnElement
       ? btnElement.closest(".tts-float-container")
       : null;
@@ -597,7 +625,7 @@
 
     try {
       const audioBlob = await new Promise((resolve, reject) => {
-        currentRequest = GM_xmlhttpRequest({
+        const request = GM_xmlhttpRequest({
           method: "POST",
           url: API_URL,
           headers: { "Content-Type": "application/json" },
@@ -609,7 +637,7 @@
           responseType: "blob",
           timeout: 60000,
           onload: (response) => {
-            if (generation !== requestGeneration) return;
+            if (!requestGate.isCurrent(generation)) return;
             if (response.status >= 200 && response.status < 300) {
               resolve(response.response);
             } else {
@@ -621,7 +649,7 @@
             }
           },
           onerror: () => {
-            if (generation !== requestGeneration) return;
+            if (!requestGate.isCurrent(generation)) return;
             reject(
               new Error(
                 "Cannot connect to TTS server. Run start.bat first."
@@ -629,15 +657,16 @@
             );
           },
           ontimeout: () => {
-            if (generation !== requestGeneration) return;
+            if (!requestGate.isCurrent(generation)) return;
             reject(new Error("Request timeout. Text may be too long."));
           },
           onabort: () => reject(new Error("Request cancelled.")),
         });
+        requestGate.attach(generation, request);
       });
 
-      if (generation !== requestGeneration) return;
-      currentRequest = null;
+      if (!requestGate.isCurrent(generation)) return;
+      requestGate.finish(generation);
       const blobUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(blobUrl);
       audio._blobUrl = blobUrl;
@@ -650,10 +679,7 @@
       }
 
       audio.addEventListener("ended", () => {
-        if (audio._blobUrl) {
-          URL.revokeObjectURL(audio._blobUrl);
-          audio._blobUrl = null;
-        }
+        KokoroTTSCore.releaseAudio(audio);
         if (currentAudio === audio) currentAudio = null;
         if (btnElement) {
           btnElement.className = "tts-speak-btn";
@@ -664,10 +690,7 @@
       });
 
       audio.addEventListener("error", () => {
-        if (audio._blobUrl) {
-          URL.revokeObjectURL(audio._blobUrl);
-          audio._blobUrl = null;
-        }
+        KokoroTTSCore.releaseAudio(audio);
         if (currentAudio === audio) currentAudio = null;
         if (btnElement) {
           btnElement.className = "tts-speak-btn error";
@@ -678,7 +701,7 @@
 
       await audio.play();
     } catch (err) {
-      if (generation !== requestGeneration) return;
+      if (!requestGate.isCurrent(generation)) return;
       console.error("[Kokoro TTS]", err);
       stopAudio();
       if (btnElement) {
@@ -687,8 +710,8 @@
         setTimeout(() => removeSpecificButton(buttonContainer), 4000);
       }
     } finally {
-      if (generation === requestGeneration) {
-        currentRequest = null;
+      if (requestGate.isCurrent(generation)) {
+        requestGate.finish(generation);
         isLoading = false;
       }
     }
@@ -797,3 +820,4 @@
     "color: #667eea; font-weight: bold;"
   );
 })();
+}

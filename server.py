@@ -25,12 +25,24 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 import numpy as np
 import soundfile as sf
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from tts_catalog import (
+    AVAILABLE_VOICES,
+    CATALOG as TTS_CATALOG,
+    DEFAULT_SPEED as CATALOG_DEFAULT_SPEED,
+    DEFAULT_VOICE,
+    SPEEDS,
+    VOICE_GROUPS,
+    VOICE_LANG_CODES,
+)
 
 # ════════════════════════════════════════════════════════════════
 #  配置区（按需修改）
@@ -39,12 +51,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 HOST = os.environ.get("KOKORO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("KOKORO_PORT", "5000"))
 
-# 默认声音（阳光年轻女性）
-# 可选：am_adam, am_liam, am_michael, am_eric, am_echo, am_fenrir
-#       af_heart, af_bella, af_sky, af_nova, af_jessica
-#       bf_emma (英式女声)
-VOICE = os.environ.get("KOKORO_VOICE", "af_bella")
-DEFAULT_SPEED = float(os.environ.get("KOKORO_SPEED", "0.8"))
+VOICE = os.environ.get("KOKORO_VOICE", DEFAULT_VOICE)
+DEFAULT_SPEED = float(os.environ.get("KOKORO_SPEED", str(CATALOG_DEFAULT_SPEED)))
 
 # 推理设备：auto（自动检测）、cuda、cpu
 DEVICE = os.environ.get("KOKORO_DEVICE", "auto")
@@ -53,37 +61,6 @@ SAMPLE_RATE = 24000
 SEGMENT_SILENCE_MS = int(os.environ.get("KOKORO_SEGMENT_SILENCE_MS", "0"))
 FADE_MS = int(os.environ.get("KOKORO_FADE_MS", "0"))
 WARMUP_ENABLED = os.environ.get("KOKORO_WARMUP", "1") != "0"
-
-VOICE_CATALOG = {
-    "american_male": [
-        {"id": "am_adam", "desc": "年轻清晰（推荐）"},
-        {"id": "am_liam", "desc": "温暖阳光"},
-        {"id": "am_michael", "desc": "成熟稳重"},
-        {"id": "am_eric", "desc": "活力感"},
-        {"id": "am_echo", "desc": "自然流畅"},
-        {"id": "am_fenrir", "desc": "低沉有力"},
-    ],
-    "american_female": [
-        {"id": "af_heart", "desc": "温暖"},
-        {"id": "af_bella", "desc": "甜美（默认）"},
-        {"id": "af_sky", "desc": "明亮活泼"},
-        {"id": "af_nova", "desc": "自然清晰"},
-        {"id": "af_jessica", "desc": "专业"},
-        {"id": "af_alloy", "desc": "中性"},
-        {"id": "af_aoede", "desc": "典雅"},
-        {"id": "af_kore", "desc": "清脆"},
-        {"id": "af_nicole", "desc": "柔和"},
-        {"id": "af_river", "desc": "流畅"},
-    ],
-    "british_female": [
-        {"id": "bf_emma", "desc": "标准英式"},
-    ],
-}
-AVAILABLE_VOICES = {
-    voice["id"]
-    for group in VOICE_CATALOG.values()
-    for voice in group
-}
 
 if VOICE not in AVAILABLE_VOICES:
     raise ValueError(f"Unsupported KOKORO_VOICE: {VOICE}")
@@ -105,7 +82,7 @@ actual_device = None
 def resolve_device(device_cfg: str) -> str:
     """解析设备配置。"""
     if device_cfg == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        return "cuda" if torch and torch.cuda.is_available() else "cpu"
     return device_cfg
 
 
@@ -117,6 +94,9 @@ def resolve_device(device_cfg: str) -> str:
 async def lifespan(app: FastAPI):
     """应用启动时加载模型，关闭时释放。"""
     global pipeline, british_pipeline, actual_device
+
+    if torch is None:
+        raise RuntimeError("PyTorch is required to start the TTS model")
 
     actual_device = resolve_device(DEVICE)
 
@@ -180,7 +160,7 @@ async def lifespan(app: FastAPI):
         print("[STOP] Releasing model resources...")
         pipeline = None
         british_pipeline = None
-        if actual_device == "cuda":
+        if actual_device == "cuda" and torch:
             torch.cuda.empty_cache()
 
 
@@ -191,7 +171,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -274,7 +254,9 @@ def _combine_audio_segments(
 
 def _run_inference(text: str, voice: str, speed: float):
     """同步执行 Kokoro TTS 推理（在线程池中运行）。"""
-    selected_pipeline = british_pipeline if voice.startswith("bf_") else pipeline
+    selected_pipeline = (
+        british_pipeline if VOICE_LANG_CODES[voice] == "b" else pipeline
+    )
     if selected_pipeline is None:
         raise RuntimeError("模型尚未就绪")
 
@@ -374,7 +356,11 @@ async def health_check():
         "ready": pipeline is not None,
         "model": "Kokoro-82M",
         "device": actual_device,
-        "gpu": torch.cuda.get_device_name(0) if actual_device == "cuda" else "N/A",
+        "gpu": (
+            torch.cuda.get_device_name(0)
+            if torch and actual_device == "cuda"
+            else "N/A"
+        ),
         "default_voice": VOICE,
         "default_speed": DEFAULT_SPEED,
     }
@@ -383,13 +369,34 @@ async def health_check():
 @app.get("/voices")
 async def list_voices():
     """返回可用声音列表。"""
-    return VOICE_CATALOG
+    return TTS_CATALOG
+
+
+def _render_catalog_options():
+    voice_options = []
+    for group in VOICE_GROUPS:
+        voice_options.append(f'<optgroup label="{group["label_zh"]}">')
+        for voice in group["voices"]:
+            selected = " selected" if voice["id"] == VOICE else ""
+            voice_options.append(
+                f'<option value="{voice["id"]}"{selected}>'
+                f'{voice["id"]} — {voice["label_zh"]}</option>'
+            )
+        voice_options.append("</optgroup>")
+
+    speed_options = []
+    for speed in SPEEDS:
+        selected = " selected" if speed == DEFAULT_SPEED else ""
+        speed_options.append(
+            f'<option value="{speed}"{selected}>{speed}x</option>'
+        )
+    return "\n".join(voice_options), "\n".join(speed_options)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def test_page():
     """内置测试页面。"""
-    return """
+    page = """
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -488,37 +495,11 @@ async def test_page():
   <div class="row">
     <div>
       <label for="voice">声音</label>
-      <select id="voice">
-        <optgroup label="美式男声">
-          <option value="am_adam">am_adam — 年轻清晰</option>
-          <option value="am_liam">am_liam — 温暖阳光</option>
-          <option value="am_michael">am_michael — 成熟稳重</option>
-          <option value="am_eric">am_eric — 活力感</option>
-          <option value="am_echo">am_echo — 自然流畅</option>
-          <option value="am_fenrir">am_fenrir — 低沉有力</option>
-        </optgroup>
-        <optgroup label="美式女声">
-          <option value="af_heart">af_heart — 温暖</option>
-          <option value="af_bella" selected>af_bella — 甜美 (默认)</option>
-          <option value="af_sky">af_sky — 明亮活泼</option>
-          <option value="af_nova">af_nova — 自然清晰</option>
-          <option value="af_jessica">af_jessica — 专业</option>
-        </optgroup>
-        <optgroup label="英式女声">
-          <option value="bf_emma">bf_emma — 标准英式</option>
-        </optgroup>
-      </select>
+      <select id="voice">__VOICE_OPTIONS__</select>
     </div>
     <div>
       <label for="speed">语速</label>
-      <select id="speed">
-        <option value="0.7">0.7x 慢速</option>
-        <option value="0.8" selected>0.8x 默认</option>
-        <option value="0.9">0.9x 稍快</option>
-        <option value="1.0">1.0x 正常</option>
-        <option value="1.1">1.1x 稍快</option>
-        <option value="1.2">1.2x 快速</option>
-      </select>
+      <select id="speed">__SPEED_OPTIONS__</select>
     </div>
   </div>
 
@@ -570,6 +551,10 @@ async function speak() {
 </body>
 </html>
 """
+    voice_options, speed_options = _render_catalog_options()
+    return page.replace("__VOICE_OPTIONS__", voice_options).replace(
+        "__SPEED_OPTIONS__", speed_options
+    )
 
 
 # ════════════════════════════════════════════════════════════════

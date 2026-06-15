@@ -23,6 +23,14 @@ import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
+from tts_catalog import (
+    AVAILABLE_VOICES,
+    DEFAULT_SPEED,
+    DEFAULT_VOICE,
+    SPEEDS,
+    VOICE_GROUPS,
+)
+from windows_runtime import WindowsNamedMutex
 
 # ---------------------------------------------------------------------------
 #  Config
@@ -39,32 +47,16 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
 
 VOICES = {
-    "American Female": [
-        ("af_bella", "af_bella - Sweet (Default)"),
-        ("af_heart", "af_heart - Warm"),
-        ("af_sky", "af_sky - Bright"),
-        ("af_nova", "af_nova - Clear"),
-        ("af_jessica", "af_jessica - Pro"),
-        ("af_alloy", "af_alloy - Neutral"),
-        ("af_aoede", "af_aoede - Elegant"),
-        ("af_kore", "af_kore - Crisp"),
-        ("af_nicole", "af_nicole - Soft"),
-        ("af_river", "af_river - Smooth"),
-    ],
-    "American Male": [
-        ("am_adam", "am_adam - Clear"),
-        ("am_liam", "am_liam - Warm"),
-        ("am_michael", "am_michael - Mature"),
-        ("am_eric", "am_eric - Energetic"),
-        ("am_echo", "am_echo - Natural"),
-        ("am_fenrir", "am_fenrir - Deep"),
-    ],
-    "British Female": [
-        ("bf_emma", "bf_emma - British"),
-    ],
+    group["label_en"]: [
+        (
+            voice["id"],
+            f'{voice["id"]} - {voice["label_en"]}'
+            + (" (Default)" if voice["id"] == DEFAULT_VOICE else ""),
+        )
+        for voice in group["voices"]
+    ]
+    for group in VOICE_GROUPS
 }
-
-SPEEDS = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2]
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +112,7 @@ def find_conda_pythonw(env_name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def load_settings():
-    defaults = {"voice": "af_bella", "speed": 0.8}
+    defaults = {"voice": DEFAULT_VOICE, "speed": DEFAULT_SPEED}
     try:
         if SETTINGS_FILE.exists():
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -128,11 +120,10 @@ def load_settings():
                 defaults.update(saved)
     except Exception:
         pass
-    valid_voices = {voice_id for voices in VOICES.values() for voice_id, _ in voices}
-    if defaults["voice"] not in valid_voices:
-        defaults["voice"] = "af_bella"
+    if defaults["voice"] not in AVAILABLE_VOICES:
+        defaults["voice"] = DEFAULT_VOICE
     if defaults["speed"] not in SPEEDS:
-        defaults["speed"] = 0.8
+        defaults["speed"] = DEFAULT_SPEED
     return defaults
 
 
@@ -194,6 +185,7 @@ def create_icon_image(color="green"):
 class TrayApp:
     def __init__(self):
         self.server_process = None
+        self.owns_server = False
         self._log_handle = None
         self.settings = load_settings()
         self.tray_icon = None
@@ -224,6 +216,7 @@ class TrayApp:
 
             existing_health = self.get_health()
             if existing_health:
+                self.owns_server = False
                 self.is_running = True
                 self._update_icon("green", "Kokoro TTS - Running")
                 return
@@ -231,6 +224,7 @@ class TrayApp:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(1)
                 if sock.connect_ex((DEFAULT_HOST, DEFAULT_PORT)) == 0:
+                    self.owns_server = False
                     self.is_running = False
                     self._update_icon(
                         "red", f"Kokoro TTS - Port {DEFAULT_PORT} is occupied"
@@ -262,11 +256,13 @@ class TrayApp:
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            self.owns_server = True
 
         # Wait for server to be ready in background
         def wait_ready():
             for _ in range(60):  # 60s timeout
                 if self.server_process.poll() is not None:
+                    self.owns_server = False
                     self.is_running = False
                     self._update_icon("red", "Kokoro TTS - Failed to start")
                     self._close_log()
@@ -290,6 +286,7 @@ class TrayApp:
                 except subprocess.TimeoutExpired:
                     self.server_process.kill()
             self.server_process = None
+            self.owns_server = False
             self._close_log()
             if self.get_health():
                 self.is_running = True
@@ -302,6 +299,9 @@ class TrayApp:
         self.stop_server()
         time.sleep(1)
         self.start_server()
+
+    def can_stop_server(self):
+        return self.is_running and self.owns_server
 
     def open_test_page(self, _=None):
         webbrowser.open(f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/")
@@ -369,7 +369,7 @@ class TrayApp:
         for spd in SPEEDS:
             is_current = abs(spd - self.settings["speed"]) < 0.01
             label = f"{'>> ' if is_current else '   '}{spd}x"
-            if abs(spd - 0.8) < 0.01:
+            if abs(spd - DEFAULT_SPEED) < 0.01:
                 label += " (default)"
             speed_items.append(Item(label, self.set_speed(spd)))
 
@@ -377,9 +377,9 @@ class TrayApp:
             Item("Start Server", self.start_server,
                  enabled=lambda _: not self.is_running),
             Item("Stop Server", self.stop_server,
-                 enabled=lambda _: self.is_running),
+                 enabled=lambda _: self.can_stop_server()),
             Item("Restart Server", self.restart_server,
-                 enabled=lambda _: self.is_running),
+                 enabled=lambda _: self.can_stop_server()),
             pystray.Menu.SEPARATOR,
             Item("Voice", pystray.Menu(*voice_items)),
             Item("Speed", pystray.Menu(*speed_items)),
@@ -415,5 +415,19 @@ class TrayApp:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app = TrayApp()
-    app.run()
+    instance_mutex = WindowsNamedMutex(r"Local\KokoroTTS.Tray")
+    if not instance_mutex.acquire():
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "Kokoro TTS 已在运行。",
+            "Kokoro TTS",
+            0x40,
+        )
+        raise SystemExit(0)
+    try:
+        app = TrayApp()
+        app.run()
+    finally:
+        instance_mutex.close()

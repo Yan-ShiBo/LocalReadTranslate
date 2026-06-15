@@ -1,0 +1,48 @@
+{
+  "default_voice": "af_bella",
+  "default_speed": 0.8,
+  "speeds": [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2],
+  "groups": [
+    {
+      "id": "american_female",
+      "label_en": "American Female",
+      "label_zh": "美式女声",
+      "lang_code": "a",
+      "voices": [
+        {"id": "af_bella", "label_en": "Sweet", "label_zh": "甜美"},
+        {"id": "af_heart", "label_en": "Warm", "label_zh": "温暖"},
+        {"id": "af_sky", "label_en": "Bright", "label_zh": "明亮活泼"},
+        {"id": "af_nova", "label_en": "Clear", "label_zh": "自然清晰"},
+        {"id": "af_jessica", "label_en": "Professional", "label_zh": "专业"},
+        {"id": "af_alloy", "label_en": "Neutral", "label_zh": "中性"},
+        {"id": "af_aoede", "label_en": "Elegant", "label_zh": "典雅"},
+        {"id": "af_kore", "label_en": "Crisp", "label_zh": "清脆"},
+        {"id": "af_nicole", "label_en": "Soft", "label_zh": "柔和"},
+        {"id": "af_river", "label_en": "Smooth", "label_zh": "流畅"}
+      ]
+    },
+    {
+      "id": "american_male",
+      "label_en": "American Male",
+      "label_zh": "美式男声",
+      "lang_code": "a",
+      "voices": [
+        {"id": "am_adam", "label_en": "Clear", "label_zh": "年轻清晰"},
+        {"id": "am_liam", "label_en": "Warm", "label_zh": "温暖阳光"},
+        {"id": "am_michael", "label_en": "Mature", "label_zh": "成熟稳重"},
+        {"id": "am_eric", "label_en": "Energetic", "label_zh": "活力感"},
+        {"id": "am_echo", "label_en": "Natural", "label_zh": "自然流畅"},
+        {"id": "am_fenrir", "label_en": "Deep", "label_zh": "低沉有力"}
+      ]
+    },
+    {
+      "id": "british_female",
+      "label_en": "British Female",
+      "label_zh": "英式女声",
+      "lang_code": "b",
+      "voices": [
+        {"id": "bf_emma", "label_en": "British", "label_zh": "标准英式"}
+      ]
+    }
+  ]
+}

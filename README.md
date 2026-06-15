@@ -2,6 +2,8 @@
 
 > Select any English text in Chrome, click to listen. Powered by [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), running **100% locally** on your GPU.
 
+[![CI](https://github.com/Yan-ShiBo/local-tts-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Yan-ShiBo/local-tts-env/actions/workflows/ci.yml)
+
 <p align="center">
   <strong>Zero cloud dependency · Free & unlimited · Privacy-first</strong>
 </p>
@@ -71,8 +73,8 @@ pip install -r requirements.txt
 ### 4. Install the Browser Script
 
 1. Install [Tampermonkey](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) in Chrome
-2. Click Tampermonkey icon → **Create a new script**
-3. Paste the contents of `tts-userscript.js` → Save (`Ctrl+S`)
+2. Open the [raw userscript installer](https://raw.githubusercontent.com/Yan-ShiBo/local-tts-env/main/tts-userscript.js)
+3. Confirm installation in Tampermonkey
 
 ### 5. Use it!
 
@@ -84,16 +86,9 @@ pip install -r requirements.txt
 
 ## 🎭 Available Voices
 
-| Voice ID | Style |
-|----------|-------|
-| `af_bella` ⭐ | Sweet, sunny (default) |
-| `af_sky` | Bright, lively |
-| `af_heart` | Warm |
-| `am_adam` | Young, clear |
-| `am_liam` | Warm, sunny |
-| `bf_emma` | British English |
-
-_...and 11 more. See the full list in the browser settings panel or test page._
+The canonical voice and speed list lives in
+[`config/tts_catalog.json`](config/tts_catalog.json). The API, tray menu,
+browser script and built-in test page are generated from this catalog.
 
 ## 📁 Project Files
 
@@ -106,6 +101,10 @@ _...and 11 more. See the full list in the browser settings panel or test page._
 | `setup.bat` | One-click environment setup |
 | `start.bat` | Terminal-mode server launcher |
 | `requirements.txt` | Python dependencies |
+| `requirements-test.txt` | Lightweight CI/test dependencies (no Torch/Kokoro) |
+| `config/tts_catalog.json` | Canonical voices, speeds and defaults |
+| `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
+| `.github/workflows/ci.yml` | Windows CI |
 
 ## 🔌 API
 
@@ -125,6 +124,8 @@ Returns `audio/wav` stream.
 
 ```powershell
 conda run -n kokoro-tts python -m unittest discover -s tests -v
+node --test tests/userscript-core.test.cjs
+python scripts/sync_catalog.py --check
 ```
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
