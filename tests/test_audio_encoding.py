@@ -1,4 +1,5 @@
 import subprocess
+import traceback
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -16,10 +17,66 @@ from audio_encoding import (
 )
 
 
+def _mock_process():
+    process = Mock()
+    process.stdin = Mock()
+    process.stdout = Mock()
+    process.stderr = Mock()
+    process.poll.return_value = 0
+    return process
+
+
+def _install_mock_process(monkeypatch, process):
+    monkeypatch.setattr(
+        audio_encoding,
+        "ffmpeg_executable",
+        lambda: r"C:\bundled\ffmpeg.exe",
+    )
+    monkeypatch.setattr(audio_encoding.subprocess, "Popen", Mock(return_value=process))
+
+
 def test_bundled_ffmpeg_exists():
     executable = ffmpeg_executable()
 
     assert Path(executable).is_file()
+
+
+def test_ffmpeg_executable_wraps_bundled_lookup_error(monkeypatch):
+    def raise_lookup_error():
+        raise OSError(r"C:\secret\ffmpeg.exe")
+
+    monkeypatch.setattr(
+        audio_encoding.imageio_ffmpeg,
+        "get_ffmpeg_exe",
+        raise_lookup_error,
+    )
+
+    with pytest.raises(
+        AudioEncodingError,
+        match="^FFmpeg is unavailable$",
+    ) as raised:
+        ffmpeg_executable()
+
+    formatted = "".join(
+        traceback.format_exception(raised.type, raised.value, raised.tb),
+    )
+    assert "secret" not in formatted
+
+
+def test_ffmpeg_executable_wraps_path_resolution_error(monkeypatch):
+    monkeypatch.setattr(
+        audio_encoding.imageio_ffmpeg,
+        "get_ffmpeg_exe",
+        lambda: r"C:\secret\ffmpeg.exe",
+    )
+
+    def raise_resolution_error(self):
+        raise RuntimeError(str(self))
+
+    monkeypatch.setattr(audio_encoding.Path, "resolve", raise_resolution_error)
+
+    with pytest.raises(AudioEncodingError, match="^FFmpeg is unavailable$"):
+        ffmpeg_executable()
 
 
 def test_validate_ffmpeg_returns_bundled_executable():
@@ -62,6 +119,30 @@ def test_encode_ogg_opus_produces_opus_container():
     assert b"OpusHead" in encoded[:256]
 
 
+@pytest.mark.parametrize(
+    "process_error",
+    [
+        OSError(r"C:\secret\ffmpeg.exe"),
+        subprocess.TimeoutExpired(["ffmpeg"], timeout=1),
+        subprocess.SubprocessError(r"C:\secret\ffmpeg.exe"),
+    ],
+)
+def test_encode_ogg_opus_wraps_process_errors(monkeypatch, process_error):
+    monkeypatch.setattr(
+        audio_encoding,
+        "ffmpeg_executable",
+        lambda: r"C:\bundled\ffmpeg.exe",
+    )
+    monkeypatch.setattr(
+        audio_encoding.subprocess,
+        "run",
+        Mock(side_effect=process_error),
+    )
+
+    with pytest.raises(AudioEncodingError, match="^OGG encoding failed$"):
+        encode_ogg_opus(np.zeros(1, dtype=np.float32), 24000)
+
+
 def test_webm_encoder_streams_ebml_and_opus():
     encoder = WebMOpusEncoder(sample_rate=24000)
     try:
@@ -74,6 +155,69 @@ def test_webm_encoder_streams_ebml_and_opus():
 
     assert content.startswith(b"\x1aE\xdf\xa3")
     assert b"OpusHead" in content
+
+
+def test_webm_encoder_wraps_process_start_error(monkeypatch):
+    monkeypatch.setattr(
+        audio_encoding,
+        "ffmpeg_executable",
+        lambda: r"C:\bundled\ffmpeg.exe",
+    )
+    monkeypatch.setattr(
+        audio_encoding.subprocess,
+        "Popen",
+        Mock(side_effect=OSError(r"C:\secret\ffmpeg.exe")),
+    )
+
+    with pytest.raises(AudioEncodingError, match="^WebM encoding failed$"):
+        WebMOpusEncoder(sample_rate=24000)
+
+
+def test_webm_encoder_wraps_stdin_write_error(monkeypatch):
+    process = _mock_process()
+    process.stdin.write.side_effect = BrokenPipeError(r"C:\secret\ffmpeg.exe")
+    _install_mock_process(monkeypatch, process)
+    encoder = WebMOpusEncoder(sample_rate=24000)
+
+    with pytest.raises(AudioEncodingError, match="^WebM encoding failed$"):
+        encoder.write(np.zeros(1, dtype=np.float32))
+
+
+def test_webm_encoder_wraps_stdin_close_error(monkeypatch):
+    process = _mock_process()
+    process.stdin.close.side_effect = BrokenPipeError(r"C:\secret\ffmpeg.exe")
+    _install_mock_process(monkeypatch, process)
+    encoder = WebMOpusEncoder(sample_rate=24000)
+
+    with pytest.raises(AudioEncodingError, match="^WebM encoding failed$"):
+        encoder.close_input()
+
+
+def test_webm_encoder_wraps_stdout_read_error(monkeypatch):
+    process = _mock_process()
+    process.stdout.read.side_effect = OSError(r"C:\secret\ffmpeg.exe")
+    _install_mock_process(monkeypatch, process)
+    encoder = WebMOpusEncoder(sample_rate=24000)
+
+    with pytest.raises(AudioEncodingError, match="^WebM encoding failed$"):
+        encoder.read()
+
+
+@pytest.mark.parametrize(
+    "process_error",
+    [
+        subprocess.TimeoutExpired(["ffmpeg"], timeout=1),
+        OSError(r"C:\secret\ffmpeg.exe"),
+    ],
+)
+def test_webm_encoder_wraps_wait_errors(monkeypatch, process_error):
+    process = _mock_process()
+    process.wait.side_effect = process_error
+    _install_mock_process(monkeypatch, process)
+    encoder = WebMOpusEncoder(sample_rate=24000)
+
+    with pytest.raises(AudioEncodingError, match="^WebM encoding failed$"):
+        encoder.wait()
 
 
 def test_webm_encoder_uses_low_latency_opus_command(monkeypatch):
@@ -141,7 +285,7 @@ def test_webm_encoder_close_is_idempotent_and_kills_after_timeout(monkeypatch):
         subprocess.TimeoutExpired(["ffmpeg"], timeout=2),
         0,
     ]
-    monkeypatch.setattr(audio_encoding.subprocess, "Popen", Mock(return_value=process))
+    _install_mock_process(monkeypatch, process)
 
     encoder = WebMOpusEncoder(sample_rate=24000)
     encoder.close()
@@ -151,6 +295,56 @@ def test_webm_encoder_close_is_idempotent_and_kills_after_timeout(monkeypatch):
     process.terminate.assert_called_once_with()
     process.kill.assert_called_once_with()
     assert process.wait.call_count == 2
+    process.stdout.close.assert_called_once_with()
+    process.stderr.close.assert_called_once_with()
+
+
+def test_webm_encoder_close_continues_after_cleanup_errors(monkeypatch):
+    process = _mock_process()
+    process.poll.return_value = None
+    process.stdin.close.side_effect = BrokenPipeError("stdin closed")
+    process.terminate.side_effect = OSError("terminate failed")
+    process.stdout.close.side_effect = OSError("stdout close failed")
+    _install_mock_process(monkeypatch, process)
+    encoder = WebMOpusEncoder(sample_rate=24000)
+
+    encoder.close()
+    encoder.close()
+
+    process.stdin.close.assert_called_once_with()
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=2)
+    process.stdout.close.assert_called_once_with()
+    process.stderr.close.assert_called_once_with()
+
+
+def test_webm_encoder_close_retries_stdin_after_close_input_error(monkeypatch):
+    process = _mock_process()
+    process.stdin.close.side_effect = [BrokenPipeError("stdin closed"), None]
+    _install_mock_process(monkeypatch, process)
+    encoder = WebMOpusEncoder(sample_rate=24000)
+
+    with pytest.raises(AudioEncodingError, match="^WebM encoding failed$"):
+        encoder.close_input()
+
+    encoder.close()
+
+    assert process.stdin.close.call_count == 2
+
+
+def test_webm_encoder_close_retries_after_interrupted_cleanup(monkeypatch):
+    process = _mock_process()
+    process.stdin.close.side_effect = [KeyboardInterrupt, None]
+    _install_mock_process(monkeypatch, process)
+    encoder = WebMOpusEncoder(sample_rate=24000)
+
+    with pytest.raises(KeyboardInterrupt):
+        encoder.close()
+
+    encoder.close()
+
+    assert process.stdin.close.call_count == 2
     process.stdout.close.assert_called_once_with()
     process.stderr.close.assert_called_once_with()
 
