@@ -113,8 +113,15 @@ test("webm opus support uses MediaSource codec probe", () => {
   assert.deepEqual(supported.seen, [WEBM_OPUS_MIME]);
   assert.equal(supportsWebMOpus(throwing), false);
   assert.equal(supportsWebMOpus(null), false);
-  assert.equal(choosePlaybackMode(supported), "stream");
-  assert.equal(choosePlaybackMode(null), "ogg");
+  assert.equal(
+    choosePlaybackMode(supported, "http://127.0.0.1:5000", "http://127.0.0.1:5000"),
+    "stream"
+  );
+  assert.equal(
+    choosePlaybackMode(supported, "https://example.com", "http://127.0.0.1:5000"),
+    "ogg"
+  );
+  assert.equal(choosePlaybackMode(null, "http://127.0.0.1:5000", "http://127.0.0.1:5000"), "ogg");
 });
 
 

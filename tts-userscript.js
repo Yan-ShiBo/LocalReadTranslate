@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kokoro TTS 划词朗读
 // @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.4.0
+// @version      1.4.1
 // @description  选中英文文本，一键使用本地 Kokoro TTS 进行高质量朗读
 // @author       Yan-ShiBo
 // @match        *://*/*
@@ -86,7 +86,12 @@ const KokoroTTSCore = (() => {
     }
   }
 
-  function choosePlaybackMode(mediaSourceApi) {
+  function sameOrigin(currentOrigin, apiOrigin) {
+    return !!currentOrigin && !!apiOrigin && currentOrigin === apiOrigin;
+  }
+
+  function choosePlaybackMode(mediaSourceApi, currentOrigin, apiOrigin) {
+    if (!sameOrigin(currentOrigin, apiOrigin)) return "ogg";
     return supportsWebMOpus(mediaSourceApi) ? "stream" : "ogg";
   }
 
@@ -242,6 +247,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   // ════════════════════════════════════════════════════════
 
   const API_BASE = "http://127.0.0.1:5000";
+  const API_ORIGIN = new URL(API_BASE).origin;
   const API_URL = API_BASE + "/tts";
   const API_STREAM_URL = API_BASE + "/tts/stream";
   const API_OGG_URL = API_URL + "?format=ogg";
@@ -569,6 +575,24 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       border-color: rgba(102, 126, 234, 0.5);
     }
 
+    .tts-settings-panel .tts-test-btn.loading {
+      color: #f7b2c0;
+      border-color: rgba(245, 87, 108, 0.45);
+      background: rgba(245, 87, 108, 0.12);
+    }
+
+    .tts-settings-panel .tts-test-btn.playing {
+      color: #9af2bd;
+      border-color: rgba(56, 239, 125, 0.45);
+      background: rgba(56, 239, 125, 0.12);
+    }
+
+    .tts-settings-panel .tts-test-btn.error {
+      color: #ff9eae;
+      border-color: rgba(252, 92, 125, 0.5);
+      background: rgba(252, 92, 125, 0.12);
+    }
+
     .tts-settings-panel .tts-status-dot {
       display: inline-block;
       width: 8px;
@@ -636,9 +660,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       saveSettings(settings);
     });
 
-    panel.querySelector("#tts-test-btn").addEventListener("click", () => {
+    panel.querySelector("#tts-test-btn").addEventListener("click", (e) => {
       const testText = "Hello, nice to meet you! This is a test of the Kokoro text to speech system.";
-      speak(testText, null);
+      speak(testText, e.currentTarget);
     });
 
     // Check server status
@@ -808,9 +832,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   /**
    * Call TTS API and play audio
    */
+  function getButtonBaseClass(btnElement) {
+    if (!btnElement) return "tts-speak-btn";
+    if (!btnElement.dataset.ttsBaseClass) {
+      btnElement.dataset.ttsBaseClass = btnElement.classList.contains("tts-test-btn")
+        ? "tts-test-btn"
+        : "tts-speak-btn";
+    }
+    return btnElement.dataset.ttsBaseClass;
+  }
+
   function setButtonHtml(btnElement, className, icon, label) {
     if (!btnElement) return;
-    btnElement.className = className;
+    const baseClass = getButtonBaseClass(btnElement);
+    const stateClasses = className
+      .split(/\s+/)
+      .filter((name) => name && name !== "tts-speak-btn" && name !== "tts-test-btn");
+    btnElement.className = [baseClass, ...stateClasses].join(" ");
     btnElement.style.removeProperty("--tts-progress");
     btnElement.innerHTML =
       `<span class="tts-icon">${icon}</span><span class="tts-label">${label}</span>`;
@@ -818,14 +856,16 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   function setPlaybackProgress(btnElement, audio, streamEnded) {
     if (!btnElement) return;
+    const baseClass = getButtonBaseClass(btnElement);
     const progress = KokoroTTSCore.formatPlaybackProgress({
       currentTime: audio.currentTime || 0,
       duration: audio.duration,
       streamEnded,
     });
-    btnElement.className =
-      "tts-speak-btn playing with-progress " +
-      (progress.determinate ? "determinate" : "buffering");
+    const progressClasses = baseClass === "tts-speak-btn"
+      ? ["with-progress", progress.determinate ? "determinate" : "buffering"]
+      : [];
+    btnElement.className = [baseClass, "playing", ...progressClasses].join(" ");
     btnElement.style.setProperty("--tts-progress", progress.percent + "%");
     btnElement.innerHTML =
       `<span class="tts-icon">\uD83D\uDD0A</span><span class="tts-label">${progress.label}</span>`;
@@ -861,6 +901,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (currentAudio !== audio) return;
       KokoroTTSCore.releaseAudio(audio);
       currentAudio = null;
+      if (audio._suppressPlaybackErrorUi) return;
       if (btnElement) {
         setButtonHtml(
           btnElement,
@@ -979,6 +1020,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     const blobUrl = URL.createObjectURL(mediaSource);
     const audio = new Audio(blobUrl);
     audio._blobUrl = blobUrl;
+    audio._suppressPlaybackErrorUi = true;
     audio._cleanup = () => {
       controller.abort();
       if (reader) reader.cancel().catch(() => {});
@@ -1039,6 +1081,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     await appendQueue.end();
     updateProgress();
     await playPromise;
+    audio._suppressPlaybackErrorUi = false;
   }
 
   async function speak(text, btnElement) {
@@ -1059,11 +1102,20 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
 
     try {
-      if (
-        KokoroTTSCore.choosePlaybackMode(window.MediaSource) === "stream" &&
-        typeof fetch === "function"
-      ) {
-        await playStreamingAudio(text, generation, btnElement, buttonContainer);
+      const playbackMode = KokoroTTSCore.choosePlaybackMode(
+        window.MediaSource,
+        window.location.origin,
+        API_ORIGIN
+      );
+      if (playbackMode === "stream" && typeof fetch === "function") {
+        try {
+          await playStreamingAudio(text, generation, btnElement, buttonContainer);
+        } catch (streamError) {
+          if (!requestGate.isCurrent(generation)) return;
+          console.warn("[Kokoro TTS] Streaming failed; falling back to OGG", streamError);
+          stopAudio();
+          await playBlobAudio(text, generation, btnElement, buttonContainer);
+        }
       } else {
         await playBlobAudio(text, generation, btnElement, buttonContainer);
       }
