@@ -31,6 +31,11 @@ from tts_catalog import (
     VOICE_GROUPS,
 )
 from windows_runtime import WindowsNamedMutex
+from windows_startup import (
+    StartupShortcutError,
+    inspect_startup_shortcut,
+    reconcile_startup_shortcut,
+)
 
 # ---------------------------------------------------------------------------
 #  Config
@@ -38,6 +43,7 @@ from windows_runtime import WindowsNamedMutex
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 SERVER_SCRIPT = SCRIPT_DIR / "server.py"
+TRAY_LAUNCHER = SCRIPT_DIR / "Kokoro TTS.pyw"
 SETTINGS_FILE = SCRIPT_DIR / "tray_settings.json"
 CONDA_ENV_NAME = "kokoro-tts"
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", SCRIPT_DIR)) / "KokoroTTS"
@@ -112,7 +118,7 @@ def find_conda_pythonw(env_name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def load_settings():
-    defaults = {"voice": DEFAULT_VOICE, "speed": DEFAULT_SPEED}
+    defaults = {"voice": DEFAULT_VOICE, "speed": DEFAULT_SPEED, "auto_start": False}
     try:
         if SETTINGS_FILE.exists():
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -124,6 +130,7 @@ def load_settings():
         defaults["voice"] = DEFAULT_VOICE
     if defaults["speed"] not in SPEEDS:
         defaults["speed"] = DEFAULT_SPEED
+    defaults["auto_start"] = bool(defaults.get("auto_start", False))
     return defaults
 
 
@@ -192,6 +199,7 @@ class TrayApp:
         self.is_running = False
         self._lock = threading.Lock()
         self.python_exe = find_conda_python(CONDA_ENV_NAME)
+        self._reconcile_saved_auto_start()
 
     def get_health(self, port=DEFAULT_PORT):
         try:
@@ -318,6 +326,58 @@ class TrayApp:
             LOG_FILE.touch()
         os.startfile(str(LOG_FILE))
 
+    def show_error(self, title, message):
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                ctypes.windll.user32.MessageBoxW(
+                    0,
+                    str(message),
+                    f"Kokoro TTS - {title}",
+                    0x10,
+                )
+                return
+            except Exception:
+                pass
+        print(f"[Kokoro TTS] {title}: {message}")
+
+    def _reconcile_saved_auto_start(self):
+        desired = bool(self.settings.get("auto_start", False))
+        try:
+            actual = reconcile_startup_shortcut(
+                desired,
+                TRAY_LAUNCHER,
+                SCRIPT_DIR,
+            )
+        except StartupShortcutError as error:
+            self.settings["auto_start"] = False
+            self.show_error("Auto-start", str(error))
+            return
+        self.settings["auto_start"] = actual
+
+    def is_auto_start_enabled(self):
+        return inspect_startup_shortcut(TRAY_LAUNCHER, SCRIPT_DIR)
+
+    def toggle_auto_start(self, _=None):
+        previous = bool(self.settings.get("auto_start", False))
+        try:
+            requested = not self.is_auto_start_enabled()
+            actual = reconcile_startup_shortcut(
+                requested,
+                TRAY_LAUNCHER,
+                SCRIPT_DIR,
+            )
+        except StartupShortcutError as error:
+            self.settings["auto_start"] = previous
+            self.show_error("Auto-start", str(error))
+            return
+
+        self.settings["auto_start"] = actual
+        save_settings(self.settings)
+        if self.tray_icon:
+            self.tray_icon.menu = self._build_menu()
+
     def set_voice(self, voice_id):
         def _set(_=None):
             self.settings["voice"] = voice_id
@@ -388,6 +448,11 @@ class TrayApp:
                   enabled=lambda _: self.is_running),
             Item("Open Server Log", self.open_log),
             Item("Open Project Folder", self.open_project_dir),
+            Item(
+                "Auto-start on login",
+                self.toggle_auto_start,
+                checked=lambda _: self.is_auto_start_enabled(),
+            ),
             pystray.Menu.SEPARATOR,
             Item("Exit", self.quit_app),
         )
