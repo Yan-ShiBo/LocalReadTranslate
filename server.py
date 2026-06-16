@@ -104,10 +104,10 @@ async def lifespan(app: FastAPI):
     """应用启动时加载模型，关闭时释放。"""
     global pipeline, british_pipeline, actual_device
 
+    validate_ffmpeg()
+
     if torch is None:
         raise RuntimeError("PyTorch is required to start the TTS model")
-
-    validate_ffmpeg()
     actual_device = resolve_device(DEVICE)
 
     print()
