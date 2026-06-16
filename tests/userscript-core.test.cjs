@@ -14,6 +14,7 @@ test("userscript core can be imported without browser globals", () => {
   assert.equal(typeof core.createAppendQueue, "function");
   assert.equal(typeof core.selectBlobAudioFormat, "function");
   assert.equal(typeof core.normalizeAudioBlob, "function");
+  assert.equal(typeof core.normalizeAudioBuffer, "function");
 });
 
 
@@ -218,4 +219,17 @@ test("audio blob normalization preserves bytes and assigns playable mime type", 
 
   assert.equal(normalized.type, "audio/ogg");
   assert.equal(Buffer.from(await normalized.arrayBuffer()).toString("utf8"), "OggS");
+});
+
+
+test("audio buffer normalization accepts array buffers, typed arrays, and blobs", async () => {
+  const { normalizeAudioBuffer } = require("../tts-userscript.js");
+  const direct = new Uint8Array([1, 2, 3]).buffer;
+  const typed = new Uint8Array([4, 5, 6]);
+  const blob = new Blob([Buffer.from([7, 8, 9])]);
+
+  assert.deepEqual([...new Uint8Array(await normalizeAudioBuffer(direct))], [1, 2, 3]);
+  assert.deepEqual([...new Uint8Array(await normalizeAudioBuffer(typed))], [4, 5, 6]);
+  assert.deepEqual([...new Uint8Array(await normalizeAudioBuffer(blob))], [7, 8, 9]);
+  await assert.rejects(() => normalizeAudioBuffer("bad"), /Unsupported audio response/);
 });

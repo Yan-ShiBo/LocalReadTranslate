@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kokoro TTS 划词朗读
 // @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.4.2
+// @version      1.4.3
 // @description  选中英文文本，一键使用本地 Kokoro TTS 进行高质量朗读
 // @author       Yan-ShiBo
 // @match        *://*/*
@@ -143,6 +143,22 @@ const KokoroTTSCore = (() => {
     return new Blob([payload], { type: mime });
   }
 
+  async function normalizeAudioBuffer(payload) {
+    if (payload instanceof ArrayBuffer) {
+      return payload;
+    }
+    if (ArrayBuffer.isView(payload)) {
+      return payload.buffer.slice(
+        payload.byteOffset,
+        payload.byteOffset + payload.byteLength
+      );
+    }
+    if (payload && typeof payload.arrayBuffer === "function") {
+      return payload.arrayBuffer();
+    }
+    throw new Error("Unsupported audio response payload");
+  }
+
   function isUnsupportedMediaError(error) {
     const name = error && error.name ? String(error.name) : "";
     const message = error && error.message ? String(error.message) : "";
@@ -276,6 +292,7 @@ const KokoroTTSCore = (() => {
     createRequestGate,
     formatPlaybackProgress,
     isUnsupportedMediaError,
+    normalizeAudioBuffer,
     normalizeAudioBlob,
     releaseAudio,
     selectBlobAudioFormat,
@@ -1009,6 +1026,56 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
+  async function fetchAudioBuffer(text, generation, audioFormat) {
+    return new Promise((resolve, reject) => {
+      const request = GM_xmlhttpRequest({
+        method: "POST",
+        url: `${API_URL}?format=${audioFormat.format}`,
+        headers: {
+          "Accept": audioFormat.accept,
+          "Content-Type": "application/json",
+        },
+        data: JSON.stringify({
+          text: text,
+          voice: settings.voice,
+          speed: settings.speed,
+        }),
+        responseType: "arraybuffer",
+        timeout: 60000,
+        onload: async (response) => {
+          if (!requestGate.isCurrent(generation)) return;
+          if (response.status >= 200 && response.status < 300) {
+            try {
+              resolve(await KokoroTTSCore.normalizeAudioBuffer(response.response));
+            } catch (error) {
+              reject(error);
+            }
+          } else {
+            reject(
+              new Error(
+                `Server returned ${response.status}: ${response.statusText}`
+              )
+            );
+          }
+        },
+        onerror: () => {
+          if (!requestGate.isCurrent(generation)) return;
+          reject(
+            new Error(
+              "Cannot connect to TTS server. Run start.bat first."
+            )
+          );
+        },
+        ontimeout: () => {
+          if (!requestGate.isCurrent(generation)) return;
+          reject(new Error("Request timeout. Text may be too long."));
+        },
+        onabort: () => reject(new Error("Request cancelled.")),
+      });
+      requestGate.attach(generation, request);
+    });
+  }
+
   async function playBlobAudioFormat(
     text,
     generation,
@@ -1065,6 +1132,95 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         { format: "wav", accept: "audio/wav", mime: "audio/wav" }
       );
     }
+  }
+
+  async function playDecodedWavAudio(text, generation, btnElement, buttonContainer) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      await playBlobAudioFormat(
+        text,
+        generation,
+        btnElement,
+        buttonContainer,
+        { format: "wav", accept: "audio/wav", mime: "audio/wav" }
+      );
+      return;
+    }
+
+    const payload = await fetchAudioBuffer(
+      text,
+      generation,
+      { format: "wav", accept: "audio/wav", mime: "audio/wav" }
+    );
+    if (!requestGate.isCurrent(generation)) return;
+
+    const audioContext = new AudioContextClass();
+    if (audioContext.state === "suspended" && audioContext.resume) {
+      await audioContext.resume();
+    }
+
+    const audioBuffer = await audioContext.decodeAudioData(payload.slice(0));
+    if (!requestGate.isCurrent(generation)) {
+      if (audioContext.close) audioContext.close().catch(() => {});
+      return;
+    }
+
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+
+    const startedAt = audioContext.currentTime;
+    let stopped = false;
+    let progressTimer = null;
+    const playbackHandle = {
+      src: "",
+      _blobUrl: null,
+      duration: audioBuffer.duration,
+      get currentTime() {
+        return Math.min(
+          this.duration,
+          Math.max(0, audioContext.currentTime - startedAt)
+        );
+      },
+      pause() {
+        if (stopped) return;
+        stopped = true;
+        if (progressTimer) clearInterval(progressTimer);
+        try { source.stop(0); } catch {}
+        if (audioContext.close) audioContext.close().catch(() => {});
+      },
+      _cleanup() {
+        this.pause();
+      },
+    };
+
+    currentAudio = playbackHandle;
+    const updateProgress = () => {
+      if (currentAudio !== playbackHandle) return;
+      setPlaybackProgress(btnElement, playbackHandle, true);
+    };
+
+    source.onended = () => {
+      if (stopped || currentAudio !== playbackHandle) return;
+      stopped = true;
+      if (progressTimer) clearInterval(progressTimer);
+      updateProgress();
+      currentAudio = null;
+      if (audioContext.close) audioContext.close().catch(() => {});
+      if (btnElement) {
+        setButtonHtml(
+          btnElement,
+          "tts-speak-btn",
+          "\u2705",
+          "Done"
+        );
+        setTimeout(() => removeSpecificButton(buttonContainer), 2000);
+      }
+    };
+
+    updateProgress();
+    progressTimer = setInterval(updateProgress, 250);
+    source.start(0);
   }
 
   function waitForSourceOpen(mediaSource) {
@@ -1198,12 +1354,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           await playStreamingAudio(text, generation, btnElement, buttonContainer);
         } catch (streamError) {
           if (!requestGate.isCurrent(generation)) return;
-          console.warn("[Kokoro TTS] Streaming failed; falling back to OGG", streamError);
+          console.warn("[Kokoro TTS] Streaming failed; falling back to decoded WAV", streamError);
           stopAudio();
-          await playBlobAudio(text, generation, btnElement, buttonContainer);
+          await playDecodedWavAudio(text, generation, btnElement, buttonContainer);
         }
       } else {
-        await playBlobAudio(text, generation, btnElement, buttonContainer);
+        await playDecodedWavAudio(text, generation, btnElement, buttonContainer);
       }
     } catch (err) {
       if (!requestGate.isCurrent(generation)) return;
