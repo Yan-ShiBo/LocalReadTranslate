@@ -221,7 +221,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.1",
+    version="1.7.2",
     lifespan=lifespan,
 )
 
@@ -550,7 +550,7 @@ def _protect_formulas(text: str) -> tuple[str, list[tuple[str, str]]]:
     protected_text = pattern.sub(replace, text)
     bare_pattern = re.compile(
         r"(?<![A-Za-z0-9_\\])("
-        r"\\hat\{?[A-Za-z][A-Za-z0-9]*\}?(?:\([^()\n]+\))?|"
+        r"\\hat\s*\{?[A-Za-z][A-Za-z0-9]*\}?(?:\([^()\n]+\))?|"
         r"[A-Za-z][A-Za-z0-9]*_\{?[^{}\s,.;:，。；：)）]+\}?(?:\([^()\n]+\))?"
         r")(?![A-Za-z0-9_])"
     )
@@ -651,17 +651,17 @@ def _readable_formula_symbol(formula: str) -> str:
     value = value.replace("\\,", " ").replace("\\;", " ").replace("\\!", "")
 
     value = re.sub(
-        r"\\hat\{?([A-Za-zΑ-Ωα-ω])\}?",
+        r"\\hat\s*\{?([A-Za-zΑ-Ωα-ω])\}?",
         lambda match: f"{match.group(1)}\u0302",
         value,
     )
     value = re.sub(
-        r"\\bar\{?([A-Za-zΑ-Ωα-ω])\}?",
+        r"\\bar\s*\{?([A-Za-zΑ-Ωα-ω])\}?",
         lambda match: f"{match.group(1)}\u0304",
         value,
     )
     value = re.sub(
-        r"\\tilde\{?([A-Za-zΑ-Ωα-ω])\}?",
+        r"\\tilde\s*\{?([A-Za-zΑ-Ωα-ω])\}?",
         lambda match: f"{match.group(1)}\u0303",
         value,
     )
@@ -749,7 +749,7 @@ def _describe_formula_atom_zh(expr: str) -> str:
 
     value = value.strip().strip("{} ")
 
-    hat_match = re.fullmatch(r"\\hat\{?([A-Za-z][A-Za-z0-9]*)\}?(?:\((.+)\))?", value)
+    hat_match = re.fullmatch(r"\\hat\s*\{?([A-Za-z][A-Za-z0-9]*)\}?(?:\((.+)\))?", value)
     if hat_match:
         base, arg = hat_match.groups()
         desc = f"{_describe_formula_token_zh(base)}的估计值"

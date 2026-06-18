@@ -416,6 +416,16 @@ class ApiTests(unittest.TestCase):
         self.assertIn("D的下角标w定义为由三元组", translated)
         self.assertNotIn("映射到", translated)
 
+    def test_formula_description_handles_unbraced_hat(self):
+        self.assertEqual(
+            server._display_formula_for_translation(r"\hat B(x)"),
+            "B̂(x)",
+        )
+        self.assertEqual(
+            server._rule_describe_formula_zh(r"\hat B(x)"),
+            "B的估计值关于x的函数",
+        )
+
     def test_read_prepare_uses_translategemma_by_default(self):
         with patch.object(
             server,

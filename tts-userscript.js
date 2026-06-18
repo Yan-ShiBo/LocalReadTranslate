@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.11.1
+// @version      1.11.2
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -1520,6 +1520,101 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     return mathMlChildrenToTex(element);
   }
 
+  function mathJaxChtmlChildrenToTex(element) {
+    return Array.from(element.childNodes || [])
+      .map(mathJaxChtmlNodeToTex)
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function normalizeMathGlyphChar(char) {
+    if (!char) return "";
+    const cp = char.codePointAt(0);
+    if (cp >= 0x1d434 && cp <= 0x1d44d) return String.fromCharCode(65 + cp - 0x1d434);
+    if (cp >= 0x1d44e && cp <= 0x1d467) return String.fromCharCode(97 + cp - 0x1d44e);
+    if (cp >= 0x1d7ce && cp <= 0x1d7d7) return String(cp - 0x1d7ce);
+    const greek = {
+      "𝛼": "\\alpha", "𝛽": "\\beta", "𝛾": "\\gamma", "𝛿": "\\delta",
+      "𝜃": "\\theta", "𝜆": "\\lambda", "𝜇": "\\mu", "𝜋": "\\pi",
+      "𝜎": "\\sigma", "𝜔": "\\omega",
+    };
+    return greek[char] || char;
+  }
+
+  function mathJaxGlyphToText(element) {
+    const className = String(element.getAttribute("class") || "");
+    const match = className.match(/\bmjx-c([0-9A-Fa-f]+)\b/);
+    if (!match) return "";
+    const codePoint = Number.parseInt(match[1], 16);
+    if (!Number.isFinite(codePoint)) return "";
+    try {
+      return normalizeMathGlyphChar(String.fromCodePoint(codePoint));
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function meaningfulMathJaxChildren(element) {
+    return Array.from(element.childNodes || []).filter((child) => {
+      if (!child) return false;
+      if (child.nodeType === 3) return Boolean(String(child.nodeValue || "").trim());
+      if (child.nodeType !== 1) return false;
+      const tag = (child.localName || child.tagName || "").toLowerCase();
+      return tag !== "mjx-assistive-mml" && tag !== "mjx-itable";
+    });
+  }
+
+  function mathJaxChtmlNodeToTex(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) {
+      return String(node.nodeValue || "").trim();
+    }
+    if (node.nodeType !== 1) return "";
+
+    const element = node;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    const children = meaningfulMathJaxChildren(element);
+    const child = (index) => mathJaxChtmlNodeToTex(children[index]);
+    const joined = () => children.map(mathJaxChtmlNodeToTex).filter(Boolean).join(" ");
+
+    if (tag === "mjx-c") {
+      return String(element.textContent || "").trim() || mathJaxGlyphToText(element);
+    }
+    if (tag === "mjx-assistive-mml") return "";
+    if (tag === "mjx-container" || tag === "mjx-math" || tag === "mjx-mrow" || tag === "mjx-texatom" || tag === "mjx-script" || tag === "mjx-box") {
+      return joined();
+    }
+    if (tag === "mjx-mi" || tag === "mjx-mn" || tag === "mjx-mtext") {
+      return String(element.textContent || "").trim() || joined();
+    }
+    if (tag === "mjx-mo") {
+      return mathOperatorToTex(String(element.textContent || "").trim() || joined());
+    }
+    if (tag === "mjx-msub") {
+      return `${child(0)}_{${child(children.length - 1)}}`;
+    }
+    if (tag === "mjx-msup") {
+      return `${child(0)}^{${child(children.length - 1)}}`;
+    }
+    if (tag === "mjx-msubsup") {
+      return `${child(0)}_{${child(1)}}^{${child(children.length - 1)}}`;
+    }
+    if (tag === "mjx-mfrac") {
+      return `\\frac{${child(0)}}{${child(1)}}`;
+    }
+    if (tag === "mjx-msqrt") {
+      return `\\sqrt{${joined()}}`;
+    }
+    if (tag === "mjx-mover" || tag === "mjx-over") {
+      const base = child(0);
+      const accent = children.slice(1).map(mathJaxChtmlNodeToTex).join(" ");
+      if (/[-_‾¯]/.test(accent)) return `\\bar{${base}}`;
+      if (/[~˜]/.test(accent)) return `\\tilde{${base}}`;
+      return `\\hat{${base}}`;
+    }
+    return String(element.textContent || "").trim() || joined();
+  }
+
   function findTexAnnotation(element) {
     const annotations = Array.from(element.querySelectorAll ? element.querySelectorAll("annotation") : []);
     for (const annotation of annotations) {
@@ -1561,6 +1656,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (value) return value;
     }
 
+    if (tag === "mjx-container" || (element.querySelector && element.querySelector("mjx-math, mjx-msub, mjx-msup, mjx-mover"))) {
+      const value = normalizeMathFormulaText(mathJaxChtmlNodeToTex(element));
+      if (value) return value;
+    }
+
     const aria = normalizeMathFormulaText(element.getAttribute("aria-label"));
     if (aria && !/^math$/i.test(aria)) return aria;
 
@@ -1591,6 +1691,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       element = element.parentElement;
     }
     return null;
+  }
+
+  function rectsOverlap(a, b) {
+    if (!a || !b) return false;
+    if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) return false;
+    const horizontal = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    const vertical = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    if (horizontal <= 0 || vertical <= 0) return false;
+    const overlapArea = horizontal * vertical;
+    const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+    return overlapArea / Math.max(smallerArea, 1) >= 0.08;
   }
 
   function serializeSelectionNode(node) {
@@ -1625,6 +1736,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   function expandRangeToContainMath(range) {
     if (!range) return range;
     const newRange = range.cloneRange();
+    const selectedRect = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
     const startMath = closestSemanticMathElement(range.startContainer);
     const endMath = closestSemanticMathElement(range.endContainer);
 
@@ -1653,17 +1765,32 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (typeof scanRoot.matches === "function" && scanRoot.matches(MATH_SELECTOR)) {
         mathElements.push(scanRoot);
       }
+      if (mathElements.length === 0 && selectedRect && document.querySelectorAll) {
+        mathElements = Array.from(document.querySelectorAll(MATH_SELECTOR)).filter((mathEl) => {
+          try {
+            return rectsOverlap(selectedRect, mathEl.getBoundingClientRect());
+          } catch (e) {
+            return false;
+          }
+        });
+      }
     } catch (e) {
       return newRange;
     }
 
     for (const mathEl of mathElements) {
       try {
-        if (newRange.intersectsNode(mathEl)) {
+        const intersectsDom = newRange.intersectsNode(mathEl);
+        const intersectsRect = selectedRect && rectsOverlap(selectedRect, mathEl.getBoundingClientRect());
+        if (intersectsDom || intersectsRect) {
           if (mathEl.contains(newRange.startContainer)) {
             newRange.setStartBefore(mathEl);
           }
           if (mathEl.contains(newRange.endContainer)) {
+            newRange.setEndAfter(mathEl);
+          }
+          if (intersectsRect && !mathEl.contains(newRange.startContainer) && !mathEl.contains(newRange.endContainer)) {
+            newRange.setStartBefore(mathEl);
             newRange.setEndAfter(mathEl);
           }
         }
@@ -1725,11 +1852,6 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   function focusFloatingAction(container, activeButton) {
     if (!container || !activeButton) return;
-    const actions = container.querySelector(".tts-float-actions");
-    if (!actions) return;
-    Array.from(actions.children).forEach((child) => {
-      if (child !== activeButton) child.remove();
-    });
     activeButton.classList.add("tts-active-action");
     requestAnimationFrame(() => {
       positionFloatingContainer(container, container._ttsSelectionRect);
@@ -1770,8 +1892,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     container.classList.remove("tts-placement-above", "tts-placement-below");
 
     const ownRect = container.getBoundingClientRect();
+    const actions = container.querySelector(".tts-float-actions");
+    const card = container.querySelector(".tts-translation-card");
+    const actionHeight = actions ? actions.getBoundingClientRect().height : ownRect.height || 0;
+    const cardHeight = card ? card.getBoundingClientRect().height : 0;
     const width = Math.min(ownRect.width || 0, viewportWidth - margin * 2);
-    const height = Math.min(ownRect.height || 0, viewportHeight - margin * 2);
     const anchorCenter = rect.left + (rect.width || 0) / 2;
     const left = Math.max(
       margin,
@@ -1780,9 +1905,14 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     const topSpace = rect.top - margin;
     const bottomSpace = viewportHeight - rect.bottom - margin;
-    const useAbove = topSpace >= height + gap || topSpace > bottomSpace;
-    const rawTop = useAbove ? rect.top - height - gap : rect.bottom + gap;
-    const top = Math.max(margin, Math.min(viewportHeight - height - margin, rawTop));
+    const useAbove = Boolean(card) && bottomSpace < actionHeight + gap + cardHeight && topSpace > cardHeight + gap;
+    const actionTop = Math.max(
+      margin,
+      Math.min(viewportHeight - actionHeight - margin, rect.bottom + gap)
+    );
+    const top = useAbove
+      ? Math.max(margin, actionTop - cardHeight - gap)
+      : actionTop;
 
     container.classList.add(useAbove ? "tts-placement-above" : "tts-placement-below");
     container.style.left = `${Math.round(left)}px`;
@@ -1809,6 +1939,16 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
+
+      if (btn.classList.contains("done")) {
+        setButtonHtml(
+          btn,
+          "tts-speak-btn",
+          "\uD83D\uDD0A",
+          "Read"
+        );
+        return;
+      }
 
       if (btn.classList.contains("playing")) {
         cancelRequest();
@@ -1838,6 +1978,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
+
+      if (translateBtn.classList.contains("done")) {
+        removeTranslationCard(container);
+        setButtonHtml(
+          translateBtn,
+          "tts-translate-btn",
+          "\uD83C\uDF10",
+          "Translate"
+        );
+        return;
+      }
 
       if (translateBtn.classList.contains("loading")) {
         cancelTranslationRequest();
@@ -1934,7 +2085,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (btnElement) {
         setButtonHtml(
           btnElement,
-          "tts-speak-btn",
+          "tts-speak-btn done",
           "\u2705",
           "Done"
         );
@@ -2434,7 +2585,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (btnElement) {
         setButtonHtml(
           btnElement,
-          "tts-translate-btn",
+          "tts-translate-btn done",
           "\u2705",
           "Done"
         );
@@ -2592,7 +2743,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (btnElement) {
         setButtonHtml(
           btnElement,
-          "tts-speak-btn",
+          "tts-speak-btn done",
           "\u2705",
           "Done"
         );
