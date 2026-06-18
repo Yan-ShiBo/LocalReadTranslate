@@ -21,6 +21,8 @@
 - **Local translation** — Select text and translate it locally through Ollama (`translategemma:4b` by default, switchable to another local model)
 - **LLM read preparation** — Before read-aloud, selected text is normalized through local `translategemma:4b`: English is kept, Chinese is translated to English, and formulas become spoken English
 - **Formula-aware cleanup** — MathJax/MathML/LaTeX selections are extracted semantically when possible, preserving subscripts/superscripts before translation or read preparation
+- **Smart queueing** — Backend checks client connection status to avoid processing dropped requests, preventing GPU OOM
+- **Robust UI cleanup** — Frontend uses `MutationObserver` and `AbortController` to cleanly handle SPA routing changes
 - **Playback progress** — Floating button shows a horizontal progress fill; streaming mode shows played seconds until final duration is known
 - **GPU-accelerated** — Near real-time inference on NVIDIA GPUs
 - **Fully offline** — No internet required after initial model download (~200MB)

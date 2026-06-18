@@ -110,10 +110,39 @@ def resolve_device(device_cfg: str) -> str:
 #  应用生命周期
 # ════════════════════════════════════════════════════════════════
 
+def _start_watchdog():
+    tray_pid_str = os.environ.get("KOKORO_TRAY_PID")
+    if not tray_pid_str:
+        return
+    try:
+        tray_pid = int(tray_pid_str)
+    except ValueError:
+        return
+
+    def watchdog_loop():
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_INFORMATION = 0x0400
+        while True:
+            time.sleep(5)
+            h_process = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, tray_pid)
+            if not h_process:
+                print(f"\\n[WATCHDOG] Parent tray process {tray_pid} is dead. Exiting server.")
+                os._exit(0)
+            else:
+                kernel32.CloseHandle(h_process)
+
+    t = threading.Thread(target=watchdog_loop, daemon=True)
+    t.start()
+    print(f"[WATCHDOG] Monitoring parent process PID: {tray_pid}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用启动时加载模型，关闭时释放。"""
     global pipeline, british_pipeline, actual_device
+
+    _start_watchdog()
 
     validate_ffmpeg()
 
@@ -501,20 +530,53 @@ def _ollama_model_names(payload) -> list[str]:
     return names
 
 
+def _protect_formulas(text: str) -> tuple[str, list[tuple[str, str]]]:
+    formulas = []
+    pattern = re.compile(
+        r"(\[\[MATH:\s*(.*?)\s*\]\]|"
+        r"\$\$([\s\S]*?)\$\$|"
+        r"\\\[([\s\S]*?)\\\]|"
+        r"\\\(([\s\S]*?)\\\)|"
+        r"\$([^$\n]+?)\$)"
+    )
+
+    def replace(match):
+        full_match = match.group(0)
+        idx = len(formulas)
+        placeholder = f"__MATH_{idx}__"
+        formulas.append((placeholder, full_match))
+        return placeholder
+
+    protected_text = pattern.sub(replace, text)
+    return protected_text, formulas
+
+
+def _restore_formulas(text: str, formulas: list[tuple[str, str]]) -> str:
+    result = text
+    for placeholder, original in formulas:
+        cleaned = original
+        if cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
+            content = cleaned[7:-2].strip()
+            cleaned = f"${content}$"
+        result = result.replace(placeholder, cleaned)
+    return result
+
+
 def _call_ollama_translate(text: str, model: str, target_language: str) -> str:
+    # 1. 提取并保护公式，用 __MATH_N__ 占位符替代
+    protected_text, formulas = _protect_formulas(text)
+
     payload = {
         "model": model,
         "stream": False,
         "system": (
-            "You are a precise translation engine. The input may contain web selection "
-            "artifacts, MathJax, LaTeX, formulas wrapped as [[MATH: ...]], or formulas split across many line breaks. "
-            f"Translate prose into {target_language}. Preserve meaning, names, and "
-            "numbers. Treat text inside [[MATH: ...]] as authoritative formula semantics. Convert formulas and mathematical symbols into natural spoken "
-            f"descriptions in {target_language}; do not solve or calculate them. "
-            "Remove obvious URL/citation noise. Return only the translated text, with "
-            "no reasoning, notes, markdown fences, or explanations."
+            "You are a precise translation engine. The input contains text with placeholders "
+            "like __MATH_0__, __MATH_1__, etc. which represent mathematical formulas. "
+            f"Translate the prose into {target_language}. Keep all names, numbers, and punctuation. "
+            "CRITICAL: Do NOT translate, modify, omit, or change the capitalization of the placeholders (e.g. __MATH_0__). Keep them exactly as they are. "
+            "Return only the translated text, with no reasoning, notes, markdown fences, or explanations."
         ),
-        "prompt": text,
+        "prompt": protected_text,
         "options": {
             "temperature": 0.1,
             "top_p": 0.9,
@@ -546,6 +608,9 @@ def _call_ollama_translate(text: str, model: str, target_language: str) -> str:
     translated = _clean_translation_response(response_payload.get("response", ""))
     if not translated:
         raise RuntimeError("Ollama returned an empty translation")
+
+    # 2. 还原公式，并将 [[MATH: ...]] 渲染为标准 $...$ 显示
+    translated = _restore_formulas(translated, formulas)
     return translated
 
 
@@ -1118,10 +1183,16 @@ async def tts_endpoint(
     speed = request.speed if request.speed is not None else DEFAULT_SPEED
 
     try:
-        try:
-            await asyncio.wait_for(inference_lock.acquire(), timeout=0.05)
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=429, detail="服务器正忙，请稍后重试")
+        # 带有客户端感知（is_disconnected）的排队机制
+        while True:
+            if await request.is_disconnected():
+                print("[TTS] Client disconnected before acquiring lock, aborting.")
+                raise HTTPException(status_code=499, detail="Client Closed Request")
+            try:
+                await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
+                break
+            except asyncio.TimeoutError:
+                continue
 
         try:
             loop = asyncio.get_running_loop()
@@ -1194,11 +1265,17 @@ async def tts_stream_endpoint(
     lock_acquired = False
     session = None
     try:
-        try:
-            await asyncio.wait_for(inference_lock.acquire(), timeout=0.05)
-            lock_acquired = True
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=429, detail="服务器正忙，请稍后重试")
+        # 带有客户端感知（is_disconnected）的排队机制
+        while True:
+            if await request.is_disconnected():
+                print("[TTS] Client disconnected before acquiring lock, aborting.")
+                raise HTTPException(status_code=499, detail="Client Closed Request")
+            try:
+                await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
+                lock_acquired = True
+                break
+            except asyncio.TimeoutError:
+                continue
 
         session = TTSStreamSession(
             pipeline=selected_pipeline,
@@ -1228,11 +1305,15 @@ async def tts_stream_endpoint(
         try:
             yield first_chunk
             while True:
+                if await request.is_disconnected():
+                    print("[TTS] Client disconnected during generation, aborting.")
+                    break
                 chunk = await asyncio.to_thread(session.read_chunk)
                 if not chunk:
                     break
                 yield chunk
-            await asyncio.to_thread(session.finish)
+            if not await request.is_disconnected():
+                await asyncio.to_thread(session.finish)
         except AudioEncodingError as error:
             print(f"[ERROR] Stream encoding failed: {error}")
         finally:

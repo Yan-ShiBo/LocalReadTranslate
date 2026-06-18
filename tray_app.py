@@ -199,7 +199,9 @@ class TrayApp:
         self.is_running = False
         self._lock = threading.Lock()
         self.python_exe = find_conda_python(CONDA_ENV_NAME)
-        self._reconcile_saved_auto_start()
+        # 缓存开机自启状态，避免右键托盘菜单渲染时同步拉起 PowerShell 子进程导致系统假死
+        self.auto_start_cached = bool(self.settings.get("auto_start", False))
+        threading.Thread(target=self._init_and_reconcile_auto_start, daemon=True).start()
 
     def get_health(self, port=DEFAULT_PORT):
         try:
@@ -247,6 +249,7 @@ class TrayApp:
             env["KOKORO_PORT"] = str(DEFAULT_PORT)
             env["KOKORO_VOICE"] = self.settings["voice"]
             env["KOKORO_SPEED"] = str(self.settings["speed"])
+            env["KOKORO_TRAY_PID"] = str(os.getpid())
 
             # Start server process (hidden, no window)
             startupinfo = subprocess.STARTUPINFO()
@@ -342,38 +345,42 @@ class TrayApp:
                 pass
         print(f"[Kokoro TTS] {title}: {message}")
 
-    def _reconcile_saved_auto_start(self):
-        desired = bool(self.settings.get("auto_start", False))
+    def _init_and_reconcile_auto_start(self):
         try:
-            actual = reconcile_startup_shortcut(
-                desired,
-                TRAY_LAUNCHER,
-                SCRIPT_DIR,
-            )
-        except StartupShortcutError as error:
-            self.settings["auto_start"] = False
-            self.show_error("Auto-start", str(error))
-            return
-        self.settings["auto_start"] = actual
+            # 在后台线程中检查快捷方式实际是否存在，避免卡死托盘启动
+            actual = inspect_startup_shortcut(TRAY_LAUNCHER, SCRIPT_DIR)
+            self.auto_start_cached = actual
+            
+            desired = bool(self.settings.get("auto_start", False))
+            if desired != actual:
+                actual = reconcile_startup_shortcut(desired, TRAY_LAUNCHER, SCRIPT_DIR)
+                self.auto_start_cached = actual
+        except Exception:
+            pass
+        self.settings["auto_start"] = self.auto_start_cached
+        save_settings(self.settings)
+        if self.tray_icon:
+            self.tray_icon.menu = self._build_menu()
 
     def is_auto_start_enabled(self):
-        return inspect_startup_shortcut(TRAY_LAUNCHER, SCRIPT_DIR)
+        return self.auto_start_cached
 
     def toggle_auto_start(self, _=None):
-        previous = bool(self.settings.get("auto_start", False))
+        previous = self.auto_start_cached
         try:
-            requested = not self.is_auto_start_enabled()
+            requested = not previous
             actual = reconcile_startup_shortcut(
                 requested,
                 TRAY_LAUNCHER,
                 SCRIPT_DIR,
             )
+            self.auto_start_cached = actual
         except StartupShortcutError as error:
-            self.settings["auto_start"] = previous
+            self.auto_start_cached = previous
             self.show_error("Auto-start", str(error))
             return
 
-        self.settings["auto_start"] = actual
+        self.settings["auto_start"] = self.auto_start_cached
         save_settings(self.settings)
         if self.tray_icon:
             self.tray_icon.menu = self._build_menu()

@@ -2647,6 +2647,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     if (e.target.closest(".tts-settings-panel") || e.target.closest(".tts-settings-gear")) {
       return;
     }
+    // 忽略输入框、文本域和富文本编辑器的选词，避免干扰用户正常输入行为
+    if (e.target.closest("input, textarea, [contenteditable='true']")) {
+      removeButton();
+      return;
+    }
 
     setTimeout(() => {
       const text = getSelectedText();
