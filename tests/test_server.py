@@ -314,6 +314,59 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "Local Ollama translation failed")
         self.assertNotIn("secret model path", response.text)
 
+    def test_formula_verbalize_uses_local_ollama(self):
+        with patch.object(
+            server,
+            "_call_ollama_formula_verbalization",
+            create=True,
+            return_value=["x squared plus y squared equals z squared"],
+        ) as call:
+            response = self.client.post(
+                "/formula/verbalize",
+                json={
+                    "formulas": ["x^2 + y^2 = z^2"],
+                    "context": "Pythagorean theorem",
+                    "model": "translategemma:4b",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["verbalizations"],
+            ["x squared plus y squared equals z squared"],
+        )
+        self.assertEqual(payload["model"], "translategemma:4b")
+        call.assert_called_once_with(
+            ["x^2 + y^2 = z^2"],
+            "translategemma:4b",
+            "Pythagorean theorem",
+        )
+
+    def test_formula_verbalize_hides_ollama_errors(self):
+        with patch.object(
+            server,
+            "_call_ollama_formula_verbalization",
+            create=True,
+            side_effect=RuntimeError("secret formula prompt"),
+        ):
+            response = self.client.post(
+                "/formula/verbalize",
+                json={"formulas": ["\\begin{matrix}a&b\\end{matrix}"]},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"], "Local formula verbalization failed")
+        self.assertNotIn("secret formula prompt", response.text)
+
+    def test_formula_verbalization_parser_accepts_json_array(self):
+        parsed = server._parse_formula_verbalizations(
+            '["x squared", "alpha over beta"]',
+            2,
+        )
+
+        self.assertEqual(parsed, ["x squared", "alpha over beta"])
+
     def test_translate_request_validation(self):
         cases = [
             {"text": "Hello", "model": "bad model"},

@@ -76,6 +76,7 @@ SUPPORTED_AUDIO_FORMATS = {"wav", "ogg"}
 STREAM_CHUNK_BYTES = 16384
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_TRANSLATE_MODEL = os.environ.get("OLLAMA_TRANSLATE_MODEL", "qwen3:14b")
+OLLAMA_FORMULA_MODEL = os.environ.get("OLLAMA_FORMULA_MODEL", "translategemma:4b")
 OLLAMA_TRANSLATE_TIMEOUT = float(os.environ.get("OLLAMA_TRANSLATE_TIMEOUT", "90"))
 
 if VOICE not in AVAILABLE_VOICES:
@@ -190,7 +191,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.4.0",
+    version="1.5.0",
     lifespan=lifespan,
 )
 
@@ -265,6 +266,47 @@ class TranslateResponse(BaseModel):
     translated_text: str
     model: str
     target_language: str
+    elapsed: float
+
+
+class FormulaVerbalizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    formulas: list[str] = Field(min_length=1, max_length=20)
+    context: Optional[str] = Field(default=None, max_length=4000)
+    model: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("formulas")
+    @classmethod
+    def validate_formulas(cls, value):
+        cleaned = []
+        for formula in value:
+            if not isinstance(formula, str):
+                raise ValueError("formula must be text")
+            formula = formula.strip()
+            if not formula:
+                raise ValueError("formula cannot be blank")
+            if len(formula) > 1000:
+                raise ValueError("formula is too long")
+            cleaned.append(formula)
+        return cleaned
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value):
+        if value is None:
+            return value
+        model = value.strip()
+        if not model:
+            raise ValueError("model cannot be blank")
+        if any(ch.isspace() for ch in model):
+            raise ValueError("model cannot contain whitespace")
+        return model
+
+
+class FormulaVerbalizeResponse(BaseModel):
+    verbalizations: list[str]
+    model: str
     elapsed: float
 
 
@@ -463,6 +505,99 @@ def _call_ollama_translate(text: str, model: str, target_language: str) -> str:
     if not translated:
         raise RuntimeError("Ollama returned an empty translation")
     return translated
+
+
+def _clean_formula_verbalization(value: str) -> str:
+    cleaned = _clean_translation_response(value)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.strip("-*0123456789. )(").strip()
+    if not cleaned:
+        return "formula omitted"
+    if len(cleaned) > 220:
+        cleaned = cleaned[:220].rsplit(" ", 1)[0].strip()
+    return cleaned or "formula omitted"
+
+
+def _parse_formula_verbalizations(raw: str, expected_count: int) -> list[str]:
+    cleaned = _clean_translation_response(raw)
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            parsed = parsed.get("verbalizations") or parsed.get("formulas")
+        if isinstance(parsed, list):
+            values = [_clean_formula_verbalization(str(item)) for item in parsed]
+            if len(values) >= expected_count:
+                return values[:expected_count]
+    except json.JSONDecodeError:
+        pass
+
+    lines = [
+        _clean_formula_verbalization(line)
+        for line in cleaned.splitlines()
+        if line.strip()
+    ]
+    if len(lines) >= expected_count:
+        return lines[:expected_count]
+    return lines + ["formula omitted"] * (expected_count - len(lines))
+
+
+def _call_ollama_formula_verbalization(
+    formulas: list[str],
+    model: str,
+    context: Optional[str] = None,
+) -> list[str]:
+    context_block = (context or "").strip()
+    prompt = {
+        "context": context_block[:4000],
+        "formulas": formulas,
+    }
+    payload = {
+        "model": model,
+        "stream": False,
+        "system": (
+            "You convert math formulas into concise spoken English for text-to-speech. "
+            "Describe what is written; never solve, simplify, calculate determinants, infer "
+            "missing meanings, or expand beyond the formula. If the formula is a matrix, say "
+            "it is a matrix and read its rows or entries. Use nearby context only to choose "
+            "natural wording. Return only a JSON array of strings, one spoken description "
+            "per input formula, in the same order. Avoid LaTeX, symbols, markdown, and notes. "
+            "Example: input '\\begin{matrix} a & b \\\\ c & d \\end{matrix}' -> "
+            "'a two by two matrix with first row a, b, and second row c, d'. "
+            "Example: input '\\frac{x}{y}' -> 'x over y'."
+        ),
+        "prompt": json.dumps(prompt, ensure_ascii=False),
+        "options": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+        },
+    }
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib_request.Request(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib_request.urlopen(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib_error.HTTPError as error:
+        raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
+    except urllib_error.URLError as error:
+        raise RuntimeError("Cannot connect to Ollama") from error
+    except TimeoutError as error:
+        raise RuntimeError("Ollama formula verbalization timed out") from error
+
+    try:
+        response_payload = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Ollama returned invalid JSON") from error
+
+    return _parse_formula_verbalizations(
+        response_payload.get("response", ""),
+        len(formulas),
+    )
 
 
 def _stream_segment_with_fade(
@@ -733,6 +868,34 @@ async def translate_endpoint(request: TranslateRequest):
     )
 
 
+@app.post("/formula/verbalize", response_model=FormulaVerbalizeResponse)
+async def formula_verbalize_endpoint(request: FormulaVerbalizeRequest):
+    """Convert formulas into concise spoken English through local Ollama."""
+    model = request.model or OLLAMA_FORMULA_MODEL
+    try:
+        t0 = time.perf_counter()
+        verbalizations = await asyncio.to_thread(
+            _call_ollama_formula_verbalization,
+            request.formulas,
+            model,
+            request.context,
+        )
+        elapsed = time.perf_counter() - t0
+        print(
+            f"[FORMULA] {len(request.formulas)} formulas, model={model}, "
+            f"took {elapsed:.2f}s"
+        )
+    except Exception as error:
+        print(f"[ERROR] Formula verbalization failed: {error}")
+        raise HTTPException(status_code=502, detail="Local formula verbalization failed")
+
+    return FormulaVerbalizeResponse(
+        verbalizations=verbalizations,
+        model=model,
+        elapsed=round(elapsed, 3),
+    )
+
+
 @app.post(
     "/tts",
     response_class=Response,
@@ -918,6 +1081,7 @@ async def health_check():
         "default_speed": DEFAULT_SPEED,
         "ollama_base_url": OLLAMA_BASE_URL,
         "default_translate_model": OLLAMA_TRANSLATE_MODEL,
+        "default_formula_model": OLLAMA_FORMULA_MODEL,
     }
 
 

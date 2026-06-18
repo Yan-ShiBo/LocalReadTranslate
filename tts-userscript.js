@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.7.0
+// @version      1.8.0
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -30,6 +30,8 @@ const KokoroTTSCore = (() => {
   const OGG_OPUS_MIME = 'audio/ogg; codecs="opus"';
   const OGG_MIME = "audio/ogg";
   const WAV_MIME = "audio/wav";
+  const CJK_PATTERN = /[\u3400-\u9FFF\uF900-\uFAFF]/;
+  const FORMULA_PLACEHOLDER_PREFIX = "__LOCAL_READ_FORMULA_";
 
   function createRequestGate() {
     let generation = 0;
@@ -177,6 +179,179 @@ const KokoroTTSCore = (() => {
     );
   }
 
+  function countMatches(text, pattern) {
+    const matches = String(text || "").match(pattern);
+    return matches ? matches.length : 0;
+  }
+
+  function cjkRatio(text) {
+    const normalized = String(text || "").replace(/\s+/g, "");
+    if (!normalized) return 0;
+    return countMatches(normalized, /[\u3400-\u9FFF\uF900-\uFAFF]/g) / normalized.length;
+  }
+
+  function verbalizeSimpleFormula(formula) {
+    let spoken = String(formula || "").trim();
+    if (!spoken || spoken.length > 120) return "formula omitted";
+
+    spoken = spoken
+      .replace(/^(\$\$?|\s)+|(\$\$?|\s)+$/g, "")
+      .replace(/^\\\(|\\\)$/g, "")
+      .replace(/^\\\[|\\\]$/g, "");
+
+    if (/\\begin|\\matrix|\\cases|\\left|\\right/.test(spoken)) {
+      return "formula omitted";
+    }
+
+    spoken = spoken
+      .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "$1 over $2")
+      .replace(/\\sqrt\{([^{}]+)\}/g, "square root of $1")
+      .replace(/\\sum/g, "summation")
+      .replace(/\\int/g, "integral")
+      .replace(/\\alpha/g, "alpha")
+      .replace(/\\beta/g, "beta")
+      .replace(/\\gamma/g, "gamma")
+      .replace(/\\delta/g, "delta")
+      .replace(/\\lambda/g, "lambda")
+      .replace(/\\mu/g, "mu")
+      .replace(/\\pi/g, "pi")
+      .replace(/\\theta/g, "theta")
+      .replace(/\^2\b/g, " squared")
+      .replace(/\^3\b/g, " cubed")
+      .replace(/\^\{([^{}]+)\}/g, " to the power of $1")
+      .replace(/_(\w+)\b/g, " sub $1")
+      .replace(/_\{([^{}]+)\}/g, " sub $1")
+      .replace(/=/g, " equals ")
+      .replace(/\+/g, " plus ")
+      .replace(/(?<=\S)-(?=\S)/g, " minus ")
+      .replace(/\*/g, " times ")
+      .replace(/\//g, " over ")
+      .replace(/[{}\\]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!spoken || spoken.length > 160 || /[^\w\s.,+\-*/=()]/.test(spoken)) {
+      return "formula omitted";
+    }
+    return `formula: ${spoken}`;
+  }
+
+  function formulaPlaceholder(index) {
+    return `${FORMULA_PLACEHOLDER_PREFIX}${index}__`;
+  }
+
+  function formulaFallback(formulas, body) {
+    if (!formulas) return "formula omitted";
+    const normalized = String(body || "").trim();
+    if (!normalized) return "formula omitted";
+    const index = formulas.length;
+    formulas.push(normalized);
+    return formulaPlaceholder(index);
+  }
+
+  function replaceFormulaDelimiters(text, formulas = null) {
+    const replaceFormula = (_, body) => {
+      const spoken = verbalizeSimpleFormula(body);
+      return ` ${spoken === "formula omitted" ? formulaFallback(formulas, body) : spoken} `;
+    };
+    return String(text || "")
+      .replace(/\$\$([\s\S]*?)\$\$/g, replaceFormula)
+      .replace(/\\\[([\s\S]*?)\\\]/g, replaceFormula)
+      .replace(/\\\(([\s\S]*?)\\\)/g, replaceFormula)
+      .replace(/\$([^$\n]{2,160})\$/g, replaceFormula);
+  }
+
+  function looksLikeMathLine(line) {
+    const value = String(line || "").trim();
+    if (value.includes(FORMULA_PLACEHOLDER_PREFIX)) return false;
+    if (value.length < 3 || value.length > 160) return false;
+    if (/\\(?:begin|matrix|cases|left|right|frac|sqrt|sum|int|alpha|beta|gamma|delta|lambda|mu|pi|theta)\b/.test(value)) {
+      return true;
+    }
+    const mathMarks = countMatches(value, /[=^_∑Σ√∫≈≤≥÷×]/g);
+    return mathMarks >= 1 && /[A-Za-z0-9]/.test(value);
+  }
+
+  function stripUnreadableReadText(text, formulas = null) {
+    let value = String(text || "");
+    value = value
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/~~~[\s\S]*?~~~/g, " ")
+      .replace(/`[^`\n]*`/g, " ")
+      .replace(/\[([^\]\n]{1,80})\]\((?:https?:\/\/|mailto:)[^)]+\)/g, "$1")
+      .replace(/\bhttps?:\/\/\S+/gi, " ")
+      .replace(/\bwww\.\S+/gi, " ")
+      .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, " ")
+      .replace(/\[\d+(?:,\s*\d+)*\]/g, " ")
+      .replace(/\(\s*(?:fig|figure|table|eq|equation)\.?\s*\d+\s*\)/gi, " ");
+
+    value = replaceFormulaDelimiters(value, formulas);
+
+    const lines = value.split(/\r?\n/);
+    const kept = [];
+    for (const rawLine of lines) {
+      let line = rawLine.trim();
+      if (!line) {
+        kept.push("");
+        continue;
+      }
+      if (/^\s*>/.test(line) || (line.match(/\|/g) || []).length >= 2) {
+        continue;
+      }
+      if (cjkRatio(line) >= 0.25) {
+        continue;
+      }
+      if (looksLikeMathLine(line)) {
+        const spoken = verbalizeSimpleFormula(line);
+        line = spoken === "formula omitted" ? formulaFallback(formulas, line) : spoken;
+      }
+      line = line
+        .replace(/[\u3400-\u9FFF\uF900-\uFAFF]+/g, " ")
+        .replace(/[•◆◇■□●○★☆※→←↑↓↔↗↘↙↖]+/g, " ")
+        .replace(/[^\S\r\n]+/g, " ")
+        .replace(/\s+([.,;:!?])/g, "$1")
+        .trim();
+      if (line) kept.push(line);
+    }
+
+    return kept
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim();
+  }
+
+  function prepareTextForRead(text) {
+    const plan = prepareTextForReadPlan(text);
+    const readableText = applyFormulaVerbalizations(
+      plan.text,
+      plan.formulas.map(() => "formula omitted")
+    );
+    return { ...plan, text: readableText, empty: readableText.length === 0 };
+  }
+
+  function prepareTextForReadPlan(text) {
+    const original = String(text || "");
+    const formulas = [];
+    const readableText = stripUnreadableReadText(original, formulas);
+    return {
+      text: readableText,
+      formulas,
+      changed: readableText !== original.trim(),
+      removedChinese: CJK_PATTERN.test(original) && !CJK_PATTERN.test(readableText),
+      empty: readableText.length === 0,
+    };
+  }
+
+  function applyFormulaVerbalizations(text, verbalizations = []) {
+    let result = String(text || "");
+    for (let index = 0; index < verbalizations.length; index += 1) {
+      const spoken = String(verbalizations[index] || "formula omitted").trim() || "formula omitted";
+      result = result.split(formulaPlaceholder(index)).join(spoken);
+    }
+    return result.replace(new RegExp(`${FORMULA_PLACEHOLDER_PREFIX}\\d+__`, "g"), "formula omitted").trim();
+  }
+
   function createAppendQueue(sourceBuffer, mediaSource) {
     const queue = [];
     const endWaiters = [];
@@ -296,6 +471,7 @@ const KokoroTTSCore = (() => {
 
   return {
     WEBM_OPUS_MIME,
+    applyFormulaVerbalizations,
     choosePlaybackMode,
     createAppendQueue,
     createRequestGate,
@@ -303,9 +479,13 @@ const KokoroTTSCore = (() => {
     isUnsupportedMediaError,
     normalizeAudioBuffer,
     normalizeAudioBlob,
+    prepareTextForRead,
+    prepareTextForReadPlan,
     releaseAudio,
     selectBlobAudioFormat,
+    stripUnreadableReadText,
     supportsWebMOpus,
+    verbalizeSimpleFormula,
   };
 })();
 
@@ -327,6 +507,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   const API_STREAM_URL = API_BASE + "/tts/stream";
   const API_TRANSLATE_URL = API_BASE + "/translate";
   const API_TRANSLATE_HEALTH_URL = API_BASE + "/translate/health";
+  const API_FORMULA_VERBALIZE_URL = API_BASE + "/formula/verbalize";
   const SHORTCUT = { ctrl: true, shift: true, key: "S" }; // Ctrl+Shift+S
 
   /* CATALOG:START */
@@ -1554,6 +1735,81 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
+  async function fetchFormulaVerbalizations(formulas, context, generation) {
+    if (!formulas || formulas.length === 0) return [];
+    return new Promise((resolve, reject) => {
+      const request = GM_xmlhttpRequest({
+        method: "POST",
+        url: API_FORMULA_VERBALIZE_URL,
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        data: JSON.stringify({
+          formulas,
+          context: String(context || "").slice(0, 4000),
+        }),
+        responseType: "json",
+        timeout: 120000,
+        onload: (response) => {
+          if (!requestGate.isCurrent(generation)) return;
+          requestGate.finish(generation);
+          if (response.status >= 200 && response.status < 300) {
+            try {
+              const payload = response.response || JSON.parse(response.responseText || "{}");
+              resolve(Array.isArray(payload.verbalizations) ? payload.verbalizations : []);
+            } catch (error) {
+              reject(error);
+            }
+          } else {
+            let detail = response.statusText || "Formula verbalization failed";
+            try {
+              const payload = JSON.parse(response.responseText || "{}");
+              if (payload.detail) detail = payload.detail;
+            } catch {}
+            reject(new Error(`Server returned ${response.status}: ${detail}`));
+          }
+        },
+        onerror: () => {
+          if (!requestGate.isCurrent(generation)) return;
+          requestGate.finish(generation);
+          reject(new Error("Cannot connect to formula verbalization server."));
+        },
+        ontimeout: () => {
+          if (!requestGate.isCurrent(generation)) return;
+          requestGate.finish(generation);
+          reject(new Error("Formula verbalization timeout."));
+        },
+        onabort: () => reject(new Error("Formula verbalization cancelled.")),
+      });
+      if (!requestGate.attach(generation, request)) {
+        reject(new Error("Formula verbalization cancelled."));
+      }
+    });
+  }
+
+  async function prepareReadableTextForSpeak(text, generation) {
+    const plan = KokoroTTSCore.prepareTextForReadPlan(text);
+    if (plan.formulas.length === 0) {
+      return plan;
+    }
+    const verbalizations = await fetchFormulaVerbalizations(
+      plan.formulas,
+      text,
+      generation
+    );
+    const readableText = KokoroTTSCore.applyFormulaVerbalizations(
+      plan.text,
+      verbalizations
+    );
+    return {
+      ...plan,
+      text: readableText,
+      changed: true,
+      empty: readableText.length === 0,
+    };
+  }
+
   function removeTranslationCard(container) {
     if (!container) return;
     const card = container.querySelector(".tts-translation-card");
@@ -1932,6 +2188,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
 
     try {
+      const readPlan = await prepareReadableTextForSpeak(text, generation);
+      if (!requestGate.isCurrent(generation)) return;
+      if (readPlan.empty) {
+        throw new Error("No readable English text after cleanup.");
+      }
+      const readText = readPlan.text;
       const playbackMode = KokoroTTSCore.choosePlaybackMode(
         window.MediaSource,
         window.location.origin,
@@ -1939,15 +2201,15 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       );
       if (playbackMode === "stream" && typeof fetch === "function") {
         try {
-          await playStreamingAudio(text, generation, btnElement, buttonContainer);
+          await playStreamingAudio(readText, generation, btnElement, buttonContainer);
         } catch (streamError) {
           if (!requestGate.isCurrent(generation)) return;
           console.warn("[Kokoro TTS] Streaming failed; falling back to decoded WAV", streamError);
           stopAudio();
-          await playDecodedWavAudio(text, generation, btnElement, buttonContainer);
+          await playDecodedWavAudio(readText, generation, btnElement, buttonContainer);
         }
       } else {
-        await playDecodedWavAudio(text, generation, btnElement, buttonContainer);
+        await playDecodedWavAudio(readText, generation, btnElement, buttonContainer);
       }
     } catch (err) {
       if (!requestGate.isCurrent(generation)) return;

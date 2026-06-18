@@ -15,6 +15,8 @@ test("userscript core can be imported without browser globals", () => {
   assert.equal(typeof core.selectBlobAudioFormat, "function");
   assert.equal(typeof core.normalizeAudioBlob, "function");
   assert.equal(typeof core.normalizeAudioBuffer, "function");
+  assert.equal(typeof core.prepareTextForReadPlan, "function");
+  assert.equal(typeof core.applyFormulaVerbalizations, "function");
 });
 
 
@@ -232,4 +234,54 @@ test("audio buffer normalization accepts array buffers, typed arrays, and blobs"
   assert.deepEqual([...new Uint8Array(await normalizeAudioBuffer(typed))], [4, 5, 6]);
   assert.deepEqual([...new Uint8Array(await normalizeAudioBuffer(blob))], [7, 8, 9]);
   await assert.rejects(() => normalizeAudioBuffer("bad"), /Unsupported audio response/);
+});
+
+
+test("read preparation removes Chinese, URLs, code blocks, and table fragments", () => {
+  const { prepareTextForRead } = require("../tts-userscript.js");
+  const prepared = prepareTextForRead(`
+中文段落应该被清洗掉。
+English text should remain. Visit https://example.com for details [12].
+\`\`\`
+const noisy = true;
+\`\`\`
+| a | b |
+`);
+
+  assert.equal(prepared.text, "English text should remain. Visit for details.");
+  assert.equal(prepared.removedChinese, true);
+  assert.equal(prepared.empty, false);
+});
+
+
+test("simple formulas are verbalized by rule before TTS", () => {
+  const { prepareTextForRead } = require("../tts-userscript.js");
+  const prepared = prepareTextForRead("The loss is $x^2 + y^2 = z^2$.");
+
+  assert.match(prepared.text, /formula: x squared plus y squared equals z squared/i);
+});
+
+
+test("complex formulas are collected for LLM verbalization fallback", () => {
+  const { applyFormulaVerbalizations, prepareTextForReadPlan } = require("../tts-userscript.js");
+  const prepared = prepareTextForReadPlan("Use $$\\begin{matrix} a & b \\\\ c & d \\end{matrix}$$ here.");
+
+  assert.equal(prepared.formulas.length, 1);
+  assert.match(prepared.text, /__LOCAL_READ_FORMULA_0__/);
+  assert.equal(
+    applyFormulaVerbalizations(prepared.text, ["a two by two matrix with entries a, b, c, and d"]),
+    "Use a two by two matrix with entries a, b, c, and d here."
+  );
+});
+
+
+test("bare LaTeX formulas use rules or LLM fallback", () => {
+  const { prepareTextForReadPlan } = require("../tts-userscript.js");
+  const simple = prepareTextForReadPlan("\\frac{x}{y}");
+  const complex = prepareTextForReadPlan("\\begin{cases} x & x > 0 \\\\ -x & x < 0 \\end{cases}");
+
+  assert.equal(simple.formulas.length, 0);
+  assert.match(simple.text, /formula: x over y/i);
+  assert.equal(complex.formulas.length, 1);
+  assert.match(complex.text, /__LOCAL_READ_FORMULA_0__/);
 });

@@ -19,6 +19,8 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - `Translate`：调用本机 Ollama 模型翻译
 - 在设置面板里切换声音、语速、翻译模型和目标语言
 - 查看本地 TTS 服务与 Ollama 模型状态
+- `Read` 会先清洗文本：中文、代码块、URL、表格碎片和噪声符号不会送进英文 TTS
+- 简单公式会规则口语化，复杂公式会交给本地 `translategemma:4b` 生成英文口语描述
 
 ## 重要：需要本地服务
 
@@ -34,6 +36,8 @@ ollama pull qwen3:14b
 ```
 
 推荐实时翻译优先使用 `translategemma:4b`，速度通常比 Qwen3 系列更适合划词场景。
+
+复杂公式口语化也默认使用 `translategemma:4b`，可在服务端通过 `OLLAMA_FORMULA_MODEL` 覆盖。如果公式口语化变慢，通常是 Ollama 第一次加载模型。
 
 ## 隐私说明
 

@@ -19,6 +19,8 @@
 - **System tray app** — Runs silently in the background, right-click to control, with optional login auto-start
 - **Browser settings panel** — Change voice, speed and translation model from a floating gear icon
 - **Local translation** — Select text and translate it locally through Ollama (`qwen3:14b` by default, switchable to `translategemma:4b` or a custom local model)
+- **Read-safe cleanup** — Before read-aloud, Chinese text, code blocks, URLs, tables and noisy symbols are removed so Kokoro receives clean English
+- **Formula speech fallback** — Simple formulas are verbalized by rules; complex formulas are sent to local `translategemma:4b` for spoken English descriptions
 - **Playback progress** — Floating button shows a horizontal progress fill; streaming mode shows played seconds until final duration is known
 - **GPU-accelerated** — Near real-time inference on NVIDIA GPUs
 - **Fully offline** — No internet required after initial model download (~200MB)
@@ -94,7 +96,7 @@ The default translation model is `qwen3:14b`. Override it with `OLLAMA_TRANSLATE
 
 1. Open any webpage
 2. **Select text** → floating `Read` and `Translate` buttons appear
-3. Click `Read` for local TTS, or `Translate` for local Ollama translation
+3. Click `Read` for cleaned English TTS, or `Translate` for local Ollama translation
 
 > ⌨️ Shortcut: `Ctrl+Shift+S` to read selected text directly.
 
@@ -162,6 +164,19 @@ Returns `audio/webm; codecs="opus"` as a continuous stream for MediaSource playb
 ```
 
 Returns JSON with `translated_text`, `model`, `target_language` and `elapsed`.
+
+### `POST /formula/verbalize`
+
+```json
+{
+  "formulas": ["\\begin{matrix}a&b\\\\c&d\\end{matrix}"],
+  "context": "Optional nearby text",
+  "model": "translategemma:4b"
+}
+```
+
+Returns concise spoken English descriptions for formulas that cannot be handled by local rules.
+`model` is optional; if omitted, the server uses `OLLAMA_FORMULA_MODEL` (`translategemma:4b` by default).
 
 ### `GET /translate/health?model=qwen3:14b`
 
