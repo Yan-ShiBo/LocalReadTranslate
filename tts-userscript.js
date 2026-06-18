@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.9.0
+// @version      1.10.0
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -1395,8 +1395,216 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   //  Core logic
   // ════════════════════════════════════════════════════════
 
+  function normalizeSelectionOutput(text) {
+    return String(text || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function normalizeMathFormulaText(text) {
+    return String(text || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/\s+/g, " ")
+      .replace(/\s*([{}_^=,+*/()])\s*/g, "$1")
+      .replace(/\s*(->|→|\\to|\\mapsto)\s*/g, " \\to ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function mathOperatorToTex(value) {
+    const operator = String(value || "").trim();
+    const operators = {
+      "→": "\\to",
+      "⇒": "\\Rightarrow",
+      "↦": "\\mapsto",
+      "−": "-",
+      "×": "\\times",
+      "÷": "\\div",
+      "≤": "\\le",
+      "≥": "\\ge",
+      "≠": "\\ne",
+      "≈": "\\approx",
+      "∈": "\\in",
+      "∑": "\\sum",
+      "∫": "\\int",
+    };
+    return operators[operator] || operator;
+  }
+
+  function mathMlChildrenToTex(element) {
+    return Array.from(element.childNodes || [])
+      .map(mathMlNodeToTex)
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function mathMlNodeToTex(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) {
+      return String(node.nodeValue || "").trim();
+    }
+    if (node.nodeType !== 1) return "";
+
+    const element = node;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    const children = Array.from(element.childNodes || []);
+    const child = (index) => mathMlNodeToTex(children[index]);
+
+    if (tag === "annotation") return "";
+    if (tag === "semantics") {
+      const visible = children.find((item) => {
+        const name = (item.localName || item.tagName || "").toLowerCase();
+        return name !== "annotation" && name !== "annotation-xml";
+      });
+      return mathMlNodeToTex(visible);
+    }
+    if (tag === "math" || tag === "mrow" || tag === "mpadded" || tag === "mstyle") {
+      return mathMlChildrenToTex(element);
+    }
+    if (tag === "mi" || tag === "mn" || tag === "mtext") {
+      return String(element.textContent || "").trim();
+    }
+    if (tag === "mo") {
+      return mathOperatorToTex(element.textContent);
+    }
+    if (tag === "msub") {
+      return `${child(0)}_{${child(1)}}`;
+    }
+    if (tag === "msup") {
+      return `${child(0)}^{${child(1)}}`;
+    }
+    if (tag === "msubsup") {
+      return `${child(0)}_{${child(1)}}^{${child(2)}}`;
+    }
+    if (tag === "mfrac") {
+      return `\\frac{${child(0)}}{${child(1)}}`;
+    }
+    if (tag === "msqrt") {
+      return `\\sqrt{${mathMlChildrenToTex(element)}}`;
+    }
+    if (tag === "mroot") {
+      return `\\sqrt[${child(1)}]{${child(0)}}`;
+    }
+    if (tag === "mfenced") {
+      const open = element.getAttribute("open") || "(";
+      const close = element.getAttribute("close") || ")";
+      return `${open}${mathMlChildrenToTex(element)}${close}`;
+    }
+    if (tag === "mtable") {
+      const rows = children.map(mathMlNodeToTex).filter(Boolean);
+      return `\\begin{matrix}${rows.join(" \\\\ ")}\\end{matrix}`;
+    }
+    if (tag === "mtr" || tag === "mlabeledtr") {
+      return children.map(mathMlNodeToTex).filter(Boolean).join(" & ");
+    }
+    if (tag === "mtd") {
+      return mathMlChildrenToTex(element);
+    }
+    return mathMlChildrenToTex(element);
+  }
+
+  function findTexAnnotation(element) {
+    const annotations = Array.from(element.querySelectorAll ? element.querySelectorAll("annotation") : []);
+    for (const annotation of annotations) {
+      const encoding = String(annotation.getAttribute("encoding") || "").toLowerCase();
+      if (encoding.includes("tex") || encoding.includes("latex")) {
+        const value = normalizeMathFormulaText(annotation.textContent);
+        if (value) return value;
+      }
+    }
+    return "";
+  }
+
+  function extractMathFormula(element) {
+    if (!element || element.nodeType !== 1) return "";
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+
+    if (tag === "script" && /^math\/tex/i.test(element.getAttribute("type") || "")) {
+      return normalizeMathFormulaText(element.textContent);
+    }
+
+    const attributeNames = ["data-latex", "data-tex", "data-math", "data-mathml"];
+    for (const name of attributeNames) {
+      const value = normalizeMathFormulaText(element.getAttribute(name));
+      if (value) return value;
+    }
+
+    const annotation = findTexAnnotation(element);
+    if (annotation) return annotation;
+
+    const script = element.querySelector && element.querySelector('script[type^="math/tex"]');
+    if (script) {
+      const value = normalizeMathFormulaText(script.textContent);
+      if (value) return value;
+    }
+
+    const mathElement = tag === "math" ? element : element.querySelector && element.querySelector("math");
+    if (mathElement) {
+      const value = normalizeMathFormulaText(mathMlNodeToTex(mathElement));
+      if (value) return value;
+    }
+
+    const aria = normalizeMathFormulaText(element.getAttribute("aria-label"));
+    if (aria && !/^math$/i.test(aria)) return aria;
+
+    return normalizeMathFormulaText(element.textContent);
+  }
+
+  function isSemanticMathElement(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    if (tag === "math" || tag === "mjx-container") return true;
+    if (tag === "script" && /^math\/tex/i.test(element.getAttribute("type") || "")) return true;
+    if (element.classList && element.classList.contains("MathJax")) return true;
+    return ["data-latex", "data-tex", "data-math", "data-mathml"].some((name) =>
+      element.hasAttribute && element.hasAttribute(name)
+    );
+  }
+
+  function serializeSelectionNode(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) return node.nodeValue || "";
+    if (node.nodeType !== 1 && node.nodeType !== 11) return "";
+
+    if (node.nodeType === 1) {
+      const element = node;
+      const tag = (element.localName || element.tagName || "").toLowerCase();
+      if (tag === "style" || tag === "noscript") return "";
+      if (isSemanticMathElement(element)) {
+        const formula = extractMathFormula(element);
+        return formula ? ` [[MATH: ${formula}]] ` : "";
+      }
+      if (tag === "br") return "\n";
+      if (tag === "script") return "";
+    }
+
+    const text = Array.from(node.childNodes || []).map(serializeSelectionNode).join("");
+    if (node.nodeType !== 1) return text;
+
+    const blockTags = new Set([
+      "address", "article", "aside", "blockquote", "div", "dl", "figcaption",
+      "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr",
+      "li", "main", "nav", "ol", "p", "pre", "section", "table", "tr", "ul",
+    ]);
+    const tag = (node.localName || node.tagName || "").toLowerCase();
+    return blockTags.has(tag) ? `\n${text}\n` : text;
+  }
+
   function getSelectedText() {
-    return window.getSelection().toString().trim();
+    const selection = window.getSelection();
+    if (!selection) return "";
+    const plainText = selection.toString().trim();
+    const semanticParts = [];
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      semanticParts.push(serializeSelectionNode(range.cloneContents()));
+    }
+    const semanticText = normalizeSelectionOutput(semanticParts.join("\n"));
+    return semanticText || plainText;
   }
 
   function removeButton() {

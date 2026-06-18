@@ -20,7 +20,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - 在设置面板里切换声音、语速、翻译模型和目标语言
 - 查看本地 TTS 服务与 Ollama 模型状态
 - 英文会尽量原样保留，中文会翻成英文，公式会变成英文口语描述
-- MathJax/LaTeX 选区造成的大量换行会先合并，再交给翻译或朗读稿模型处理
+- MathJax/MathML/LaTeX 会优先提取语义公式，尽量保留下标、上标等结构，再交给翻译或朗读稿模型处理
 
 ## 重要：需要本地服务
 

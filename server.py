@@ -192,7 +192,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.6.0",
+    version="1.6.1",
     lifespan=lifespan,
 )
 
@@ -507,9 +507,9 @@ def _call_ollama_translate(text: str, model: str, target_language: str) -> str:
         "stream": False,
         "system": (
             "You are a precise translation engine. The input may contain web selection "
-            "artifacts, MathJax, LaTeX, or formulas split across many line breaks. "
+            "artifacts, MathJax, LaTeX, formulas wrapped as [[MATH: ...]], or formulas split across many line breaks. "
             f"Translate prose into {target_language}. Preserve meaning, names, and "
-            "numbers. Convert formulas and mathematical symbols into natural spoken "
+            "numbers. Treat text inside [[MATH: ...]] as authoritative formula semantics. Convert formulas and mathematical symbols into natural spoken "
             f"descriptions in {target_language}; do not solve or calculate them. "
             "Remove obvious URL/citation noise. Return only the translated text, with "
             "no reasoning, notes, markdown fences, or explanations."
@@ -611,12 +611,14 @@ def _call_ollama_text_generation(
 def _call_ollama_read_prepare(text: str, model: str) -> str:
     system_prompt = (
         "You prepare selected web text for English text-to-speech. The input may "
-        "contain Chinese, English, LaTeX, MathJax, formula fragments, and artificial "
+        "contain Chinese, English, LaTeX, MathJax, formula fragments, formulas wrapped "
+        "as [[MATH: ...]], and artificial "
         "line breaks from web selection. Produce fluent plain English read-aloud text. "
         "Keep English prose unchanged except for spacing and obvious selection cleanup. "
         "Translate Chinese prose into natural English. Convert formulas, LaTeX, symbols, "
         "and MathJax fragments into concise spoken English descriptions. Do not copy raw "
-        "formula syntax into the output. Read arrows as 'maps to' or 'to', equals signs as "
+        "formula syntax or [[MATH: ...]] wrappers into the output. If [[MATH: ...]] is present, "
+        "treat the inside as the authoritative formula semantics. Read arrows as 'maps to' or 'to', equals signs as "
         "'equals', braces as 'the set of', tuples as 'tuples', and obvious subscripts as "
         "'sub'. No Chinese characters may remain in the output; translate every Chinese "
         "word, including Chinese inside mixed Chinese-English sentences. Describe only "
