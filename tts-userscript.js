@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.10.1
+// @version      1.11.0
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -631,16 +631,21 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   GM_addStyle(`
     /* -- Floating button container -- */
     .tts-float-container {
-      position: absolute;
+      position: fixed;
       z-index: 2147483647;
       pointer-events: auto;
       animation: tts-fade-in 0.2s ease-out;
+      max-width: calc(100vw - 24px);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
     }
 
     .tts-float-actions {
       display: flex;
       align-items: center;
       gap: 8px;
+      justify-content: flex-start;
     }
 
     @keyframes tts-fade-in {
@@ -785,6 +790,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       line-height: 1.55;
+    }
+
+    .tts-float-container.tts-placement-above .tts-translation-card {
+      order: -1;
+      margin-top: 0;
+      margin-bottom: 8px;
     }
 
     .tts-translation-meta {
@@ -1680,7 +1691,60 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }, 150);
   }
 
-  function showButton(x, y, text) {
+  function normalizeSelectionRect(rect) {
+    if (!rect) {
+      return {
+        left: 12,
+        right: 12,
+        top: 12,
+        bottom: 12,
+        width: 0,
+        height: 0,
+      };
+    }
+    return {
+      left: Number.isFinite(rect.left) ? rect.left : 12,
+      right: Number.isFinite(rect.right) ? rect.right : rect.left || 12,
+      top: Number.isFinite(rect.top) ? rect.top : 12,
+      bottom: Number.isFinite(rect.bottom) ? rect.bottom : rect.top || 12,
+      width: Number.isFinite(rect.width) ? rect.width : Math.max(0, (rect.right || 0) - (rect.left || 0)),
+      height: Number.isFinite(rect.height) ? rect.height : Math.max(0, (rect.bottom || 0) - (rect.top || 0)),
+    };
+  }
+
+  function positionFloatingContainer(container, selectionRect) {
+    if (!container || !container.isConnected) return;
+    const rect = normalizeSelectionRect(selectionRect);
+    const margin = 12;
+    const gap = 8;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
+
+    container.style.left = "0px";
+    container.style.top = "0px";
+    container.classList.remove("tts-placement-above", "tts-placement-below");
+
+    const ownRect = container.getBoundingClientRect();
+    const width = Math.min(ownRect.width || 0, viewportWidth - margin * 2);
+    const height = Math.min(ownRect.height || 0, viewportHeight - margin * 2);
+    const anchorCenter = rect.left + (rect.width || 0) / 2;
+    const left = Math.max(
+      margin,
+      Math.min(viewportWidth - width - margin, anchorCenter - width / 2)
+    );
+
+    const topSpace = rect.top - margin;
+    const bottomSpace = viewportHeight - rect.bottom - margin;
+    const useAbove = topSpace >= height + gap || topSpace > bottomSpace;
+    const rawTop = useAbove ? rect.top - height - gap : rect.bottom + gap;
+    const top = Math.max(margin, Math.min(viewportHeight - height - margin, rawTop));
+
+    container.classList.add(useAbove ? "tts-placement-above" : "tts-placement-below");
+    container.style.left = `${Math.round(left)}px`;
+    container.style.top = `${Math.round(top)}px`;
+  }
+
+  function showButton(selectionRect, text) {
     removeButton();
     cancelRequest();
     cancelTranslationRequest();
@@ -1688,6 +1752,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     const container = document.createElement("div");
     container.className = "tts-float-container";
+    container._ttsSelectionRect = normalizeSelectionRect(selectionRect);
     const actions = document.createElement("div");
     actions.className = "tts-float-actions";
 
@@ -1747,21 +1812,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     actions.appendChild(translateBtn);
     container.appendChild(actions);
 
-    const scrollX = window.scrollX || document.documentElement.scrollLeft;
-    const scrollY = window.scrollY || document.documentElement.scrollTop;
-
-    container.style.left = x + scrollX + "px";
-    container.style.top = y + scrollY + 10 + "px";
-
     document.body.appendChild(container);
     floatingBtn = container;
 
     requestAnimationFrame(() => {
-      const rect = container.getBoundingClientRect();
-      if (rect.right > window.innerWidth - 10) {
-        container.style.left =
-          window.innerWidth - rect.width - 10 + scrollX + "px";
-      }
+      positionFloatingContainer(container, container._ttsSelectionRect);
     });
   }
 
@@ -2307,6 +2362,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     card.appendChild(meta);
     card.appendChild(body);
     container.appendChild(card);
+    requestAnimationFrame(() => {
+      positionFloatingContainer(container, container._ttsSelectionRect);
+    });
   }
 
   async function translateSelectedText(text, btnElement, buttonContainer) {
@@ -2698,7 +2756,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         if (selection.rangeCount > 0) {
           const range = selection.getRangeAt(0);
           const rect = range.getBoundingClientRect();
-          showButton(rect.left, rect.bottom, text);
+          showButton(rect, text);
         }
       } else {
         removeButton();
@@ -2742,7 +2800,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         if (selection.rangeCount > 0) {
           const range = selection.getRangeAt(0);
           const rect = range.getBoundingClientRect();
-          showButton(rect.left, rect.bottom, text);
+          showButton(rect, text);
           const btn = floatingBtn.querySelector(".tts-speak-btn");
           if (btn) speak(text, btn);
         }

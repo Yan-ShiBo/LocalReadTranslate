@@ -221,7 +221,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.6.1",
+    version="1.7.0",
     lifespan=lifespan,
 )
 
@@ -548,6 +548,13 @@ def _protect_formulas(text: str) -> tuple[str, list[tuple[str, str]]]:
         return placeholder
 
     protected_text = pattern.sub(replace, text)
+    bare_pattern = re.compile(
+        r"(?<![A-Za-z0-9_\\])("
+        r"\\hat\{?[A-Za-z][A-Za-z0-9]*\}?(?:\([^()\n]+\))?|"
+        r"[A-Za-z][A-Za-z0-9]*_\{?[^{}\s,.;:，。；：)）]+\}?(?:\([^()\n]+\))?"
+        r")(?![A-Za-z0-9_])"
+    )
+    protected_text = bare_pattern.sub(replace, protected_text)
     return protected_text, formulas
 
 
@@ -560,6 +567,138 @@ def _restore_formulas(text: str, formulas: list[tuple[str, str]]) -> str:
             cleaned = f"${content}$"
         result = result.replace(placeholder, cleaned)
     return result
+
+
+def _unwrap_formula_for_translation(formula: str) -> str:
+    cleaned = (formula or "").strip()
+    if cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
+        return cleaned[7:-2].strip()
+    if cleaned.startswith("$$") and cleaned.endswith("$$"):
+        return cleaned[2:-2].strip()
+    if cleaned.startswith("\\[") and cleaned.endswith("\\]"):
+        return cleaned[2:-2].strip()
+    if cleaned.startswith("\\(") and cleaned.endswith("\\)"):
+        return cleaned[2:-2].strip()
+    if cleaned.startswith("$") and cleaned.endswith("$"):
+        return cleaned[1:-1].strip()
+    return cleaned
+
+
+def _display_formula_for_translation(formula: str) -> str:
+    content = _unwrap_formula_for_translation(formula)
+    return f"${content}$" if content else formula.strip()
+
+
+def _normalize_formula_for_description(formula: str) -> str:
+    return (
+        _unwrap_formula_for_translation(formula)
+        .replace("\\rightarrow", "\\to")
+        .replace("\\mapsto", "\\to")
+        .replace("→", "\\to")
+        .replace("⇒", "\\to")
+        .replace("\\left", "")
+        .replace("\\right", "")
+        .strip()
+    )
+
+
+def _describe_formula_atom_zh(expr: str) -> str:
+    value = (expr or "").strip().strip("{} ")
+    if not value:
+        return ""
+
+    hat_match = re.fullmatch(r"\\hat\{?([A-Za-z][A-Za-z0-9]*)\}?(?:\((.+)\))?", value)
+    if hat_match:
+        base, arg = hat_match.groups()
+        desc = f"{base}的估计值"
+        if arg:
+            desc += f"关于{_describe_formula_atom_zh(arg)}的函数"
+        return desc
+
+    sub_func = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)_\{?([^{}()\s]+)\}?\((.+)\)", value)
+    if sub_func:
+        base, sub, arg = sub_func.groups()
+        return f"{base}的下角标{sub}关于{_describe_formula_atom_zh(arg)}的函数"
+
+    sub_match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)_\{?([^{}()\s]+)\}?", value)
+    if sub_match:
+        base, sub = sub_match.groups()
+        return f"{base}的下角标{sub}"
+
+    sup_match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)\^\{?([^{}()\s]+)\}?", value)
+    if sup_match:
+        base, sup = sup_match.groups()
+        if sup == "2":
+            return f"{base}的平方"
+        if sup == "3":
+            return f"{base}的立方"
+        if sup == "T":
+            return f"{base}的转置"
+        if sup == "-1":
+            return f"{base}的逆"
+        return f"{base}的上角标{sup}"
+
+    func_match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)\((.+)\)", value)
+    if func_match:
+        base, arg = func_match.groups()
+        return f"{base}关于{_describe_formula_atom_zh(arg)}的函数"
+
+    frac_match = re.fullmatch(r"\\frac\{(.+)\}\{(.+)\}", value)
+    if frac_match:
+        numerator, denominator = frac_match.groups()
+        return f"{_describe_formula_atom_zh(denominator)} 分之 {_describe_formula_atom_zh(numerator)}"
+
+    sqrt_match = re.fullmatch(r"\\sqrt\{(.+)\}", value)
+    if sqrt_match:
+        return f"根号 {_describe_formula_atom_zh(sqrt_match.group(1))}"
+
+    return value.replace("\\", "").strip()
+
+
+def _split_top_level_formula(text: str, separator: str) -> list[str]:
+    parts = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        elif depth == 0 and text.startswith(separator, i):
+            parts.append(text[start:i].strip())
+            i += len(separator)
+            start = i
+            continue
+        i += 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def _rule_describe_formula_zh(formula: str) -> str:
+    value = _normalize_formula_for_description(formula)
+    if not value:
+        return ""
+
+    arrow_parts = _split_top_level_formula(value, "\\to")
+    if len(arrow_parts) == 2:
+        return (
+            f"{_describe_formula_atom_zh(arrow_parts[0])}"
+            f"映射到{_describe_formula_atom_zh(arrow_parts[1])}"
+        )
+
+    equals_parts = _split_top_level_formula(value, "=")
+    if len(equals_parts) == 2:
+        return (
+            f"{_describe_formula_atom_zh(equals_parts[0])}"
+            f"等于{_describe_formula_atom_zh(equals_parts[1])}"
+        )
+
+    if any(token in value for token in ("\\begin", "\\sum", "\\int", "\\prod", "\\cases")):
+        return ""
+
+    return _describe_formula_atom_zh(value)
 
 
 def _clean_formula_verbalization_zh(value: str) -> str:
@@ -601,17 +740,12 @@ def _call_ollama_formula_verbalization_zh_single(
     model: str,
     context: Optional[str] = None,
 ) -> str:
+    rule_desc = _rule_describe_formula_zh(formula)
+    if rule_desc:
+        return rule_desc
+
     cf = formula.strip()
-    if cf.startswith("[[MATH:") and cf.endswith("]]"):
-        cf = cf[7:-2].strip()
-    elif cf.startswith("$$") and cf.endswith("$$"):
-        cf = cf[2:-2].strip()
-    elif cf.startswith("\\[") and cf.endswith("\\]"):
-        cf = cf[2:-2].strip()
-    elif cf.startswith("\\(") and cf.endswith("\\)"):
-        cf = cf[2:-2].strip()
-    elif cf.startswith("$") and cf.endswith("$"):
-        cf = cf[1:-1].strip()
+    cf = _unwrap_formula_for_translation(cf)
 
     context_block = (context or "").strip()
     prompt = f"Formula: {cf}"
@@ -703,17 +837,14 @@ def _restore_formulas_with_verbalizations(
 ) -> str:
     result = text
     for idx, (placeholder, original) in enumerate(formulas):
-        cleaned = original
-        if cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
-            content = cleaned[7:-2].strip()
-            cleaned = f"${content}$"
+        cleaned = _display_formula_for_translation(original)
             
         desc = ""
         if verbalizations_zh and idx < len(verbalizations_zh):
             desc = verbalizations_zh[idx].strip()
             
         if desc and desc != "公式":
-            replacement = f"{cleaned} ({desc})"
+            replacement = f"{cleaned}（{desc}）"
         else:
             replacement = cleaned
             
@@ -1222,6 +1353,7 @@ async def translate_endpoint(request: TranslateRequest):
         t0 = time.perf_counter()
         # 1. 提取并保护公式，用 __MATH_N__ 占位符替代
         protected_text, formulas = _protect_formulas(text)
+        formula_desc_in_english = target_language.strip().lower().startswith("english")
         
         if formulas:
             # 有公式，并发执行翻译与各公式中文口语化描述，最大化减少延迟
@@ -1232,22 +1364,39 @@ async def translate_endpoint(request: TranslateRequest):
                 model,
                 target_language,
             )
-            # 为每个公式各创建一个独立的并行任务
-            verbalize_tasks = [
-                asyncio.to_thread(
-                    _call_ollama_formula_verbalization_zh_single,
-                    form,
-                    model,
-                    None,
-                )
-                for form in formula_texts
-            ]
+            if formula_desc_in_english:
+                verbalize_tasks = [
+                    asyncio.to_thread(
+                        _call_ollama_formula_verbalization,
+                        [form],
+                        model,
+                        None,
+                    )
+                    for form in formula_texts
+                ]
+            else:
+                # 为每个公式各创建一个独立的并行任务
+                verbalize_tasks = [
+                    asyncio.to_thread(
+                        _call_ollama_formula_verbalization_zh_single,
+                        form,
+                        model,
+                        None,
+                    )
+                    for form in formula_texts
+                ]
             results = await asyncio.gather(
                 translated_raw_task,
                 *verbalize_tasks,
             )
             translated_raw = results[0]
-            verbalizations_zh = results[1:]
+            if formula_desc_in_english:
+                verbalizations_zh = [
+                    value[0] if isinstance(value, list) and value else ""
+                    for value in results[1:]
+                ]
+            else:
+                verbalizations_zh = results[1:]
             # 2. 还原公式，并将 [[MATH: ...]] 渲染为标准 $...$ 且附带中文描述
             translated_text = _restore_formulas_with_verbalizations(
                 translated_raw,
@@ -1374,16 +1523,13 @@ async def tts_endpoint(
     speed = request.speed if request.speed is not None else DEFAULT_SPEED
 
     try:
-        # 带有客户端感知（is_disconnected）的排队机制
-        while True:
-            if http_request and await http_request.is_disconnected():
-                print("[TTS] Client disconnected before acquiring lock, aborting.")
-                raise HTTPException(status_code=499, detail="Client Closed Request")
-            try:
-                await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
-                break
-            except asyncio.TimeoutError:
-                continue
+        if http_request and await http_request.is_disconnected():
+            print("[TTS] Client disconnected before acquiring lock, aborting.")
+            raise HTTPException(status_code=499, detail="Client Closed Request")
+        try:
+            await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=429, detail="Server busy")
 
         try:
             loop = asyncio.get_running_loop()
@@ -1457,17 +1603,14 @@ async def tts_stream_endpoint(
     lock_acquired = False
     session = None
     try:
-        # 带有客户端感知（is_disconnected）的排队机制
-        while True:
-            if await http_request.is_disconnected():
-                print("[TTS] Client disconnected before acquiring lock, aborting.")
-                raise HTTPException(status_code=499, detail="Client Closed Request")
-            try:
-                await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
-                lock_acquired = True
-                break
-            except asyncio.TimeoutError:
-                continue
+        if await http_request.is_disconnected():
+            print("[TTS] Client disconnected before acquiring lock, aborting.")
+            raise HTTPException(status_code=499, detail="Client Closed Request")
+        try:
+            await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
+            lock_acquired = True
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=429, detail="Server busy")
 
         session = TTSStreamSession(
             pipeline=selected_pipeline,

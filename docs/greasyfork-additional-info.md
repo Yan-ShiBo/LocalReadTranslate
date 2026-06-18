@@ -20,8 +20,9 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - 在设置面板里切换声音、语速、翻译模型和目标语言
 - 查看本地 TTS 服务与 Ollama 模型状态
 - 英文会尽量原样保留，中文会翻成英文，公式会变成英文口语描述
-- MathJax/MathML/LaTeX 会优先提取语义公式，尽量保留下标、上标等结构，再交给翻译或朗读稿模型处理
+- MathJax/MathML/LaTeX 会优先提取语义公式；翻译结果保留公式符号，并附加专业中文描述
 - 如果朗读稿准备接口不可用，`Read` 会退回到 `/translate` 并指定翻译成 English 后再朗读
+- 按钮和译文卡片会根据选区自动选择上方或下方，减少遮挡正文
 
 ## 重要：需要本地服务
 
@@ -60,6 +61,7 @@ http://127.0.0.1:5000/health
 ```
 
 如果打不开，先运行项目里的 `start.bat` 或托盘启动器。
+新版 `start.bat` 和 `Kokoro TTS.pyw` 会直接定位 `kokoro-tts` 环境里的 Python，不需要先执行 `conda init`。
 
 ### 翻译健康检测失败
 

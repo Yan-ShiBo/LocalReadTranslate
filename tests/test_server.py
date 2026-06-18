@@ -269,7 +269,7 @@ class ApiTests(unittest.TestCase):
     def test_translate_uses_local_ollama_settings(self):
         with patch.object(
             server,
-            "_call_ollama_translate",
+            "_call_ollama_translate_raw",
             create=True,
             return_value="你好，世界",
         ) as call:
@@ -301,7 +301,7 @@ class ApiTests(unittest.TestCase):
     def test_translate_normalizes_selection_linebreaks(self):
         with patch.object(
             server,
-            "_call_ollama_translate",
+            "_call_ollama_translate_raw",
             create=True,
             return_value="formula description",
         ) as call:
@@ -323,7 +323,7 @@ class ApiTests(unittest.TestCase):
     def test_translate_hides_ollama_errors(self):
         with patch.object(
             server,
-            "_call_ollama_translate",
+            "_call_ollama_translate_raw",
             create=True,
             side_effect=RuntimeError("secret model path"),
         ):
@@ -335,6 +335,64 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["detail"], "Local Ollama translation failed")
         self.assertNotIn("secret model path", response.text)
+
+    def test_translate_restores_formula_symbol_with_chinese_description(self):
+        with patch.object(
+            server,
+            "_call_ollama_translate_raw",
+            create=True,
+            return_value="该阶段使用 __MATH_0__。",
+        ) as translate_call:
+            response = self.client.post(
+                "/translate",
+                json={
+                    "text": "This stage uses [[MATH: D_w \\rightarrow \\hat{B}(x)]].",
+                    "model": "translategemma:4b",
+                    "target_language": "Simplified Chinese",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("$D_w \\rightarrow \\hat{B}(x)$", payload["translated_text"])
+        self.assertIn("D的下角标w映射到B的估计值关于x的函数", payload["translated_text"])
+        self.assertNotIn("__MATH_0__", payload["translated_text"])
+        translate_call.assert_called_once_with(
+            "This stage uses __MATH_0__.",
+            "translategemma:4b",
+            "Simplified Chinese",
+        )
+
+    def test_translate_english_formula_description_for_read_fallback(self):
+        with patch.object(
+            server,
+            "_call_ollama_translate_raw",
+            create=True,
+            return_value="This stage uses __MATH_0__.",
+        ), patch.object(
+            server,
+            "_call_ollama_formula_verbalization",
+            create=True,
+            return_value=["D sub w maps to B hat of x"],
+        ) as verbalize_call:
+            response = self.client.post(
+                "/translate",
+                json={
+                    "text": "This stage uses [[MATH: D_w \\rightarrow \\hat{B}(x)]].",
+                    "target_language": "English",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("$D_w \\rightarrow \\hat{B}(x)$", payload["translated_text"])
+        self.assertIn("D sub w maps to B hat of x", payload["translated_text"])
+        self.assertNotIn("下标", payload["translated_text"])
+        verbalize_call.assert_called_once_with(
+            ["[[MATH: D_w \\rightarrow \\hat{B}(x)]]"],
+            "translategemma:4b",
+            None,
+        )
 
     def test_read_prepare_uses_translategemma_by_default(self):
         with patch.object(
