@@ -289,7 +289,7 @@ i
 
 
 test("translation display renders LaTeX formulas as readable math", () => {
-  const { formulaToReadableHtml, latexToReadableFormula, splitLatexSegments } = require("../tts-userscript.js");
+  const { formulaToReadableHtml, latexToReadableFormula, normalizeDisplayMathWrappers, splitLatexSegments } = require("../tts-userscript.js");
   const segments = splitLatexSegments("使用 $D_w \\to \\hat{B}(x)$，并保持 $$x^2+y^2=z^2$$。");
 
   assert.deepEqual(
@@ -309,6 +309,14 @@ test("translation display renders LaTeX formulas as readable math", () => {
   assert.equal(
     formulaToReadableHtml("$D_w \\to \\hat{B}(x)$"),
     "D<sub>w</sub> → B̂(x)"
+  );
+  assert.equal(
+    normalizeDisplayMathWrappers("记为 [[MATH: D_I]] 和 [[MATH: D_U]]。"),
+    "记为 $D_I$ 和 $D_U$。"
+  );
+  assert.equal(
+    splitLatexSegments("记为 [[MATH: D_I]]。")[1].value,
+    "$D_I$"
   );
 });
 
@@ -333,6 +341,25 @@ test("formula replacement preserves surrounding sentence text", () => {
   assert.match(prepared, /formula:/);
   assert.match(prepared, / is only a neural approximation\.$/);
   assert.equal(formulas.length, 0);
+});
+
+test("math wrappers are split into progressive read formula segments", () => {
+  const { prepareProgressiveReadPlan, prepareTextForReadPlan } = require("../tts-userscript.js");
+  const source = "The resulting sampled sets are denoted by [[MATH: D_I]], [[MATH: D_U]], and [[MATH: D_D]], respectively.";
+
+  const legacyPlan = prepareTextForReadPlan(source);
+  assert.doesNotMatch(legacyPlan.text, /\bMATH\b/);
+  assert.doesNotMatch(legacyPlan.text, /\[\[/);
+
+  const plan = prepareProgressiveReadPlan(source);
+  assert.equal(plan.formulas.length, 3);
+  assert.deepEqual(
+    plan.segments.map((segment) => segment.type),
+    ["text", "formula", "formula", "text", "formula", "text"]
+  );
+  assert.equal(plan.formulas[0], "D_I");
+  assert.match(plan.segments[0].text, /The resulting sampled sets/);
+  assert.equal(plan.segments[3].text, "and");
 });
 
 

@@ -319,7 +319,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.7",
+    version="1.7.8",
     lifespan=lifespan,
 )
 
@@ -764,11 +764,21 @@ def _format_formula_for_translation(formula: str) -> str:
     return f"${content}$"
 
 
+def _normalize_translated_math_wrappers(text: str) -> str:
+    def replace(match: re.Match) -> str:
+        content = match.group(1).strip()
+        if not content:
+            return ""
+        return _format_formula_for_translation(f"[[MATH: {content}]]")
+
+    return re.sub(r"\[\[MATH:\s*([\s\S]*?)\s*\]\]", replace, text or "")
+
+
 def _restore_formulas_for_display(text: str, formulas: list[tuple[str, str]]) -> str:
     result = text
     for placeholder, original in formulas:
         result = result.replace(placeholder, _format_formula_for_translation(original))
-    return result
+    return _normalize_translated_math_wrappers(result)
 
 
 _FORMULA_SYMBOL_DISPLAY = {
@@ -1935,6 +1945,8 @@ async def translate_endpoint(request: TranslateRequest):
                 target_language,
                 context,
             )
+
+        translated_text = _normalize_translated_math_wrappers(translated_text)
             
         elapsed = time.perf_counter() - t0
         print(

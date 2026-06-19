@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.12.2
+// @version      1.12.3
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -206,8 +206,18 @@ const KokoroTTSCore = (() => {
       .join("\n\n");
   }
 
+  function normalizeDisplayMathWrappers(text) {
+    return String(text || "").replace(
+      /\[\[MATH:\s*([\s\S]*?)\s*\]\]/g,
+      (_match, formula) => {
+        const value = String(formula || "").trim();
+        return value ? `$${value}$` : "";
+      }
+    );
+  }
+
   function splitLatexSegments(text) {
-    const value = String(text || "");
+    const value = normalizeDisplayMathWrappers(text);
     const pattern = /(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$)/g;
     const segments = [];
     let lastIndex = 0;
@@ -445,12 +455,17 @@ const KokoroTTSCore = (() => {
     return formulaPlaceholder(index);
   }
 
-  function replaceFormulaDelimiters(text, formulas = null) {
+  function replaceFormulaDelimiters(text, formulas = null, options = {}) {
+    const forcePlaceholders = Boolean(options && options.forcePlaceholders);
     const replaceFormula = (_, body) => {
+      if (forcePlaceholders) {
+        return ` ${formulaFallback(formulas, body)} `;
+      }
       const spoken = verbalizeSimpleFormula(body);
       return ` ${spoken === "formula omitted" ? formulaFallback(formulas, body) : spoken} `;
     };
     return String(text || "")
+      .replace(/\[\[MATH:\s*([\s\S]*?)\s*\]\]/g, replaceFormula)
       .replace(/\$\$([\s\S]*?)\$\$/g, replaceFormula)
       .replace(/\\\[([\s\S]*?)\\\]/g, replaceFormula)
       .replace(/\\\(([\s\S]*?)\\\)/g, replaceFormula)
@@ -468,7 +483,8 @@ const KokoroTTSCore = (() => {
     return mathMarks >= 1 && /[A-Za-z0-9]/.test(value);
   }
 
-  function stripUnreadableReadText(text, formulas = null) {
+  function stripUnreadableReadText(text, formulas = null, options = {}) {
+    const forceFormulaPlaceholders = Boolean(options && options.forceFormulaPlaceholders);
     let value = String(text || "");
     value = value
       .replace(/```[\s\S]*?```/g, " ")
@@ -481,7 +497,9 @@ const KokoroTTSCore = (() => {
       .replace(/\[\d+(?:,\s*\d+)*\]/g, " ")
       .replace(/\(\s*(?:fig|figure|table|eq|equation)\.?\s*\d+\s*\)/gi, " ");
 
-    value = replaceFormulaDelimiters(value, formulas);
+    value = replaceFormulaDelimiters(value, formulas, {
+      forcePlaceholders: forceFormulaPlaceholders,
+    });
 
     const lines = value.split(/\r?\n/);
     const kept = [];
@@ -499,7 +517,9 @@ const KokoroTTSCore = (() => {
       }
       if (looksLikeMathLine(line)) {
         const spoken = verbalizeSimpleFormula(line);
-        line = spoken === "formula omitted" ? formulaFallback(formulas, line) : spoken;
+        line = forceFormulaPlaceholders || spoken === "formula omitted"
+          ? formulaFallback(formulas, line)
+          : spoken;
       }
       line = line
         .replace(/[\u3400-\u9FFF\uF900-\uFAFF]+/g, " ")
@@ -536,6 +556,94 @@ const KokoroTTSCore = (() => {
       changed: readableText !== original.trim(),
       removedChinese: CJK_PATTERN.test(original) && !CJK_PATTERN.test(readableText),
       empty: readableText.length === 0,
+    };
+  }
+
+  function splitSpeechTextChunks(text, maxChars = 260) {
+    const value = String(text || "").replace(/\s+/g, " ").trim();
+    if (!value) return [];
+    const sentences = value.match(/[^.!?]+[.!?]*/g) || [value];
+    const chunks = [];
+    let current = "";
+
+    function pushCurrent() {
+      const cleaned = current
+        .replace(/^[\s,;:]+/g, "")
+        .replace(/\s+([.,;:!?])/g, "$1")
+        .trim();
+      if (cleaned && !/[A-Za-z0-9]/.test(cleaned)) {
+        current = "";
+        return;
+      }
+      if (cleaned) chunks.push(cleaned);
+      current = "";
+    }
+
+    for (const sentence of sentences) {
+      const part = sentence.trim();
+      if (!part) continue;
+      if ((current + " " + part).trim().length <= maxChars) {
+        current = (current ? `${current} ${part}` : part).trim();
+        continue;
+      }
+      pushCurrent();
+      if (part.length <= maxChars) {
+        current = part;
+      } else {
+        const words = part.split(/\s+/);
+        for (const word of words) {
+          if ((current + " " + word).trim().length > maxChars) {
+            pushCurrent();
+          }
+          current = (current ? `${current} ${word}` : word).trim();
+        }
+      }
+    }
+    pushCurrent();
+    return chunks;
+  }
+
+  function splitReadTextByFormulaPlaceholders(text, formulas = []) {
+    const segments = [];
+    const pattern = new RegExp(`${FORMULA_PLACEHOLDER_PREFIX}(\\d+)__`, "g");
+    let lastIndex = 0;
+    let match;
+
+    while ((match = pattern.exec(text || "")) !== null) {
+      if (match.index > lastIndex) {
+        for (const chunk of splitSpeechTextChunks(String(text).slice(lastIndex, match.index))) {
+          segments.push({ type: "text", text: chunk });
+        }
+      }
+      const index = Number.parseInt(match[1], 10);
+      if (Number.isFinite(index) && index >= 0 && index < formulas.length) {
+        segments.push({ type: "formula", index, formula: formulas[index] });
+      }
+      lastIndex = pattern.lastIndex;
+    }
+
+    if (lastIndex < String(text || "").length) {
+      for (const chunk of splitSpeechTextChunks(String(text).slice(lastIndex))) {
+        segments.push({ type: "text", text: chunk });
+      }
+    }
+    return segments;
+  }
+
+  function prepareProgressiveReadPlan(text) {
+    const original = String(text || "");
+    const formulas = [];
+    const readableText = stripUnreadableReadText(original, formulas, {
+      forceFormulaPlaceholders: true,
+    });
+    const segments = splitReadTextByFormulaPlaceholders(readableText, formulas);
+    return {
+      text: readableText,
+      formulas,
+      segments,
+      changed: readableText !== original.trim(),
+      removedChinese: CJK_PATTERN.test(original) && !CJK_PATTERN.test(readableText),
+      empty: segments.length === 0,
     };
   }
 
@@ -669,6 +777,7 @@ const KokoroTTSCore = (() => {
     WEBM_OPUS_MIME,
     applyFormulaVerbalizations,
     choosePlaybackMode,
+    cjkRatio,
     createAppendQueue,
     createRequestGate,
     formatPlaybackProgress,
@@ -677,13 +786,17 @@ const KokoroTTSCore = (() => {
     latexToReadableFormula,
     normalizeAudioBuffer,
     normalizeAudioBlob,
+    normalizeDisplayMathWrappers,
     normalizeLlmSourceText,
+    prepareProgressiveReadPlan,
     prepareTextForRead,
     prepareTextForReadPlan,
     releaseAudio,
     replaceFormulaDelimiters,
     selectBlobAudioFormat,
+    splitReadTextByFormulaPlaceholders,
     splitLatexSegments,
+    splitSpeechTextChunks,
     stripUnreadableReadText,
     supportsWebMOpus,
     verbalizeSimpleFormula,
@@ -800,6 +913,52 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   }
 
   let settings = loadSettings();
+  saveSettings(settings);
+
+  function syncSettingsFromPanel(panel = settingsPanel) {
+    if (!panel) {
+      saveSettings(settings);
+      return;
+    }
+
+    const voiceSelect = panel.querySelector("#tts-voice-select");
+    const speedSelect = panel.querySelector("#tts-speed-select");
+    const modelSelect = panel.querySelector("#tts-translate-model-select");
+    const modelInput = panel.querySelector("#tts-translate-model-input");
+    const targetInput = panel.querySelector("#tts-target-language-input");
+
+    if (voiceSelect) {
+      settings.voice = voiceSelect.value || DEFAULTS.voice;
+    }
+    if (speedSelect) {
+      const speed = parseFloat(speedSelect.value);
+      settings.speed = Number.isFinite(speed) ? speed : DEFAULTS.speed;
+    }
+    if (modelInput) {
+      settings.translateModel = modelInput.value.trim() || DEFAULTS.translateModel;
+      modelInput.value = settings.translateModel;
+    } else if (modelSelect) {
+      settings.translateModel = modelSelect.value.trim() || DEFAULTS.translateModel;
+    }
+    if (targetInput) {
+      settings.targetLanguage = targetInput.value.trim() || DEFAULTS.targetLanguage;
+      targetInput.value = settings.targetLanguage;
+    }
+    settings.settingsVersion = DEFAULTS.settingsVersion;
+
+    if (modelSelect) {
+      let option = Array.from(modelSelect.options).find(
+        (item) => item.value === settings.translateModel
+      );
+      if (!option) {
+        option = new Option(`Custom: ${settings.translateModel}`, settings.translateModel);
+        modelSelect.appendChild(option);
+      }
+      modelSelect.value = settings.translateModel;
+    }
+
+    saveSettings(settings);
+  }
 
   function escapeHtml(value) {
     return String(value)
@@ -1349,19 +1508,19 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     // Event listeners
     panel.querySelector("#tts-voice-select").addEventListener("change", (e) => {
       settings.voice = e.target.value;
-      saveSettings(settings);
+      syncSettingsFromPanel(panel);
     });
 
     panel.querySelector("#tts-speed-select").addEventListener("change", (e) => {
       settings.speed = parseFloat(e.target.value);
-      saveSettings(settings);
+      syncSettingsFromPanel(panel);
     });
 
     panel.querySelector("#tts-translate-model-select").addEventListener("change", (e) => {
       settings.translateModel = e.target.value.trim() || DEFAULTS.translateModel;
       const input = panel.querySelector("#tts-translate-model-input");
       if (input) input.value = settings.translateModel;
-      saveSettings(settings);
+      syncSettingsFromPanel(panel);
       checkTranslationStatus();
     });
 
@@ -1379,13 +1538,25 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         }
         select.value = settings.translateModel;
       }
-      saveSettings(settings);
+      syncSettingsFromPanel(panel);
       checkTranslationStatus();
+    });
+
+    panel.querySelector("#tts-translate-model-input").addEventListener("input", (e) => {
+      settings.translateModel = e.target.value.trim() || DEFAULTS.translateModel;
+      settings.settingsVersion = DEFAULTS.settingsVersion;
+      saveSettings(settings);
     });
 
     panel.querySelector("#tts-target-language-input").addEventListener("change", (e) => {
       settings.targetLanguage = e.target.value.trim() || DEFAULTS.targetLanguage;
       e.target.value = settings.targetLanguage;
+      syncSettingsFromPanel(panel);
+    });
+
+    panel.querySelector("#tts-target-language-input").addEventListener("input", (e) => {
+      settings.targetLanguage = e.target.value.trim() || DEFAULTS.targetLanguage;
+      settings.settingsVersion = DEFAULTS.settingsVersion;
       saveSettings(settings);
     });
 
@@ -1531,6 +1702,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       output.style.color = "#f0c040";
     }
 
+    syncSettingsFromPanel();
     isTranslating = true;
     const generation = translationGate.begin();
     if (btnElement) {
@@ -1545,6 +1717,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     try {
       const payload = await fetchTranslation(
         "Hello, nice to meet you!",
+        "",
         generation
       );
       if (!translationGate.isCurrent(generation)) return;
@@ -2724,6 +2897,62 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
+  async function fetchFormulaVerbalizationsBackground(formulas, context, generation) {
+    if (!formulas || formulas.length === 0) return [];
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: API_FORMULA_VERBALIZE_URL,
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        data: JSON.stringify({
+          formulas,
+          context: String(context || "").slice(0, 4000),
+        }),
+        responseType: "json",
+        timeout: 120000,
+        onload: (response) => {
+          if (!requestGate.isCurrent(generation)) {
+            resolve([]);
+            return;
+          }
+          if (response.status >= 200 && response.status < 300) {
+            try {
+              const payload = response.response || JSON.parse(response.responseText || "{}");
+              resolve(Array.isArray(payload.verbalizations) ? payload.verbalizations : []);
+            } catch (error) {
+              reject(error);
+            }
+          } else {
+            let detail = response.statusText || "Formula verbalization failed";
+            try {
+              const payload = JSON.parse(response.responseText || "{}");
+              if (payload.detail) detail = payload.detail;
+            } catch {}
+            reject(new Error(`Server returned ${response.status}: ${detail}`));
+          }
+        },
+        onerror: () => {
+          if (!requestGate.isCurrent(generation)) {
+            resolve([]);
+            return;
+          }
+          reject(new Error("Cannot connect to formula verbalization server."));
+        },
+        ontimeout: () => {
+          if (!requestGate.isCurrent(generation)) {
+            resolve([]);
+            return;
+          }
+          reject(new Error("Formula verbalization timeout."));
+        },
+        onabort: () => resolve([]),
+      });
+    });
+  }
+
   async function resolveFormulaReadPlan(plan, context, generation) {
     if (!plan.formulas || plan.formulas.length === 0) {
       return plan;
@@ -3097,6 +3326,239 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     source.start(0);
   }
 
+  function markReadDone(btnElement, buttonContainer) {
+    if (btnElement) {
+      setButtonHtml(
+        btnElement,
+        "tts-speak-btn done",
+        "\u2705",
+        "Done"
+      );
+      setTimeout(() => removeSpecificButton(buttonContainer), 2000);
+    }
+  }
+
+  function fallbackFormulaSpeech(formula) {
+    const spoken = KokoroTTSCore.verbalizeSimpleFormula(formula);
+    return spoken && spoken !== "formula omitted" ? spoken : "formula omitted";
+  }
+
+  function normalizeFormulaSpeech(value, formula) {
+    let text = String(value || "").trim();
+    if (!text || /\[\[|\]\]|\bMATH\b/i.test(text)) {
+      text = fallbackFormulaSpeech(formula);
+    }
+    const cleaned = KokoroTTSCore.prepareTextForRead(text).text;
+    if (cleaned && !/\[\[|\]\]|\bMATH\b/i.test(cleaned)) {
+      return cleaned;
+    }
+    return fallbackFormulaSpeech(formula);
+  }
+
+  function shouldUseProgressiveReadPlan(sourceText, plan) {
+    return Boolean(
+      plan &&
+      plan.formulas &&
+      plan.formulas.length > 0 &&
+      plan.segments &&
+      plan.segments.length > 0 &&
+      KokoroTTSCore.cjkRatio(sourceText) < 0.15
+    );
+  }
+
+  async function playQueuedBlobSegment(text, generation, btnElement, audioFormat) {
+    const audioBlob = await fetchAudioBlob(text, generation, audioFormat);
+    if (!requestGate.isCurrent(generation)) return;
+
+    const blobUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(blobUrl);
+    audio._blobUrl = blobUrl;
+    audio._suppressPlaybackErrorUi = true;
+    currentAudio = audio;
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        audio.removeEventListener("timeupdate", updateProgress);
+        audio.removeEventListener("durationchange", updateProgress);
+        audio.removeEventListener("loadedmetadata", updateProgress);
+        audio.removeEventListener("ended", onEnded);
+        audio.removeEventListener("error", onError);
+      };
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        KokoroTTSCore.releaseAudio(audio);
+        if (currentAudio === audio) currentAudio = null;
+        resolve();
+      };
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        KokoroTTSCore.releaseAudio(audio);
+        if (currentAudio === audio) currentAudio = null;
+        reject(error);
+      };
+      const updateProgress = () => {
+        if (currentAudio !== audio) return;
+        setPlaybackProgress(btnElement, audio, true);
+      };
+      const onEnded = () => finish();
+      const onError = () => fail(new Error("Play failed"));
+
+      audio._cleanup = () => fail(new Error("Playback cancelled."));
+      audio.addEventListener("timeupdate", updateProgress);
+      audio.addEventListener("durationchange", updateProgress);
+      audio.addEventListener("loadedmetadata", updateProgress);
+      audio.addEventListener("ended", onEnded);
+      audio.addEventListener("error", onError);
+      updateProgress();
+      audio.play().catch(fail);
+    });
+  }
+
+  async function playQueuedDecodedSegment(text, generation, btnElement) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      await playQueuedBlobSegment(
+        text,
+        generation,
+        btnElement,
+        { format: "wav", accept: "audio/wav", mime: "audio/wav" }
+      );
+      return;
+    }
+
+    const payload = await fetchAudioBuffer(
+      text,
+      generation,
+      { format: "wav", accept: "audio/wav", mime: "audio/wav" }
+    );
+    if (!requestGate.isCurrent(generation)) return;
+
+    const audioContext = new AudioContextClass();
+    if (audioContext.state === "suspended" && audioContext.resume) {
+      await audioContext.resume();
+    }
+    const audioBuffer = await audioContext.decodeAudioData(payload.slice(0));
+    if (!requestGate.isCurrent(generation)) {
+      if (audioContext.close) audioContext.close().catch(() => {});
+      return;
+    }
+
+    return new Promise((resolve, reject) => {
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+
+      const startedAt = audioContext.currentTime;
+      let settled = false;
+      let progressTimer = null;
+      const playbackHandle = {
+        src: "",
+        _blobUrl: null,
+        duration: audioBuffer.duration,
+        get currentTime() {
+          return Math.min(
+            this.duration,
+            Math.max(0, audioContext.currentTime - startedAt)
+          );
+        },
+        pause() {
+          fail(new Error("Playback cancelled."));
+        },
+        _cleanup() {
+          this.pause();
+        },
+      };
+
+      function cleanup() {
+        if (progressTimer) clearInterval(progressTimer);
+        try { source.stop(0); } catch {}
+        if (audioContext.close) audioContext.close().catch(() => {});
+        if (currentAudio === playbackHandle) currentAudio = null;
+      }
+
+      function finish() {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      }
+
+      function fail(error) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      }
+
+      currentAudio = playbackHandle;
+      const updateProgress = () => {
+        if (currentAudio !== playbackHandle) return;
+        setPlaybackProgress(btnElement, playbackHandle, true);
+      };
+      source.onended = finish;
+      updateProgress();
+      progressTimer = setInterval(updateProgress, 250);
+      source.start(0);
+    });
+  }
+
+  async function playQueuedAudioSegment(text, generation, btnElement) {
+    const value = String(text || "").trim();
+    if (!value || !requestGate.isCurrent(generation)) return;
+    await playQueuedDecodedSegment(value, generation, btnElement);
+  }
+
+  async function playProgressiveReadPlan(plan, context, generation, btnElement, buttonContainer) {
+    let formulasReady = false;
+    let formulaVerbalizations = [];
+    const formulaPromise = fetchFormulaVerbalizationsBackground(
+      plan.formulas,
+      context,
+      generation
+    ).then((values) => {
+      formulasReady = true;
+      formulaVerbalizations = Array.isArray(values) ? values : [];
+      return formulaVerbalizations;
+    }).catch((error) => {
+      formulasReady = true;
+      formulaVerbalizations = [];
+      console.warn("[Kokoro TTS] Background formula verbalization failed", error);
+      return [];
+    });
+
+    for (const segment of plan.segments) {
+      if (!requestGate.isCurrent(generation)) return;
+      if (segment.type === "formula") {
+        if (!formulasReady && btnElement) {
+          setButtonHtml(
+            btnElement,
+            "tts-speak-btn loading",
+            "\u2211",
+            "Formula"
+          );
+        }
+        const values = await formulaPromise;
+        if (!requestGate.isCurrent(generation)) return;
+        const formulaSpeech = normalizeFormulaSpeech(
+          values[segment.index],
+          segment.formula
+        );
+        await playQueuedAudioSegment(formulaSpeech, generation, btnElement);
+        continue;
+      }
+      await playQueuedAudioSegment(segment.text, generation, btnElement);
+    }
+
+    if (requestGate.isCurrent(generation)) {
+      markReadDone(btnElement, buttonContainer);
+    }
+  }
+
   function waitForSourceOpen(mediaSource) {
     return new Promise((resolve, reject) => {
       function cleanup() {
@@ -3222,6 +3684,18 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
 
     try {
+      const progressivePlan = KokoroTTSCore.prepareProgressiveReadPlan(text);
+      if (shouldUseProgressiveReadPlan(text, progressivePlan)) {
+        await playProgressiveReadPlan(
+          progressivePlan,
+          context,
+          generation,
+          btnElement,
+          buttonContainer
+        );
+        return;
+      }
+
       const readPlan = await prepareReadableTextForSpeak(text, context, generation);
       if (!requestGate.isCurrent(generation)) return;
       if (readPlan.empty) {

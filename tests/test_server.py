@@ -484,6 +484,48 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("下标", translated)
         self.assertNotIn("映射到", translated)
 
+    def test_translate_normalizes_model_returned_math_wrappers(self):
+        with patch.object(
+            server,
+            "_call_ollama_translate_raw",
+            create=True,
+            return_value="所得采样集合分别记为 [[MATH: D_I]]、[[MATH: D_U]] 和 [[MATH: D_D]]。",
+        ):
+            response = self.client.post(
+                "/translate",
+                json={
+                    "text": r"The resulting sampled sets are denoted by [[MATH: D_I]], [[MATH: D_U]], and [[MATH: D_D]], respectively.",
+                    "target_language": "Simplified Chinese",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        translated = response.json()["translated_text"]
+        self.assertIn(r"$D_I$", translated)
+        self.assertIn(r"$D_U$", translated)
+        self.assertIn(r"$D_D$", translated)
+        self.assertNotIn("[[MATH:", translated)
+
+    def test_translate_normalizes_unexpected_math_wrappers_without_input_formulas(self):
+        with patch.object(
+            server,
+            "_call_ollama_translate_raw",
+            create=True,
+            return_value="记为 [[MATH: D_I]]。",
+        ):
+            response = self.client.post(
+                "/translate",
+                json={
+                    "text": "The sampled set is denoted by D I.",
+                    "target_language": "Simplified Chinese",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        translated = response.json()["translated_text"]
+        self.assertIn(r"$D_I$", translated)
+        self.assertNotIn("[[MATH:", translated)
+
     def test_formula_description_handles_unbraced_hat(self):
         self.assertEqual(
             server._display_formula_for_translation(r"\hat B(x)"),
