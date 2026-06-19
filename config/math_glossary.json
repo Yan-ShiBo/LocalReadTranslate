@@ -1,0 +1,340 @@
+{
+  "version": 1,
+  "symbols": [
+    {
+      "id": "right_arrow",
+      "forms": ["\\rightarrow", "\\to", "->", "→"],
+      "direct": {
+        "zh": "箭头",
+        "en": "arrow"
+      },
+      "default_candidate": "points_to",
+      "candidates": [
+        {
+          "id": "mapping",
+          "zh": "映射到",
+          "en": "maps to",
+          "when": "Function mapping or type signature, for example f: X -> Y."
+        },
+        {
+          "id": "limit",
+          "zh": "趋向于",
+          "en": "approaches",
+          "when": "Limit expression, for example x -> 0 or n -> infinity."
+        },
+        {
+          "id": "derives",
+          "zh": "推导出",
+          "en": "implies",
+          "when": "Logical implication, theorem derivation, or proof step."
+        },
+        {
+          "id": "data_construction",
+          "zh": "得到",
+          "en": "gives",
+          "when": "Algorithm, data construction, or expression-to-dataset transformation."
+        },
+        {
+          "id": "points_to",
+          "zh": "指向",
+          "en": "points to",
+          "when": "Generic relation when the specific meaning is unclear."
+        },
+        {
+          "id": "literal",
+          "zh": "箭头",
+          "en": "arrow",
+          "when": "When preserving the visible symbol is clearer than choosing a semantic interpretation."
+        }
+      ]
+    },
+    {
+      "id": "mapsto",
+      "forms": ["\\mapsto", "↦"],
+      "direct": {
+        "zh": "映射箭头",
+        "en": "maps-to arrow"
+      },
+      "default_candidate": "mapping",
+      "candidates": [
+        {
+          "id": "mapping",
+          "zh": "映射到",
+          "en": "maps to",
+          "when": "Explicit mapsto notation."
+        },
+        {
+          "id": "literal",
+          "zh": "映射箭头",
+          "en": "maps-to arrow",
+          "when": "When reading the visible notation directly."
+        }
+      ]
+    },
+    {
+      "id": "double_arrow",
+      "forms": ["\\Rightarrow", "⇒"],
+      "direct": {
+        "zh": "双箭头",
+        "en": "double arrow"
+      },
+      "default_candidate": "implies",
+      "candidates": [
+        {
+          "id": "implies",
+          "zh": "推出",
+          "en": "implies",
+          "when": "Logic or proof implication."
+        },
+        {
+          "id": "therefore",
+          "zh": "因此得到",
+          "en": "therefore gives",
+          "when": "Derivation step in prose."
+        },
+        {
+          "id": "literal",
+          "zh": "双箭头",
+          "en": "double arrow",
+          "when": "When preserving the visible symbol is clearer."
+        }
+      ]
+    },
+    {
+      "id": "hat",
+      "forms": ["\\hat{x}", "\\hat x", "x̂"],
+      "direct": {
+        "zh": "x hat",
+        "en": "x hat"
+      },
+      "default_candidate": "estimate",
+      "candidates": [
+        {
+          "id": "estimate",
+          "zh": "估计值",
+          "en": "estimated value",
+          "when": "Statistics, regression, approximation, learned model output, or estimator context."
+        },
+        {
+          "id": "literal",
+          "zh": "戴帽符号",
+          "en": "hat symbol",
+          "when": "When the notation itself is being discussed."
+        }
+      ]
+    },
+    {
+      "id": "bar",
+      "forms": ["\\bar{x}", "\\bar x", "x̄"],
+      "direct": {
+        "zh": "x bar",
+        "en": "x bar"
+      },
+      "default_candidate": "mean",
+      "candidates": [
+        {
+          "id": "mean",
+          "zh": "平均值",
+          "en": "mean",
+          "when": "Statistics or sample average context."
+        },
+        {
+          "id": "closure",
+          "zh": "闭包",
+          "en": "closure",
+          "when": "Topology or set closure context."
+        },
+        {
+          "id": "literal",
+          "zh": "横线符号",
+          "en": "bar symbol",
+          "when": "When reading the notation directly."
+        }
+      ]
+    },
+    {
+      "id": "tilde",
+      "forms": ["\\tilde{x}", "\\tilde x", "x̃"],
+      "direct": {
+        "zh": "x tilde",
+        "en": "x tilde"
+      },
+      "default_candidate": "approx_variant",
+      "candidates": [
+        {
+          "id": "approx_variant",
+          "zh": "近似量",
+          "en": "approximate variant",
+          "when": "Approximation or transformed-variable context."
+        },
+        {
+          "id": "literal",
+          "zh": "波浪符号",
+          "en": "tilde symbol",
+          "when": "When reading the notation directly."
+        }
+      ]
+    },
+    {
+      "id": "subscript",
+      "forms": ["x_i", "x_{i}"],
+      "direct": {
+        "zh": "下角标",
+        "en": "sub"
+      },
+      "default_candidate": "index",
+      "candidates": [
+        {
+          "id": "index",
+          "zh": "下角标",
+          "en": "sub",
+          "when": "General indexed variable."
+        }
+      ]
+    },
+    {
+      "id": "superscript",
+      "forms": ["x^2", "x^{2}"],
+      "direct": {
+        "zh": "上角标",
+        "en": "superscript"
+      },
+      "default_candidate": "power",
+      "candidates": [
+        {
+          "id": "power",
+          "zh": "上角标",
+          "en": "to the power of",
+          "when": "General exponent."
+        },
+        {
+          "id": "square",
+          "zh": "平方",
+          "en": "squared",
+          "when": "Exponent 2."
+        },
+        {
+          "id": "cube",
+          "zh": "立方",
+          "en": "cubed",
+          "when": "Exponent 3."
+        },
+        {
+          "id": "transpose",
+          "zh": "转置",
+          "en": "transpose",
+          "when": "Exponent T."
+        },
+        {
+          "id": "inverse",
+          "zh": "逆",
+          "en": "inverse",
+          "when": "Exponent -1."
+        }
+      ]
+    },
+    {
+      "id": "equals",
+      "forms": ["="],
+      "direct": {
+        "zh": "等号",
+        "en": "equals sign"
+      },
+      "default_candidate": "equals",
+      "candidates": [
+        {
+          "id": "equals",
+          "zh": "等于",
+          "en": "equals",
+          "when": "Equation or equality."
+        },
+        {
+          "id": "defined_as",
+          "zh": "定义为",
+          "en": "is defined as",
+          "when": "Definition, dataset construction, or assignment context."
+        }
+      ]
+    },
+    {
+      "id": "set_braces",
+      "forms": ["\\{...\\}", "{...}"],
+      "direct": {
+        "zh": "花括号",
+        "en": "braces"
+      },
+      "default_candidate": "set",
+      "candidates": [
+        {
+          "id": "set",
+          "zh": "集合",
+          "en": "set",
+          "when": "Set notation."
+        },
+        {
+          "id": "literal",
+          "zh": "花括号",
+          "en": "braces",
+          "when": "When reading visible notation directly."
+        }
+      ]
+    },
+    {
+      "id": "tuple",
+      "forms": ["(x_i, y_i)", "(...)"],
+      "direct": {
+        "zh": "括号",
+        "en": "parentheses"
+      },
+      "default_candidate": "tuple",
+      "candidates": [
+        {
+          "id": "tuple",
+          "zh": "元组",
+          "en": "tuple",
+          "when": "Comma-separated ordered elements."
+        },
+        {
+          "id": "literal",
+          "zh": "括号",
+          "en": "parentheses",
+          "when": "When reading visible notation directly."
+        }
+      ]
+    },
+    {
+      "id": "fraction",
+      "forms": ["\\frac{a}{b}"],
+      "direct": {
+        "zh": "分式",
+        "en": "fraction"
+      },
+      "default_candidate": "fraction",
+      "candidates": [
+        {
+          "id": "fraction",
+          "zh": "b分之a",
+          "en": "a over b",
+          "when": "Fraction notation."
+        }
+      ]
+    },
+    {
+      "id": "sqrt",
+      "forms": ["\\sqrt{x}"],
+      "direct": {
+        "zh": "根号",
+        "en": "square root"
+      },
+      "default_candidate": "sqrt",
+      "candidates": [
+        {
+          "id": "sqrt",
+          "zh": "根号",
+          "en": "square root of",
+          "when": "Square-root notation."
+        }
+      ]
+    }
+  ]
+}

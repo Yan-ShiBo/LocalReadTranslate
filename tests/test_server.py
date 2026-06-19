@@ -355,7 +355,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("D_w → B̂(x)", payload["translated_text"])
-        self.assertIn("D的下角标w指向B的估计值关于x的函数", payload["translated_text"])
+        self.assertIn("由D的下角标w得到B的估计值关于x的函数", payload["translated_text"])
         self.assertNotIn("__MATH_0__", payload["translated_text"])
         translate_call.assert_called_once_with(
             "This stage uses __MATH_0__.",
@@ -424,6 +424,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             server._rule_describe_formula_zh(r"\hat B(x)"),
             "B的估计值关于x的函数",
+        )
+
+    def test_math_glossary_exposes_direct_and_contextual_readings(self):
+        self.assertEqual(
+            server._glossary_candidate("right_arrow", "literal", "zh"),
+            "箭头",
+        )
+        prompt = server._math_glossary_prompt("zh")
+        self.assertIn("映射到", prompt)
+        self.assertIn("推导", prompt)
+
+    def test_formula_description_chooses_arrow_semantics(self):
+        self.assertIn(
+            "趋向于",
+            server._rule_describe_formula_zh(r"x \to 0"),
+        )
+        self.assertIn(
+            "映射到",
+            server._rule_describe_formula_zh(r"f: X \to Y"),
+        )
+        self.assertEqual(
+            server._rule_describe_formula_zh(r"D_w \to \hat{B}(x)"),
+            "由D的下角标w得到B的估计值关于x的函数",
         )
 
     def test_read_prepare_uses_translategemma_by_default(self):

@@ -2,17 +2,17 @@
 // @name         本地划词听译助手
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
-// @namespace    https://github.com/Yan-ShiBo/local-tts-env
-// @version      1.11.3
+// @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
+// @version      1.11.4
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
 // @license      MIT
 // @match        *://*/*
-// @homepageURL  https://github.com/Yan-ShiBo/local-tts-env
-// @supportURL   https://github.com/Yan-ShiBo/local-tts-env/issues
-// @downloadURL  https://raw.githubusercontent.com/Yan-ShiBo/local-tts-env/main/tts-userscript.js
-// @updateURL    https://raw.githubusercontent.com/Yan-ShiBo/local-tts-env/main/tts-userscript.js
+// @homepageURL  https://github.com/Yan-ShiBo/LocalReadTranslate
+// @supportURL   https://github.com/Yan-ShiBo/LocalReadTranslate/issues
+// @downloadURL  https://raw.githubusercontent.com/Yan-ShiBo/LocalReadTranslate/main/tts-userscript.js
+// @updateURL    https://raw.githubusercontent.com/Yan-ShiBo/LocalReadTranslate/main/tts-userscript.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_getValue

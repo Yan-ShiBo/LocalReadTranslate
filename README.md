@@ -2,7 +2,7 @@
 
 > Select text in Chrome, then read it aloud locally with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) or translate it locally through Ollama. Your selected text stays on your machine.
 
-[![CI](https://github.com/Yan-ShiBo/local-tts-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Yan-ShiBo/local-tts-env/actions/workflows/ci.yml)
+[![CI](https://github.com/Yan-ShiBo/LocalReadTranslate/actions/workflows/ci.yml/badge.svg)](https://github.com/Yan-ShiBo/LocalReadTranslate/actions/workflows/ci.yml)
 
 <p align="center">
   <strong>Local read-aloud · Local translation · Privacy-first</strong>
@@ -21,6 +21,7 @@
 - **Local translation** — Select text and translate it locally through Ollama (`translategemma:4b` by default, switchable to another local model)
 - **LLM read preparation** — Before read-aloud, selected text is normalized through local `translategemma:4b`: English is kept, Chinese is translated to English, and formulas become spoken English
 - **Formula-aware cleanup** — MathJax/MathML/LaTeX selections are extracted semantically when possible; translation keeps formula symbols and appends a Chinese/English description instead of replacing the formula
+- **Configurable math glossary** — `config/math_glossary.json` lists direct readings and contextual meanings for symbols such as arrows, hats, subscripts and set braces, so formulas can be spoken more professionally
 - **Selection-aware UI** — Read/Translate controls stay below the selection, can run independently, and translation cards reposition around the selected text to reduce overlap
 - **Partial formula selection recovery** — Selecting only part of a MathJax/MathML/KaTeX formula expands to the full formula container before translation or read preparation, without dropping surrounding sentence text
 - **Smart queueing** — Backend checks client connection status to avoid processing dropped requests, preventing GPU OOM
@@ -62,8 +63,8 @@ Download from [eSpeak-NG Releases](https://github.com/espeak-ng/espeak-ng/releas
 
 ```powershell
 # Clone the repo
-git clone https://github.com/Yan-ShiBo/local-tts-env.git
-cd local-tts-env
+git clone https://github.com/Yan-ShiBo/LocalReadTranslate.git
+cd LocalReadTranslate
 
 # Double-click setup.bat, or run manually:
 conda create -n kokoro-tts python=3.10 -y
@@ -92,10 +93,12 @@ ollama pull qwen3:14b
 
 The default Ollama model is `translategemma:4b` for translation, read preparation and formula verbalization. Override it with `OLLAMA_TRANSLATE_MODEL`, `OLLAMA_READ_MODEL` or `OLLAMA_FORMULA_MODEL`, or change the translation model in the browser settings panel. The settings panel separates TTS and Translation controls, shows whether the selected Ollama model is installed/running, and includes a translation test button.
 
+Formula wording is guided by `config/math_glossary.json`. Each symbol can define a direct reading plus contextual readings, for example right arrow can mean `maps to`, `approaches`, `implies`, `gives`, or simply `arrow`. Local rules choose common cases first; the same glossary is also included in Ollama prompts for harder formulas.
+
 ### 4. Install the Browser Script
 
 1. Install [Tampermonkey](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) in Chrome
-2. Install the published script from Greasy Fork, or open the [GitHub raw userscript](https://raw.githubusercontent.com/Yan-ShiBo/local-tts-env/main/tts-userscript.js) for the development version
+2. Install the published script from Greasy Fork, or open the [GitHub raw userscript](https://raw.githubusercontent.com/Yan-ShiBo/LocalReadTranslate/main/tts-userscript.js) for the development version
 3. Confirm installation in Tampermonkey
 
 ### 5. Use it!
@@ -193,7 +196,7 @@ Returns `prepared_text`: plain English read-aloud text for Kokoro. English prose
 }
 ```
 
-Fallback endpoint returning concise spoken English descriptions for formulas that cannot be handled by local rules.
+Fallback endpoint returning concise spoken English descriptions for formulas that cannot be handled by local rules. The server passes the configurable math glossary to Ollama so symbols such as arrows, hats and subscripts can be interpreted from nearby context.
 `model` is optional; if omitted, the server uses `OLLAMA_FORMULA_MODEL` (`translategemma:4b` by default).
 
 ### `GET /translate/health?model=translategemma:4b`
