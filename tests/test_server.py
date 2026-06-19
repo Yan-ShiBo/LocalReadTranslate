@@ -698,7 +698,7 @@ class ApiTests(unittest.TestCase):
         formula_call.assert_called_once_with(
             [r"[[MATH: B_\theta(x)]]"],
             "translategemma:4b",
-            r"The paragraph discusses neural barrier certificates. 其中 [[MATH: B_\theta(x)]] 是候选函数。",
+            "",
         )
 
     def test_read_prepare_keeps_english_without_model_translation(self):
@@ -741,7 +741,7 @@ class ApiTests(unittest.TestCase):
         call.assert_called_once_with(
             ["x^2 + y^2 = z^2"],
             "translategemma:4b",
-            "Pythagorean theorem",
+            "",
         )
 
     def test_formula_verbalize_hides_ollama_errors(self):
@@ -760,27 +760,43 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "Local formula verbalization failed")
         self.assertNotIn("secret formula prompt", response.text)
 
-    def test_formula_verbalization_caps_context_for_small_model(self):
+    def test_small_model_formula_verbalization_prefers_conservative_rules(self):
+        with patch.object(server.urllib_request, "urlopen") as urlopen:
+            result = server._call_ollama_formula_verbalization(
+                [r"D_I", r"B_\theta(x)", r"\hat{B}(x)", r"D_w \to \hat{B}(x)"],
+                "translategemma:4b",
+                "This context says arrow means data construction, but the 4B path should be conservative.",
+            )
+
+        self.assertEqual(
+            result,
+            [
+                "D sub I",
+                "B sub theta of x",
+                "B hat of x",
+                "D sub w to B hat of x",
+            ],
+        )
+        urlopen.assert_not_called()
+
+    def test_formula_verbalization_drops_context_for_small_model_remote_fallback(self):
         captured = {}
 
         def fake_urlopen(request, timeout):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
-            return FakeUrlopenResponse({"response": '["D sub I"]'})
+            return FakeUrlopenResponse({"response": '["a two row cases expression"]'})
 
         long_context = "near formula context " * 200
         with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
             result = server._call_ollama_formula_verbalization(
-                ["D_I"],
+                [r"\begin{cases} x & x > 0 \\ -x & x < 0 \end{cases}"],
                 "translategemma:4b",
                 long_context,
             )
 
-        self.assertEqual(result, ["D sub I"])
+        self.assertEqual(result, ["a two row cases expression"])
         prompt = json.loads(captured["payload"]["prompt"])
-        self.assertLessEqual(
-            len(prompt["context"]),
-            server._model_context_limit("translategemma:4b", "formula"),
-        )
+        self.assertEqual(prompt["context"], "")
 
     def test_formula_verbalization_parser_accepts_json_array(self):
         parsed = server._parse_formula_verbalizations(

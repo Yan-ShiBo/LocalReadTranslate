@@ -319,7 +319,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.9",
+    version="1.7.10",
     lifespan=lifespan,
 )
 
@@ -626,7 +626,7 @@ def _model_context_limit(model: Optional[str], purpose: str = "translation") -> 
             "unknown": 1200,
         },
         "formula": {
-            "small": 550,
+            "small": 0,
             "medium": 1000,
             "large": 2500,
             "xlarge": 3500,
@@ -655,6 +655,8 @@ def _trim_at_word_boundary(text: str, limit: int) -> str:
 
 def _trim_context_to_limit(context: str, limit: int) -> str:
     value = (context or "").strip()
+    if limit <= 0:
+        return ""
     if len(value) <= limit:
         return value
 
@@ -1695,6 +1697,66 @@ def _clean_formula_verbalization(value: str) -> str:
     return cleaned or "formula omitted"
 
 
+def _rule_describe_formula_en(formula: str) -> str:
+    value = _formula_content_as_latex(formula)
+    if not value or len(value) > 160:
+        return ""
+    if re.search(r"\\(?:begin|matrix|cases|left|right)\b", value):
+        return ""
+
+    value = value.replace("\\rightarrow", "\\to")
+    replacements = [
+        (r"\\alpha\b", "alpha"),
+        (r"\\beta\b", "beta"),
+        (r"\\gamma\b", "gamma"),
+        (r"\\delta\b", "delta"),
+        (r"\\epsilon\b", "epsilon"),
+        (r"\\lambda\b", "lambda"),
+        (r"\\mu\b", "mu"),
+        (r"\\pi\b", "pi"),
+        (r"\\sigma\b", "sigma"),
+        (r"\\theta\b", "theta"),
+        (r"\\Theta\b", "capital theta"),
+        (r"\\omega\b", "omega"),
+        (r"\\Omega\b", "capital omega"),
+    ]
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value)
+
+    value = re.sub(
+        r"\\frac\{([^{}]+)\}\{([^{}]+)\}",
+        lambda match: f"{_rule_describe_formula_en(match.group(1)) or match.group(1)} over {_rule_describe_formula_en(match.group(2)) or match.group(2)}",
+        value,
+    )
+    value = re.sub(
+        r"\\sqrt\{([^{}]+)\}",
+        lambda match: f"square root of {_rule_describe_formula_en(match.group(1)) or match.group(1)}",
+        value,
+    )
+    value = re.sub(r"\\(?:widehat|hat)\s*\{?([A-Za-z][A-Za-z0-9]*)\}?", r"\1 hat", value)
+    value = re.sub(r"\\(?:overline|bar)\s*\{?([A-Za-z][A-Za-z0-9]*)\}?", r"\1 bar", value)
+    value = re.sub(r"\\(?:widetilde|tilde)\s*\{?([A-Za-z][A-Za-z0-9]*)\}?", r"\1 tilde", value)
+    value = re.sub(r"([A-Za-z][A-Za-z0-9]*)_\{?([A-Za-z0-9 ]+)\}?", r"\1 sub \2", value)
+    value = re.sub(r"\^\{?2\}?", " squared", value)
+    value = re.sub(r"\^\{?3\}?", " cubed", value)
+    value = re.sub(r"\^\{?([A-Za-z0-9 ]+)\}?", r" to the power of \1", value)
+    value = re.sub(r"([A-Za-z](?: [a-z]+ [A-Za-z0-9]+)?(?: hat| bar| tilde)?)(?:\s*)\(([^()]+)\)", r"\1 of \2", value)
+    value = value.replace("\\mapsto", " maps to ")
+    value = value.replace("\\Rightarrow", " implies ")
+    value = value.replace("\\to", " to ")
+    value = value.replace("=", " equals ")
+    value = value.replace("+", " plus ")
+    value = re.sub(r"(?<=\S)-(?=\S)", " minus ", value)
+    value = value.replace("*", " times ")
+    value = value.replace("/", " over ")
+    value = re.sub(r"[{}\\]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+
+    if not value or len(value) > 200 or re.search(r"[^\w\s.,;:!?()-]", value):
+        return ""
+    return value
+
+
 def _parse_formula_verbalizations(raw: str, expected_count: int) -> list[str]:
     cleaned = _clean_translation_response(raw)
     try:
@@ -1718,16 +1780,43 @@ def _parse_formula_verbalizations(raw: str, expected_count: int) -> list[str]:
     return lines + ["formula omitted"] * (expected_count - len(lines))
 
 
+def _merge_formula_verbalizations(
+    rule_values: list[str],
+    pending_indexes: list[int],
+    remote_values: list[str],
+) -> list[str]:
+    merged = list(rule_values)
+    for offset, index in enumerate(pending_indexes):
+        value = remote_values[offset] if offset < len(remote_values) else "formula omitted"
+        merged[index] = value
+    return [value or "formula omitted" for value in merged]
+
+
 def _call_ollama_formula_verbalization(
     formulas: list[str],
     model: str,
     context: Optional[str] = None,
 ) -> list[str]:
+    rule_values = [_rule_describe_formula_en(formula) for formula in formulas]
+    model_size = _model_size_billions(model)
+    small_model = model_size is not None and model_size <= 4.5
+    if small_model and all(rule_values):
+        return rule_values
+
+    pending_indexes = [
+        index
+        for index, value in enumerate(rule_values)
+        if not (small_model and value)
+    ]
+    pending_formulas = [formulas[index] for index in pending_indexes]
+    if not pending_formulas:
+        return [value or "formula omitted" for value in rule_values]
+
     context_block = _limit_model_context(context, model, "formula") or ""
     glossary_prompt = _math_glossary_prompt("en")
     prompt = {
         "context": context_block,
-        "formulas": formulas,
+        "formulas": pending_formulas,
     }
     payload = {
         "model": model,
@@ -1773,10 +1862,13 @@ def _call_ollama_formula_verbalization(
     except json.JSONDecodeError as error:
         raise RuntimeError("Ollama returned invalid JSON") from error
 
-    return _parse_formula_verbalizations(
+    remote_values = _parse_formula_verbalizations(
         response_payload.get("response", ""),
-        len(formulas),
+        len(pending_formulas),
     )
+    if small_model:
+        return _merge_formula_verbalizations(rule_values, pending_indexes, remote_values)
+    return remote_values
 
 
 def _stream_segment_with_fade(

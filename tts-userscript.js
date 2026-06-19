@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.12.4
+// @version      1.12.5
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -410,6 +410,9 @@ const KokoroTTSCore = (() => {
     }
 
     spoken = spoken
+      .replace(/\\(?:widehat|hat)\s*\{?([A-Za-z][A-Za-z0-9]*)\}?/g, "$1 hat")
+      .replace(/\\(?:overline|bar)\s*\{?([A-Za-z][A-Za-z0-9]*)\}?/g, "$1 bar")
+      .replace(/\\(?:widetilde|tilde)\s*\{?([A-Za-z][A-Za-z0-9]*)\}?/g, "$1 tilde")
       .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "$1 over $2")
       .replace(/\\sqrt\{([^{}]+)\}/g, "square root of $1")
       .replace(/\\sum/g, "summation")
@@ -422,11 +425,16 @@ const KokoroTTSCore = (() => {
       .replace(/\\mu/g, "mu")
       .replace(/\\pi/g, "pi")
       .replace(/\\theta/g, "theta")
+      .replace(/\\rightarrow/g, "to")
+      .replace(/\\to/g, "to")
+      .replace(/\\mapsto/g, "maps to")
+      .replace(/\\Rightarrow/g, "implies")
       .replace(/\^2\b/g, " squared")
       .replace(/\^3\b/g, " cubed")
       .replace(/\^\{([^{}]+)\}/g, " to the power of $1")
       .replace(/_(\w+)\b/g, " sub $1")
       .replace(/_\{([^{}]+)\}/g, " sub $1")
+      .replace(/([A-Za-z](?: [a-z]+ [A-Za-z0-9]+)?(?: hat| bar| tilde)?)\s*\(([^()]+)\)/g, "$1 of $2")
       .replace(/=/g, " equals ")
       .replace(/\+/g, " plus ")
       .replace(/(?<=\S)-(?=\S)/g, " minus ")
@@ -3343,7 +3351,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   function fallbackFormulaSpeech(formula) {
     const spoken = KokoroTTSCore.verbalizeSimpleFormula(formula);
-    return spoken && spoken !== "formula omitted" ? spoken : "formula omitted";
+    return spoken && spoken !== "formula omitted"
+      ? spoken.replace(/^formula:\s*/i, "").trim()
+      : "formula omitted";
+  }
+
+  function isSmallOllamaModel(model) {
+    const matches = String(model || "").toLowerCase().match(/(\d+(?:\.\d+)?)\s*b\b/g);
+    if (!matches || matches.length === 0) return false;
+    const last = matches[matches.length - 1].match(/(\d+(?:\.\d+)?)/);
+    const size = last ? Number.parseFloat(last[1]) : Number.NaN;
+    return Number.isFinite(size) && size <= 4.5;
   }
 
   function normalizeFormulaSpeech(value, formula) {
@@ -3519,20 +3537,29 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   async function playProgressiveReadPlan(plan, context, generation, btnElement, buttonContainer) {
     let formulasReady = false;
     let formulaVerbalizations = [];
-    const formulaPromise = fetchFormulaVerbalizationsBackground(
-      plan.formulas,
-      context,
-      generation
-    ).then((values) => {
-      formulasReady = true;
-      formulaVerbalizations = Array.isArray(values) ? values : [];
-      return formulaVerbalizations;
-    }).catch((error) => {
-      formulasReady = true;
-      formulaVerbalizations = [];
-      console.warn("[Kokoro TTS] Background formula verbalization failed", error);
-      return [];
-    });
+    const localFormulaVerbalizations = plan.formulas.map(fallbackFormulaSpeech);
+    const useLocalFormulaRules = isSmallOllamaModel(settings.translateModel) &&
+      localFormulaVerbalizations.every((value) => value && value !== "formula omitted");
+    const formulaPromise = useLocalFormulaRules
+      ? Promise.resolve(localFormulaVerbalizations).then((values) => {
+          formulasReady = true;
+          formulaVerbalizations = values;
+          return formulaVerbalizations;
+        })
+      : fetchFormulaVerbalizationsBackground(
+          plan.formulas,
+          context,
+          generation
+        ).then((values) => {
+          formulasReady = true;
+          formulaVerbalizations = Array.isArray(values) ? values : [];
+          return formulaVerbalizations;
+        }).catch((error) => {
+          formulasReady = true;
+          formulaVerbalizations = [];
+          console.warn("[Kokoro TTS] Background formula verbalization failed", error);
+          return [];
+        });
 
     for (const segment of plan.segments) {
       if (!requestGate.isCurrent(generation)) return;

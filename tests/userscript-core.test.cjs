@@ -328,6 +328,18 @@ test("simple formulas are verbalized by rule before TTS", () => {
   assert.match(prepared.text, /formula: x squared plus y squared equals z squared/i);
 });
 
+test("formula read rules use conservative common readings", () => {
+  const { verbalizeSimpleFormula } = require("../tts-userscript.js");
+
+  assert.equal(verbalizeSimpleFormula("D_I"), "formula: D sub I");
+  assert.equal(verbalizeSimpleFormula("B_\\theta(x)"), "formula: B sub theta of x");
+  assert.equal(verbalizeSimpleFormula("\\hat{B}(x)"), "formula: B hat of x");
+  assert.equal(
+    verbalizeSimpleFormula("D_w \\to \\hat{B}(x)"),
+    "formula: D sub w to B hat of x"
+  );
+});
+
 
 test("formula replacement preserves surrounding sentence text", () => {
   const { replaceFormulaDelimiters } = require("../tts-userscript.js");
