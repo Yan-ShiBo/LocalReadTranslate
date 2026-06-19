@@ -81,6 +81,20 @@ OLLAMA_FORMULA_MODEL = os.environ.get("OLLAMA_FORMULA_MODEL", "translategemma:4b
 OLLAMA_READ_MODEL = os.environ.get("OLLAMA_READ_MODEL", "translategemma:4b")
 OLLAMA_TRANSLATE_TIMEOUT = float(os.environ.get("OLLAMA_TRANSLATE_TIMEOUT", "90"))
 MATH_GLOSSARY_FILE = Path(__file__).resolve().parent / "config" / "math_glossary.json"
+_GLOSSARY_SYMBOL_ALIASES = {
+    "double_arrow": "right_double_arrow",
+    "tilde": "tilde_accent",
+}
+_GLOSSARY_CANDIDATE_ALIASES = {
+    ("right_arrow", "mapping"): "function_type",
+    ("right_arrow", "derives"): "informal_derivation",
+    ("right_arrow", "data_construction"): "informal_derivation",
+    ("right_arrow", "points_to"): "literal",
+    ("mapsto", "mapping"): "element_mapping",
+    ("equals", "defined_as"): "definition_by_context",
+    ("tuple", "tuple"): "ordered_tuple",
+    ("sqrt", "sqrt"): "square_root",
+}
 
 if VOICE not in AVAILABLE_VOICES:
     raise ValueError(f"Unsupported KOKORO_VOICE: {VOICE}")
@@ -116,6 +130,11 @@ def _glossary_symbol(symbol_id: str) -> dict:
     for item in MATH_GLOSSARY.get("symbols", []):
         if item.get("id") == symbol_id:
             return item
+    alias = _GLOSSARY_SYMBOL_ALIASES.get(symbol_id)
+    if alias:
+        for item in MATH_GLOSSARY.get("symbols", []):
+            if item.get("id") == alias:
+                return item
     return {}
 
 
@@ -123,10 +142,20 @@ def _glossary_candidate(symbol_id: str, candidate_id: str | None = None, lang: s
     symbol = _glossary_symbol(symbol_id)
     if not symbol:
         return ""
-    selected_id = candidate_id or symbol.get("default_candidate")
+    selected_id = candidate_id or symbol.get("default_candidate") or symbol.get("semantic_default")
     for candidate in symbol.get("candidates", []):
         if candidate.get("id") == selected_id:
             return str(candidate.get(lang) or "")
+    alias = _GLOSSARY_CANDIDATE_ALIASES.get((symbol.get("id", symbol_id), selected_id or ""))
+    if alias:
+        for candidate in symbol.get("candidates", []):
+            if candidate.get("id") == alias:
+                return str(candidate.get(lang) or "")
+    if not candidate_id:
+        read_aloud = symbol.get("read_aloud") or {}
+        default_key = "default_zh" if lang == "zh" else "default_en"
+        if read_aloud.get(default_key):
+            return str(read_aloud[default_key])
     direct = symbol.get("direct", {})
     return str(direct.get(lang) or "")
 
@@ -137,21 +166,25 @@ def _glossary_direct(symbol_id: str, lang: str = "zh") -> str:
     return str(direct.get(lang) or "")
 
 
-def _math_glossary_prompt(lang: str = "zh", max_symbols: int = 12) -> str:
+def _math_glossary_prompt(lang: str = "zh", max_symbols: int = 40) -> str:
     lines = [
         "Math glossary. Choose the reading that best fits the formula and nearby context; use the direct reading when semantics are unclear.",
     ]
     for item in MATH_GLOSSARY.get("symbols", [])[:max_symbols]:
         forms = ", ".join(item.get("forms", [])[:4])
         direct = (item.get("direct") or {}).get(lang, "")
+        read_aloud = item.get("read_aloud") or {}
+        default_key = "default_zh" if lang == "zh" else "default_en"
+        default = read_aloud.get(default_key) or _glossary_candidate(item.get("id", ""), None, lang)
         candidate_parts = []
-        for candidate in item.get("candidates", []):
+        for candidate in item.get("candidates", [])[:8]:
             reading = candidate.get(lang)
-            when = candidate.get("when")
             if reading:
-                candidate_parts.append(f"{reading} ({when})" if when else str(reading))
+                candidate_parts.append(f"{candidate.get('id')}={reading}")
         candidates = "; ".join(candidate_parts)
-        lines.append(f"- {forms}: direct={direct}; candidates={candidates}")
+        category = item.get("category", "")
+        label = f"{category}; " if category else ""
+        lines.append(f"- {forms}: {label}direct={direct}; default={default}; candidates={candidates}")
     return "\n".join(lines)
 
 # ════════════════════════════════════════════════════════════════
@@ -286,7 +319,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.3",
+    version="1.7.4",
     lifespan=lifespan,
 )
 
@@ -791,7 +824,7 @@ def _choose_right_arrow_candidate(value: str, left: str, right: str) -> str:
     ):
         return "data_construction"
     if ":" in left_s:
-        return "mapping"
+        return "function_type"
     if re.fullmatch(r"(?:\\?[A-Za-z]+|[A-Za-z][A-Za-z0-9_{}^]*)", left_s) and re.fullmatch(
         r"(?:0|1|-?\\d+(?:\\.\\d+)?|\\infty|infty|∞)",
         right_s,
@@ -848,10 +881,9 @@ def _describe_formula_atom_zh(expr: str) -> str:
     if hat_match:
         base, arg = hat_match.groups()
         reading = _glossary_candidate("hat", "estimate", "zh") or "估计值"
-        desc = f"{_describe_formula_token_zh(base)}的{reading}"
         if arg:
-            desc += f"关于{_describe_formula_atom_zh(arg)}的函数"
-        return desc
+            return f"{_describe_formula_token_zh(base)}的估计函数在{_describe_formula_atom_zh(arg)}处的值"
+        return f"{_describe_formula_token_zh(base)}的{reading}"
 
     sub_func = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)_\{?([^{}()\s]+)\}?\((.+)\)", value)
     if sub_func:
@@ -859,7 +891,7 @@ def _describe_formula_atom_zh(expr: str) -> str:
         sub_reading = _glossary_candidate("subscript", "index", "zh") or "下角标"
         return (
             f"{_describe_formula_token_zh(base)}的{sub_reading}{_describe_formula_token_zh(sub)}"
-            f"关于{_describe_formula_atom_zh(arg)}的函数"
+            f"在{_describe_formula_atom_zh(arg)}处的值"
         )
 
     sub_match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)_\{?([^{}()\s]+)\}?", value)
@@ -887,7 +919,7 @@ def _describe_formula_atom_zh(expr: str) -> str:
     func_match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)\((.+)\)", value)
     if func_match:
         base, arg = func_match.groups()
-        return f"{_describe_formula_token_zh(base)}关于{_describe_formula_atom_zh(arg)}的函数"
+        return f"{_describe_formula_token_zh(base)}在{_describe_formula_atom_zh(arg)}处的值"
 
     frac_match = re.fullmatch(r"\\frac\{(.+)\}\{(.+)\}", value)
     if frac_match:
@@ -944,6 +976,12 @@ def _rule_describe_formula_zh(formula: str) -> str:
         arrow_reading = _glossary_candidate("right_arrow", arrow_candidate, "zh") or _glossary_direct("right_arrow", "zh") or "箭头"
         left_desc = _describe_formula_atom_zh(arrow_parts[0])
         right_desc = _describe_formula_atom_zh(arrow_parts[1])
+        if arrow_candidate == "function_type" and ":" in arrow_parts[0]:
+            name, domain = arrow_parts[0].split(":", 1)
+            return (
+                f"{_describe_formula_atom_zh(name)}是从"
+                f"{_describe_formula_atom_zh(domain)}到{right_desc}的函数"
+            )
         if arrow_candidate == "data_construction":
             return f"由{left_desc}{arrow_reading}{right_desc}"
         return (
@@ -1026,15 +1064,15 @@ def _call_ollama_formula_verbalization_zh_single(
             "Return ONLY the spoken description, with no reasoning, notes, markdown fences, symbols, or explanations.\n\n"
             "数学术语及读法规范对照表 (Mathematical Glossary & Reading Standards):\n"
             "1. 上标/修饰符 (Superscripts/Modifiers):\n"
-            "   - \\hat{x} 或 \\hat x (Hat): 读作 'x的估计值' 或 'x帽'\n"
+            "   - \\hat{x} 或 \\hat x (Hat): 读作 'x的估计量'；\\hat{B}(x) 读作 'B的估计函数在x处的值'\n"
             "   - \\bar{x} 或 \\bar x (Bar): 读作 'x的平均值' 或 'x拔'\n"
             "   - \\tilde{x} 或 \\tilde x (Tilde): 读作 'x波浪号'\n"
             "   - x^* (Conjugate): 读作 'x的共轭' 或 'x星'\n"
             "   - x^T (Transpose): 读作 'x的转置'\n"
             "   - x^{-1} (Inverse): 读作 'x的逆'\n"
-            "2. 下角标 (Subscripts):\n"
-            "   - x_i: 读作 'x的下角标i'\n"
-            "   - D_w: 读作 'D的下角标w'\n"
+            "2. 下标 (Subscripts):\n"
+            "   - x_i: 读作 'x的下标i'\n"
+            "   - D_w: 读作 'D的下标w'\n"
             "3. 箭头与关系符 (Arrows & Relations):\n"
             "   - \\rightarrow 或 \\to: 优先按上下文读作 '指向'、'得到'、'转为'；只有函数映射语境才读作 '映射到'\n"
             "   - \\le: 读作 '小于等于'\n"
@@ -1042,16 +1080,16 @@ def _call_ollama_formula_verbalization_zh_single(
             "   - \\approx: 读作 '约等于'\n"
             "   - \\neq: 读作 '不等于'\n"
             "4. 常见数学函数与运算 (Functions & Operators):\n"
-            "   - f(x): 读作 'f关于x的函数' 或 'f(x)'\n"
+            "   - f(x): 读作 'f在x处的值'\n"
             "   - \\frac{a}{b}: 读作 'b分之a'\n"
             "   - \\sqrt{x}: 读作 '根号x'\n"
             "   - \\sum: 读作 '求和'\n"
             "   - \\partial: 读作 '偏导数'\n\n"
             "请参考上述规范，生成最符合学术和口语化标准的中文描述。\n"
             "Example: 'E = mc^2' -> 'E等于m乘以c的平方'.\n"
-            "Example: 'D_w \\rightarrow \\hat{B}(x)' -> '由D的下角标w得到B的估计值关于x的函数'.\n"
+            "Example: 'D_w \\rightarrow \\hat{B}(x)' -> '由D的下标w得到B的估计函数在x处的值'.\n"
             "Example: 'B_\\theta(x) \\rightarrow D_w = \\{(x_i, B_\\theta(x_i), w_i)\\}' -> "
-            "'由B的下角标theta关于x的函数得到D的下角标w，D的下角标w定义为由三元组组成的集合'.\n\n"
+            "'由B的下标theta在x处的值得到D的下标w，D的下标w定义为由三元组组成的集合'.\n\n"
             f"{glossary_prompt}"
         ),
         "prompt": prompt,

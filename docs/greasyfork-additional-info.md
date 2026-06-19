@@ -21,7 +21,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - 查看本地 TTS 服务与 Ollama 模型状态
 - 英文会尽量原样保留，中文会翻成英文，公式会变成英文口语描述
 - MathJax/MathML/LaTeX 会优先提取语义公式；翻译结果保留公式符号，并附加专业中文描述
-- 公式口语化会参考项目里的数学术语表；右箭头等符号会按语境选择“映射到、趋向于、推导出、得到、箭头”等读法
+- 公式口语化会参考项目里的数学术语表；50+ 个核心数学符号会按语境选择更合适的读法，例如右箭头可读作“映射到、趋向于、推导出、得到、右箭头”
 - 如果朗读稿准备接口不可用，`Read` 会退回到 `/translate` 并指定翻译成 English 后再朗读
 - `Read` 和 `Translate` 可以同时进行；按钮行固定在选区下方，译文卡片会根据空间避让，减少遮挡正文
 - 只选中 MathJax/MathML/KaTeX 公式的一部分时，脚本会尽量扩展到完整公式框；如果选中的是包含公式的一整句话，会保留公式前后的句子内容
@@ -41,7 +41,7 @@ ollama pull qwen3:14b
 ```
 
 翻译、朗读稿准备和复杂公式口语化默认都使用 `translategemma:4b`。可在服务端通过 `OLLAMA_TRANSLATE_MODEL`、`OLLAMA_READ_MODEL`、`OLLAMA_FORMULA_MODEL` 覆盖。如果第一次变慢，通常是 Ollama 正在加载模型。
-数学符号读法可在项目的 `config/math_glossary.json` 中调整。
+数学符号读法可在项目的 `config/math_glossary.json` 中调整，当前覆盖箭头、上下标、集合、逻辑、求和、积分、偏导等常见论文符号。
 
 ## 隐私说明
 

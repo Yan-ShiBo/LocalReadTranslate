@@ -355,7 +355,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("D_w → B̂(x)", payload["translated_text"])
-        self.assertIn("由D的下角标w得到B的估计值关于x的函数", payload["translated_text"])
+        self.assertIn("由D的下标w得到B的估计函数在x处的值", payload["translated_text"])
         self.assertNotIn("__MATH_0__", payload["translated_text"])
         translate_call.assert_called_once_with(
             "This stage uses __MATH_0__.",
@@ -412,8 +412,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         translated = response.json()["translated_text"]
         self.assertIn("B_θ(x) → D_w={(x_i,B_θ(x_i),w_i)}", translated)
-        self.assertIn("由B的下角标theta关于x的函数得到D的下角标w", translated)
-        self.assertIn("D的下角标w定义为由三元组", translated)
+        self.assertIn("由B的下标theta在x处的值得到D的下标w", translated)
+        self.assertIn("D的下标w定义为由三元组", translated)
         self.assertNotIn("映射到", translated)
 
     def test_formula_description_handles_unbraced_hat(self):
@@ -423,30 +423,36 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(
             server._rule_describe_formula_zh(r"\hat B(x)"),
-            "B的估计值关于x的函数",
+            "B的估计函数在x处的值",
         )
 
     def test_math_glossary_exposes_direct_and_contextual_readings(self):
+        self.assertGreaterEqual(len(server.MATH_GLOSSARY["symbols"]), 50)
         self.assertEqual(
             server._glossary_candidate("right_arrow", "literal", "zh"),
-            "箭头",
+            "右箭头",
+        )
+        self.assertEqual(
+            server._glossary_candidate("hat", "unit_vector", "zh"),
+            "单位向量",
         )
         prompt = server._math_glossary_prompt("zh")
         self.assertIn("映射到", prompt)
         self.assertIn("推导", prompt)
+        self.assertIn("偏导数", prompt)
 
     def test_formula_description_chooses_arrow_semantics(self):
         self.assertIn(
             "趋向于",
             server._rule_describe_formula_zh(r"x \to 0"),
         )
-        self.assertIn(
-            "映射到",
+        self.assertEqual(
             server._rule_describe_formula_zh(r"f: X \to Y"),
+            "f是从X到Y的函数",
         )
         self.assertEqual(
             server._rule_describe_formula_zh(r"D_w \to \hat{B}(x)"),
-            "由D的下角标w得到B的估计值关于x的函数",
+            "由D的下标w得到B的估计函数在x处的值",
         )
 
     def test_read_prepare_uses_translategemma_by_default(self):

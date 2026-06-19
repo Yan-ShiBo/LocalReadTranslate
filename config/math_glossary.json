@@ -1,209 +1,333 @@
 {
-  "version": 1,
+  "version": 2,
+  "scope": "Core mathematical notation for reading, translation, and paper-level explanation. This is not a complete inventory of all mathematical symbols.",
+  "reading_policy": {
+    "direct": "Name of the visible symbol or notation.",
+    "read_aloud.default_zh": "Default Chinese oral reading when context is ordinary mathematical prose.",
+    "read_aloud.default_en": "Default English oral reading when context is ordinary mathematical prose.",
+    "read_aloud.structural_en": "More explicit structural/accessibility-style reading; useful for screen readers, speech-to-LaTeX, or ambiguity-sensitive contexts.",
+    "semantic_default": "Default semantic interpretation, usually contextual rather than absolute."
+  },
   "symbols": [
     {
       "id": "right_arrow",
-      "forms": ["\\rightarrow", "\\to", "->", "→"],
+      "forms": [
+        "\\rightarrow",
+        "\\to",
+        "->",
+        "→"
+      ],
+      "category": "arrow_relation",
       "direct": {
-        "zh": "箭头",
-        "en": "arrow"
+        "zh": "右箭头",
+        "en": "right arrow"
       },
-      "default_candidate": "points_to",
+      "read_aloud": {
+        "default_zh": "到",
+        "default_en": "to",
+        "structural_en": "right arrow"
+      },
+      "semantic_default": "contextual_to",
       "candidates": [
         {
-          "id": "mapping",
-          "zh": "映射到",
-          "en": "maps to",
-          "when": "Function mapping or type signature, for example f: X -> Y."
+          "id": "function_type",
+          "zh": "从 X 到 Y",
+          "en": "from X to Y",
+          "when": "Function declaration/type signature: f: X → Y."
         },
         {
           "id": "limit",
           "zh": "趋向于",
-          "en": "approaches",
-          "when": "Limit expression, for example x -> 0 or n -> infinity."
+          "en": "approaches / tends to",
+          "when": "Limit expression: x → 0, n → ∞."
         },
         {
-          "id": "derives",
-          "zh": "推导出",
-          "en": "implies",
-          "when": "Logical implication, theorem derivation, or proof step."
+          "id": "transition",
+          "zh": "转移到 / 变为",
+          "en": "transitions to / goes to",
+          "when": "State transition, rewriting, dynamics: s_t → s_{t+1}."
         },
         {
-          "id": "data_construction",
+          "id": "morphism",
+          "zh": "从 A 到 B 的箭头 / 态射",
+          "en": "an arrow/morphism from A to B",
+          "when": "Category theory or graph-like abstract arrows."
+        },
+        {
+          "id": "informal_derivation",
           "zh": "得到",
-          "en": "gives",
-          "when": "Algorithm, data construction, or expression-to-dataset transformation."
-        },
-        {
-          "id": "points_to",
-          "zh": "指向",
-          "en": "points to",
-          "when": "Generic relation when the specific meaning is unclear."
+          "en": "gives / yields",
+          "when": "Informal derivation or algorithmic transformation."
         },
         {
           "id": "literal",
-          "zh": "箭头",
-          "en": "arrow",
-          "when": "When preserving the visible symbol is clearer than choosing a semantic interpretation."
-        }
-      ]
-    },
-    {
-      "id": "mapsto",
-      "forms": ["\\mapsto", "↦"],
-      "direct": {
-        "zh": "映射箭头",
-        "en": "maps-to arrow"
-      },
-      "default_candidate": "mapping",
-      "candidates": [
+          "zh": "右箭头",
+          "en": "right arrow",
+          "when": "When describing the notation itself."
+        },
         {
           "id": "mapping",
           "zh": "映射到",
           "en": "maps to",
-          "when": "Explicit mapsto notation."
+          "when": "Function mapping when a compact oral reading is needed."
+        },
+        {
+          "id": "derives",
+          "zh": "推导出",
+          "en": "derives / implies",
+          "when": "Informal proof step or derivation."
+        },
+        {
+          "id": "data_construction",
+          "zh": "得到",
+          "en": "gives / yields",
+          "when": "Algorithm, data construction, or expression-to-dataset transformation."
+        },
+        {
+          "id": "points_to",
+          "zh": "右箭头",
+          "en": "right arrow",
+          "when": "Unclear semantics; read the visible arrow directly."
+        }
+      ],
+      "notes": "Do not use 'maps to' as the default for f: X → Y. In that context, the standard oral reading is usually 'f from X to Y'.",
+      "default_candidate": "points_to"
+    },
+    {
+      "id": "mapsto",
+      "forms": [
+        "\\mapsto",
+        "\\longmapsto",
+        "↦",
+        "⟼"
+      ],
+      "category": "arrow_relation",
+      "direct": {
+        "zh": "映射箭头",
+        "en": "maps-to arrow"
+      },
+      "read_aloud": {
+        "default_zh": "映射到",
+        "default_en": "maps to",
+        "structural_en": "maps-to arrow"
+      },
+      "semantic_default": "element_mapping",
+      "candidates": [
+        {
+          "id": "element_mapping",
+          "zh": "映射到",
+          "en": "maps to / is sent to",
+          "when": "Rule of a function: x ↦ f(x)."
         },
         {
           "id": "literal",
           "zh": "映射箭头",
           "en": "maps-to arrow",
-          "when": "When reading the visible notation directly."
-        }
-      ]
-    },
-    {
-      "id": "double_arrow",
-      "forms": ["\\Rightarrow", "⇒"],
-      "direct": {
-        "zh": "双箭头",
-        "en": "double arrow"
-      },
-      "default_candidate": "implies",
-      "candidates": [
-        {
-          "id": "implies",
-          "zh": "推出",
-          "en": "implies",
-          "when": "Logic or proof implication."
+          "when": "When describing the visible symbol."
         },
         {
-          "id": "therefore",
-          "zh": "因此得到",
-          "en": "therefore gives",
-          "when": "Derivation step in prose."
+          "id": "mapping",
+          "zh": "映射到",
+          "en": "maps to",
+          "when": "Explicit mapsto notation or element image under a function."
+        }
+      ],
+      "notes": "Use → for domain/codomain, and ↦ for the image of an element under a rule.",
+      "default_candidate": "mapping"
+    },
+    {
+      "id": "equals",
+      "forms": [
+        "="
+      ],
+      "category": "relation",
+      "direct": {
+        "zh": "等号",
+        "en": "equals sign"
+      },
+      "read_aloud": {
+        "default_zh": "等于",
+        "default_en": "equals / is equal to",
+        "structural_en": "equals sign"
+      },
+      "semantic_default": "equals",
+      "candidates": [
+        {
+          "id": "equals",
+          "zh": "等于",
+          "en": "equals / is equal to",
+          "when": "Equation or equality."
+        },
+        {
+          "id": "identity",
+          "zh": "恒等于",
+          "en": "is identically equal to",
+          "when": "Identity over a domain, often stated in prose rather than by symbol alone."
+        },
+        {
+          "id": "definition_by_context",
+          "zh": "定义为",
+          "en": "is defined as",
+          "when": "Only when surrounding text explicitly says 'let', 'define', or 'denote'."
+        },
+        {
+          "id": "defined_as",
+          "zh": "定义为",
+          "en": "is defined as",
+          "when": "Definition, assignment, or dataset-construction context."
+        }
+      ],
+      "notes": "Plain '=' should not default to 'is defined as'. Prefer :=, \\coloneqq, or \\triangleq for explicit definitions.",
+      "default_candidate": "equals"
+    },
+    {
+      "id": "defined_as",
+      "forms": [
+        ":=",
+        "\\coloneqq",
+        "\\triangleq",
+        "\\overset{\\mathrm{def}}{=}"
+      ],
+      "category": "relation",
+      "direct": {
+        "zh": "定义等号",
+        "en": "defined-as sign"
+      },
+      "read_aloud": {
+        "default_zh": "定义为",
+        "default_en": "is defined as",
+        "structural_en": "colon equals / defined as"
+      },
+      "semantic_default": "definition",
+      "candidates": [
+        {
+          "id": "definition",
+          "zh": "定义为",
+          "en": "is defined as",
+          "when": "Definitions, notation introduction, assignment-like mathematical definitions."
         },
         {
           "id": "literal",
-          "zh": "双箭头",
-          "en": "double arrow",
-          "when": "When preserving the visible symbol is clearer."
+          "zh": "冒号等号 / 定义等号",
+          "en": "colon equals / defined-as sign",
+          "when": "When describing notation."
         }
-      ]
+      ],
+      "notes": "This should be separated from ordinary equality.",
+      "default_candidate": "definition"
     },
     {
       "id": "hat",
-      "forms": ["\\hat{x}", "\\hat x", "x̂"],
+      "forms": [
+        "\\hat{x}",
+        "\\widehat{x}",
+        "\\hat x",
+        "x̂"
+      ],
+      "category": "accent",
       "direct": {
-        "zh": "x hat",
-        "en": "x hat"
+        "zh": "戴帽符号",
+        "en": "hat accent"
       },
-      "default_candidate": "estimate",
+      "read_aloud": {
+        "default_zh": "x 帽 / x 的估计量",
+        "default_en": "x hat",
+        "structural_en": "x with hat"
+      },
+      "semantic_default": "contextual_hat",
       "candidates": [
         {
           "id": "estimate",
-          "zh": "估计值",
-          "en": "estimated value",
+          "zh": "估计量",
+          "en": "estimate / estimator",
           "when": "Statistics, regression, approximation, learned model output, or estimator context."
+        },
+        {
+          "id": "unit_vector",
+          "zh": "单位向量",
+          "en": "unit vector",
+          "when": "Physics/vector notation, e.g. x-hat as a unit vector."
+        },
+        {
+          "id": "operator_or_transform",
+          "zh": "变换后的量 / 算子",
+          "en": "transformed quantity / operator",
+          "when": "Fourier transform or field-specific notation."
         },
         {
           "id": "literal",
           "zh": "戴帽符号",
-          "en": "hat symbol",
-          "when": "When the notation itself is being discussed."
+          "en": "hat accent",
+          "when": "Notation discussion."
         }
-      ]
-    },
-    {
-      "id": "bar",
-      "forms": ["\\bar{x}", "\\bar x", "x̄"],
-      "direct": {
-        "zh": "x bar",
-        "en": "x bar"
-      },
-      "default_candidate": "mean",
-      "candidates": [
-        {
-          "id": "mean",
-          "zh": "平均值",
-          "en": "mean",
-          "when": "Statistics or sample average context."
-        },
-        {
-          "id": "closure",
-          "zh": "闭包",
-          "en": "closure",
-          "when": "Topology or set closure context."
-        },
-        {
-          "id": "literal",
-          "zh": "横线符号",
-          "en": "bar symbol",
-          "when": "When reading the notation directly."
-        }
-      ]
-    },
-    {
-      "id": "tilde",
-      "forms": ["\\tilde{x}", "\\tilde x", "x̃"],
-      "direct": {
-        "zh": "x tilde",
-        "en": "x tilde"
-      },
-      "default_candidate": "approx_variant",
-      "candidates": [
-        {
-          "id": "approx_variant",
-          "zh": "近似量",
-          "en": "approximate variant",
-          "when": "Approximation or transformed-variable context."
-        },
-        {
-          "id": "literal",
-          "zh": "波浪符号",
-          "en": "tilde symbol",
-          "when": "When reading the notation directly."
-        }
-      ]
+      ],
+      "notes": "Do not force 'estimated value' outside statistics/ML context.",
+      "default_candidate": "estimate"
     },
     {
       "id": "subscript",
-      "forms": ["x_i", "x_{i}"],
+      "forms": [
+        "x_i",
+        "x_{i}",
+        "xᵢ"
+      ],
+      "category": "script",
       "direct": {
-        "zh": "下角标",
-        "en": "sub"
+        "zh": "下标",
+        "en": "subscript"
       },
-      "default_candidate": "index",
+      "read_aloud": {
+        "default_zh": "x 下标 i",
+        "default_en": "x sub i",
+        "structural_en": "x subscript i"
+      },
+      "semantic_default": "index",
       "candidates": [
         {
           "id": "index",
-          "zh": "下角标",
+          "zh": "下标",
           "en": "sub",
-          "when": "General indexed variable."
+          "when": "General indexed variable; use as a compact oral connector before the index."
+        },
+        {
+          "id": "partial_derivative_label",
+          "zh": "偏导标记",
+          "en": "partial-derivative label",
+          "when": "Notation such as f_x, if defined as derivative."
+        },
+        {
+          "id": "literal",
+          "zh": "下标 i",
+          "en": "subscript i",
+          "when": "Notation discussion or accessible reading."
         }
-      ]
+      ],
+      "notes": "Use 'subscript' for the symbol category; 'sub' is the usual oral abbreviation.",
+      "default_candidate": "index"
     },
     {
       "id": "superscript",
-      "forms": ["x^2", "x^{2}"],
+      "forms": [
+        "x^n",
+        "x^{n}",
+        "x²",
+        "x³"
+      ],
+      "category": "script",
       "direct": {
-        "zh": "上角标",
+        "zh": "上标",
         "en": "superscript"
       },
-      "default_candidate": "power",
+      "read_aloud": {
+        "default_zh": "x 的 n 次方",
+        "default_en": "x to the n-th / x to the power n",
+        "structural_en": "x sup n"
+      },
+      "semantic_default": "contextual_superscript",
       "candidates": [
         {
           "id": "power",
-          "zh": "上角标",
+          "zh": "上标",
           "en": "to the power of",
           "when": "General exponent."
         },
@@ -211,19 +335,37 @@
           "id": "square",
           "zh": "平方",
           "en": "squared",
-          "when": "Exponent 2."
+          "when": "Exponent 2: x^2."
         },
         {
           "id": "cube",
           "zh": "立方",
           "en": "cubed",
-          "when": "Exponent 3."
+          "when": "Exponent 3: x^3."
+        },
+        {
+          "id": "iteration",
+          "zh": "第 k 次迭代",
+          "en": "k-th iterate / k-th version",
+          "when": "Algorithms: x^{(k)}."
+        },
+        {
+          "id": "label",
+          "zh": "标签 / 副本编号",
+          "en": "label / copy index",
+          "when": "Tensor, layer, or sample notation if defined locally."
+        },
+        {
+          "id": "literal",
+          "zh": "上标 n",
+          "en": "superscript n",
+          "when": "Accessible reading or notation discussion."
         },
         {
           "id": "transpose",
           "zh": "转置",
           "en": "transpose",
-          "when": "Exponent T."
+          "when": "Exponent T or top symbol."
         },
         {
           "id": "inverse",
@@ -231,39 +373,27 @@
           "en": "inverse",
           "when": "Exponent -1."
         }
-      ]
-    },
-    {
-      "id": "equals",
-      "forms": ["="],
-      "direct": {
-        "zh": "等号",
-        "en": "equals sign"
-      },
-      "default_candidate": "equals",
-      "candidates": [
-        {
-          "id": "equals",
-          "zh": "等于",
-          "en": "equals",
-          "when": "Equation or equality."
-        },
-        {
-          "id": "defined_as",
-          "zh": "定义为",
-          "en": "is defined as",
-          "when": "Definition, dataset construction, or assignment context."
-        }
-      ]
+      ],
+      "notes": "Do not force every superscript to be exponentiation.",
+      "default_candidate": "power"
     },
     {
       "id": "set_braces",
-      "forms": ["\\{...\\}", "{...}"],
+      "forms": [
+        "\\{...\\}",
+        "{...}"
+      ],
+      "category": "delimiter",
       "direct": {
         "zh": "花括号",
-        "en": "braces"
+        "en": "braces / curly braces"
       },
-      "default_candidate": "set",
+      "read_aloud": {
+        "default_zh": "集合",
+        "default_en": "set of",
+        "structural_en": "left brace ... right brace"
+      },
+      "semantic_default": "contextual_braces",
       "candidates": [
         {
           "id": "set",
@@ -272,69 +402,1615 @@
           "when": "Set notation."
         },
         {
+          "id": "set_builder",
+          "zh": "满足条件的集合",
+          "en": "set of ... such that ...",
+          "when": "Set-builder notation: {x \\in X : P(x)}."
+        },
+        {
+          "id": "cases",
+          "zh": "分段定义",
+          "en": "cases",
+          "when": "Piecewise functions with a left brace."
+        },
+        {
           "id": "literal",
           "zh": "花括号",
-          "en": "braces",
-          "when": "When reading visible notation directly."
+          "en": "braces / curly braces",
+          "when": "Visible notation."
         }
-      ]
+      ],
+      "notes": "Braces are delimiters; 'set' is only one semantic use.",
+      "default_candidate": "set"
     },
     {
       "id": "tuple",
-      "forms": ["(x_i, y_i)", "(...)"],
+      "forms": [
+        "(x_i, y_i)",
+        "(x, y)",
+        "(...)"
+      ],
+      "category": "compound_notation",
       "direct": {
-        "zh": "括号",
-        "en": "parentheses"
+        "zh": "圆括号表达式",
+        "en": "parenthesized expression"
       },
-      "default_candidate": "tuple",
+      "read_aloud": {
+        "default_zh": "x_i 和 y_i 组成的有序对",
+        "default_en": "ordered pair x sub i, y sub i / tuple",
+        "structural_en": "open parenthesis x sub i comma y sub i close parenthesis"
+      },
+      "semantic_default": "ordered_tuple",
       "candidates": [
+        {
+          "id": "ordered_tuple",
+          "zh": "有序元组",
+          "en": "ordered tuple",
+          "when": "Data pair, coordinate, sample pair."
+        },
+        {
+          "id": "coordinate",
+          "zh": "坐标",
+          "en": "coordinate pair",
+          "when": "Geometry or vector coordinates."
+        },
+        {
+          "id": "sample_pair",
+          "zh": "样本-标签对",
+          "en": "input-label pair / sample pair",
+          "when": "ML dataset notation: (x_i,y_i)."
+        },
         {
           "id": "tuple",
           "zh": "元组",
           "en": "tuple",
           "when": "Comma-separated ordered elements."
-        },
-        {
-          "id": "literal",
-          "zh": "括号",
-          "en": "parentheses",
-          "when": "When reading visible notation directly."
         }
-      ]
+      ],
+      "notes": "This entry is useful, but it should be subordinate to the more general parentheses entry.",
+      "default_candidate": "tuple"
     },
     {
       "id": "fraction",
-      "forms": ["\\frac{a}{b}"],
+      "forms": [
+        "\\frac{a}{b}",
+        "a/b",
+        "⁄"
+      ],
+      "category": "layout",
       "direct": {
         "zh": "分式",
         "en": "fraction"
       },
-      "default_candidate": "fraction",
+      "read_aloud": {
+        "default_zh": "b 分之 a",
+        "default_en": "a over b",
+        "structural_en": "fraction with numerator a and denominator b"
+      },
+      "semantic_default": "fraction",
       "candidates": [
         {
           "id": "fraction",
-          "zh": "b分之a",
-          "en": "a over b",
-          "when": "Fraction notation."
+          "zh": "分式",
+          "en": "fraction / ratio",
+          "when": "General fraction notation."
+        },
+        {
+          "id": "division",
+          "zh": "a 除以 b",
+          "en": "a divided by b",
+          "when": "Arithmetic operation."
+        },
+        {
+          "id": "conditional",
+          "zh": "条件关系中的斜线",
+          "en": "given / conditioned on",
+          "when": "Probability notation may use p(x|y), not usually \\frac."
         }
-      ]
+      ],
+      "notes": "For nested fractions, structural reading may be safer than ordinary oral reading.",
+      "default_candidate": "fraction"
     },
     {
       "id": "sqrt",
-      "forms": ["\\sqrt{x}"],
+      "forms": [
+        "\\sqrt{x}",
+        "√x"
+      ],
+      "category": "radical",
       "direct": {
         "zh": "根号",
-        "en": "square root"
+        "en": "square-root sign"
       },
-      "default_candidate": "sqrt",
+      "read_aloud": {
+        "default_zh": "根号 x / x 的平方根",
+        "default_en": "square root of x",
+        "structural_en": "square root of x"
+      },
+      "semantic_default": "square_root",
       "candidates": [
         {
+          "id": "square_root",
+          "zh": "平方根",
+          "en": "square root",
+          "when": "Square-root notation."
+        },
+        {
+          "id": "principal_root",
+          "zh": "主平方根",
+          "en": "principal square root",
+          "when": "Real/nonnegative or complex principal branch context."
+        },
+        {
           "id": "sqrt",
-          "zh": "根号",
-          "en": "square root of",
+          "zh": "平方根",
+          "en": "square root",
           "when": "Square-root notation."
         }
-      ]
+      ],
+      "notes": "In formal analysis, clarify principal branch if complex values are involved.",
+      "default_candidate": "sqrt"
+    },
+    {
+      "id": "bar",
+      "forms": [
+        "\\bar{x}",
+        "\\overline{x}",
+        "\\bar x",
+        "x̄"
+      ],
+      "category": "accent",
+      "direct": {
+        "zh": "x 横线",
+        "en": "x bar"
+      },
+      "read_aloud": {
+        "default_zh": "x 横线",
+        "default_en": "x bar",
+        "structural_en": "x with bar"
+      },
+      "semantic_default": "contextual_bar",
+      "candidates": [
+        {
+          "id": "mean",
+          "zh": "平均值 / 样本均值",
+          "en": "mean / sample mean",
+          "when": "Statistics: x̄."
+        },
+        {
+          "id": "closure",
+          "zh": "闭包",
+          "en": "closure",
+          "when": "Topology or set closure: \\bar{A}."
+        },
+        {
+          "id": "complex_conjugate",
+          "zh": "复共轭",
+          "en": "complex conjugate",
+          "when": "Complex analysis: \\bar{z}."
+        },
+        {
+          "id": "complement",
+          "zh": "补集",
+          "en": "complement",
+          "when": "Set theory or probability, if local notation defines it."
+        },
+        {
+          "id": "literal",
+          "zh": "横线符号",
+          "en": "bar accent",
+          "when": "Notation discussion."
+        }
+      ],
+      "notes": "Default semantic meaning should be contextual, not always mean.",
+      "default_candidate": "mean"
+    },
+    {
+      "id": "tilde_accent",
+      "forms": [
+        "\\tilde{x}",
+        "\\widetilde{x}",
+        "\\tilde x",
+        "x̃"
+      ],
+      "category": "accent",
+      "direct": {
+        "zh": "x 波浪",
+        "en": "x tilde"
+      },
+      "read_aloud": {
+        "default_zh": "x 波浪",
+        "default_en": "x tilde",
+        "structural_en": "x with tilde"
+      },
+      "semantic_default": "contextual_tilde_accent",
+      "candidates": [
+        {
+          "id": "approx_variant",
+          "zh": "近似量 / 扰动量 / 变换变量",
+          "en": "approximate variant / transformed variable",
+          "when": "Approximation, transformed variable, normalized variable, perturbed quantity."
+        },
+        {
+          "id": "random_or_reconstructed",
+          "zh": "随机样本 / 重构量",
+          "en": "randomized or reconstructed quantity",
+          "when": "Signal processing or ML notation if defined locally."
+        },
+        {
+          "id": "literal",
+          "zh": "波浪符号",
+          "en": "tilde accent",
+          "when": "Notation discussion."
+        }
+      ],
+      "notes": "Do not confuse accent \\tilde{x} with relation x \\sim D.",
+      "default_candidate": "approx_variant"
+    },
+    {
+      "id": "right_double_arrow",
+      "forms": [
+        "\\Rightarrow",
+        "⇒"
+      ],
+      "category": "logic_arrow",
+      "direct": {
+        "zh": "右双线箭头",
+        "en": "right double arrow"
+      },
+      "read_aloud": {
+        "default_zh": "推出",
+        "default_en": "implies",
+        "structural_en": "right double arrow"
+      },
+      "semantic_default": "implies",
+      "candidates": [
+        {
+          "id": "implies",
+          "zh": "推出 / 蕴含",
+          "en": "implies / if ..., then ...",
+          "when": "Logical implication: P ⇒ Q."
+        },
+        {
+          "id": "therefore",
+          "zh": "因此得到",
+          "en": "therefore gives",
+          "when": "Informal proof step, if not used as a formal connective."
+        },
+        {
+          "id": "literal",
+          "zh": "右双线箭头",
+          "en": "right double arrow",
+          "when": "When describing the notation itself."
+        }
+      ],
+      "notes": "Avoid calling it only 'double arrow' in Chinese because that can be confused with bidirectional arrows.",
+      "default_candidate": "implies"
+    },
+    {
+      "id": "left_right_double_arrow",
+      "forms": [
+        "\\Leftrightarrow",
+        "⇔",
+        "\\iff"
+      ],
+      "category": "logic_arrow",
+      "direct": {
+        "zh": "左右双线箭头",
+        "en": "left-right double arrow"
+      },
+      "read_aloud": {
+        "default_zh": "当且仅当",
+        "default_en": "if and only if",
+        "structural_en": "left right double arrow"
+      },
+      "semantic_default": "iff",
+      "candidates": [
+        {
+          "id": "iff",
+          "zh": "当且仅当",
+          "en": "if and only if",
+          "when": "Logical equivalence: P ⇔ Q."
+        },
+        {
+          "id": "equivalent",
+          "zh": "等价于",
+          "en": "is equivalent to",
+          "when": "Equivalence of statements or conditions."
+        },
+        {
+          "id": "literal",
+          "zh": "左右双线箭头",
+          "en": "left-right double arrow",
+          "when": "When describing the visible symbol."
+        }
+      ],
+      "notes": "This is a high-priority missing symbol if ⇒ is included.",
+      "default_candidate": "iff"
+    },
+    {
+      "id": "parentheses",
+      "forms": [
+        "(...)",
+        "\\left( ... \\right)"
+      ],
+      "category": "delimiter",
+      "direct": {
+        "zh": "圆括号",
+        "en": "parentheses"
+      },
+      "read_aloud": {
+        "default_zh": "括号",
+        "default_en": "parentheses / quantity",
+        "structural_en": "open parenthesis ... close parenthesis"
+      },
+      "semantic_default": "grouping",
+      "candidates": [
+        {
+          "id": "grouping",
+          "zh": "分组",
+          "en": "grouping / quantity",
+          "when": "Algebraic grouping: (x+y)^2."
+        },
+        {
+          "id": "function_application",
+          "zh": "函数作用于",
+          "en": "of / evaluated at",
+          "when": "Function call: f(x), read 'f of x'."
+        },
+        {
+          "id": "tuple",
+          "zh": "有序元组",
+          "en": "ordered tuple",
+          "when": "Comma-separated ordered elements: (x,y)."
+        },
+        {
+          "id": "open_interval",
+          "zh": "开区间",
+          "en": "open interval",
+          "when": "Interval notation: (a,b)."
+        },
+        {
+          "id": "literal",
+          "zh": "圆括号",
+          "en": "parentheses",
+          "when": "Notation discussion."
+        }
+      ],
+      "notes": "Do not default every parenthesized comma expression to tuple without checking context.",
+      "default_candidate": "grouping"
+    },
+    {
+      "id": "square_brackets",
+      "forms": [
+        "[...]",
+        "\\left[ ... \\right]"
+      ],
+      "category": "delimiter",
+      "direct": {
+        "zh": "方括号",
+        "en": "square brackets"
+      },
+      "read_aloud": {
+        "default_zh": "方括号",
+        "default_en": "brackets / square brackets",
+        "structural_en": "left bracket ... right bracket"
+      },
+      "semantic_default": "contextual_brackets",
+      "candidates": [
+        {
+          "id": "closed_interval",
+          "zh": "闭区间",
+          "en": "closed interval",
+          "when": "Interval notation: [a,b]."
+        },
+        {
+          "id": "indexing",
+          "zh": "索引",
+          "en": "indexing",
+          "when": "Programming or discrete math notation: A[i]."
+        },
+        {
+          "id": "matrix",
+          "zh": "矩阵",
+          "en": "matrix",
+          "when": "Matrix delimiters."
+        },
+        {
+          "id": "literal",
+          "zh": "方括号",
+          "en": "square brackets",
+          "when": "Notation discussion."
+        }
+      ],
+      "notes": "Important for CS/ML papers.",
+      "default_candidate": "closed_interval"
+    },
+    {
+      "id": "colon",
+      "forms": [
+        ":",
+        "f: X \\to Y"
+      ],
+      "category": "punctuation_or_relation",
+      "direct": {
+        "zh": "冒号",
+        "en": "colon"
+      },
+      "read_aloud": {
+        "default_zh": "f 从 X 到 Y",
+        "default_en": "f from X to Y",
+        "structural_en": "colon"
+      },
+      "semantic_default": "function_type_separator",
+      "candidates": [
+        {
+          "id": "function_type_separator",
+          "zh": "函数定义域和值域分隔",
+          "en": "from ... to ...",
+          "when": "Function/type signature: f: X → Y."
+        },
+        {
+          "id": "such_that",
+          "zh": "使得 / 满足",
+          "en": "such that",
+          "when": "Set-builder notation: {x : P(x)}."
+        },
+        {
+          "id": "ratio",
+          "zh": "比",
+          "en": "ratio",
+          "when": "Ratio notation: a:b."
+        },
+        {
+          "id": "literal",
+          "zh": "冒号",
+          "en": "colon",
+          "when": "Notation discussion."
+        }
+      ],
+      "notes": "Colon is essential for correctly reading f: X → Y.",
+      "default_candidate": "function_type_separator"
+    },
+    {
+      "id": "in",
+      "forms": [
+        "\\in",
+        "∈"
+      ],
+      "category": "set_relation",
+      "direct": {
+        "zh": "属于号",
+        "en": "element-of sign"
+      },
+      "read_aloud": {
+        "default_zh": "属于",
+        "default_en": "is in / is an element of",
+        "structural_en": "element of"
+      },
+      "semantic_default": "element_of",
+      "candidates": [
+        {
+          "id": "element_of",
+          "zh": "属于 / 是……的元素",
+          "en": "is an element of",
+          "when": "Set membership: x ∈ A."
+        }
+      ],
+      "default_candidate": "element_of"
+    },
+    {
+      "id": "notin",
+      "forms": [
+        "\\notin",
+        "∉"
+      ],
+      "category": "set_relation",
+      "direct": {
+        "zh": "不属于号",
+        "en": "not-element-of sign"
+      },
+      "read_aloud": {
+        "default_zh": "不属于",
+        "default_en": "is not in / is not an element of",
+        "structural_en": "not an element of"
+      },
+      "semantic_default": "not_element_of",
+      "candidates": [
+        {
+          "id": "not_element_of",
+          "zh": "不属于",
+          "en": "is not an element of",
+          "when": "Set membership negation."
+        }
+      ],
+      "default_candidate": "not_element_of"
+    },
+    {
+      "id": "subset",
+      "forms": [
+        "\\subset",
+        "⊂"
+      ],
+      "category": "set_relation",
+      "direct": {
+        "zh": "子集号",
+        "en": "subset sign"
+      },
+      "read_aloud": {
+        "default_zh": "是……的子集",
+        "default_en": "is a subset of / is contained in",
+        "structural_en": "subset of"
+      },
+      "semantic_default": "subset",
+      "candidates": [
+        {
+          "id": "subset",
+          "zh": "子集 / 真子集，依作者约定",
+          "en": "subset / proper subset depending on convention",
+          "when": "Set inclusion."
+        }
+      ],
+      "notes": "Use \\subseteq for unambiguous 'subset or equal'. Some authors use ⊂ inconsistently.",
+      "default_candidate": "subset"
+    },
+    {
+      "id": "subseteq",
+      "forms": [
+        "\\subseteq",
+        "⊆"
+      ],
+      "category": "set_relation",
+      "direct": {
+        "zh": "包含于或等于号",
+        "en": "subset-of-or-equal-to sign"
+      },
+      "read_aloud": {
+        "default_zh": "包含于或等于 / 是……的子集",
+        "default_en": "is a subset of or equal to",
+        "structural_en": "subset of or equal to"
+      },
+      "semantic_default": "subset_or_equal",
+      "candidates": [
+        {
+          "id": "subset_or_equal",
+          "zh": "子集或相等",
+          "en": "is a subset of or equal to",
+          "when": "Non-strict set inclusion."
+        }
+      ],
+      "default_candidate": "subset_or_equal"
+    },
+    {
+      "id": "union",
+      "forms": [
+        "\\cup",
+        "∪"
+      ],
+      "category": "set_operation",
+      "direct": {
+        "zh": "并号",
+        "en": "union sign"
+      },
+      "read_aloud": {
+        "default_zh": "并",
+        "default_en": "union / cup",
+        "structural_en": "union"
+      },
+      "semantic_default": "union",
+      "candidates": [
+        {
+          "id": "union",
+          "zh": "并集",
+          "en": "union",
+          "when": "Set union."
+        }
+      ],
+      "default_candidate": "union"
+    },
+    {
+      "id": "intersection",
+      "forms": [
+        "\\cap",
+        "∩"
+      ],
+      "category": "set_operation",
+      "direct": {
+        "zh": "交号",
+        "en": "intersection sign"
+      },
+      "read_aloud": {
+        "default_zh": "交",
+        "default_en": "intersection / cap",
+        "structural_en": "intersection"
+      },
+      "semantic_default": "intersection",
+      "candidates": [
+        {
+          "id": "intersection",
+          "zh": "交集",
+          "en": "intersection",
+          "when": "Set intersection."
+        }
+      ],
+      "default_candidate": "intersection"
+    },
+    {
+      "id": "setminus",
+      "forms": [
+        "\\setminus",
+        "\\backslash",
+        "∖",
+        "\\"
+      ],
+      "category": "set_operation",
+      "direct": {
+        "zh": "集合差号 / 反斜杠",
+        "en": "set-minus sign / backslash"
+      },
+      "read_aloud": {
+        "default_zh": "A 减去 B / A 与 B 的差集",
+        "default_en": "A set minus B / A minus B",
+        "structural_en": "set minus"
+      },
+      "semantic_default": "set_difference",
+      "candidates": [
+        {
+          "id": "set_difference",
+          "zh": "差集",
+          "en": "set difference",
+          "when": "A \\ B."
+        }
+      ],
+      "default_candidate": "set_difference"
+    },
+    {
+      "id": "emptyset",
+      "forms": [
+        "\\emptyset",
+        "\\varnothing",
+        "∅"
+      ],
+      "category": "set_constant",
+      "direct": {
+        "zh": "空集符号",
+        "en": "empty-set symbol"
+      },
+      "read_aloud": {
+        "default_zh": "空集",
+        "default_en": "empty set",
+        "structural_en": "empty set"
+      },
+      "semantic_default": "empty_set",
+      "candidates": [
+        {
+          "id": "empty_set",
+          "zh": "空集",
+          "en": "empty set",
+          "when": "Set with no elements."
+        }
+      ],
+      "default_candidate": "empty_set"
+    },
+    {
+      "id": "forall",
+      "forms": [
+        "\\forall",
+        "∀"
+      ],
+      "category": "logic_quantifier",
+      "direct": {
+        "zh": "全称量词",
+        "en": "universal quantifier"
+      },
+      "read_aloud": {
+        "default_zh": "对所有",
+        "default_en": "for all",
+        "structural_en": "for all"
+      },
+      "semantic_default": "for_all",
+      "candidates": [
+        {
+          "id": "for_all",
+          "zh": "对所有 / 任意",
+          "en": "for all",
+          "when": "Universal quantification."
+        }
+      ],
+      "default_candidate": "for_all"
+    },
+    {
+      "id": "exists",
+      "forms": [
+        "\\exists",
+        "∃"
+      ],
+      "category": "logic_quantifier",
+      "direct": {
+        "zh": "存在量词",
+        "en": "existential quantifier"
+      },
+      "read_aloud": {
+        "default_zh": "存在",
+        "default_en": "there exists",
+        "structural_en": "there exists"
+      },
+      "semantic_default": "there_exists",
+      "candidates": [
+        {
+          "id": "there_exists",
+          "zh": "存在",
+          "en": "there exists",
+          "when": "Existential quantification."
+        }
+      ],
+      "default_candidate": "there_exists"
+    },
+    {
+      "id": "logical_and",
+      "forms": [
+        "\\land",
+        "\\wedge",
+        "∧"
+      ],
+      "category": "logic_connective",
+      "direct": {
+        "zh": "逻辑与符号",
+        "en": "logical-and sign"
+      },
+      "read_aloud": {
+        "default_zh": "且",
+        "default_en": "and",
+        "structural_en": "logical and"
+      },
+      "semantic_default": "and",
+      "candidates": [
+        {
+          "id": "and",
+          "zh": "且",
+          "en": "and",
+          "when": "Logical conjunction."
+        }
+      ],
+      "default_candidate": "and"
+    },
+    {
+      "id": "logical_or",
+      "forms": [
+        "\\lor",
+        "\\vee",
+        "∨"
+      ],
+      "category": "logic_connective",
+      "direct": {
+        "zh": "逻辑或符号",
+        "en": "logical-or sign"
+      },
+      "read_aloud": {
+        "default_zh": "或",
+        "default_en": "or",
+        "structural_en": "logical or"
+      },
+      "semantic_default": "or",
+      "candidates": [
+        {
+          "id": "or",
+          "zh": "或",
+          "en": "or",
+          "when": "Logical disjunction."
+        }
+      ],
+      "default_candidate": "or"
+    },
+    {
+      "id": "logical_not",
+      "forms": [
+        "\\neg",
+        "\\lnot",
+        "¬"
+      ],
+      "category": "logic_connective",
+      "direct": {
+        "zh": "逻辑非符号",
+        "en": "logical-not sign"
+      },
+      "read_aloud": {
+        "default_zh": "非 / 不",
+        "default_en": "not",
+        "structural_en": "logical not"
+      },
+      "semantic_default": "not",
+      "candidates": [
+        {
+          "id": "not",
+          "zh": "非 / 不",
+          "en": "not",
+          "when": "Logical negation."
+        }
+      ],
+      "default_candidate": "not"
+    },
+    {
+      "id": "sum",
+      "forms": [
+        "\\sum",
+        "∑",
+        "\\sum_{i=1}^{n} a_i"
+      ],
+      "category": "large_operator",
+      "direct": {
+        "zh": "求和号",
+        "en": "summation sign"
+      },
+      "read_aloud": {
+        "default_zh": "从 i 等于 1 到 n 对 a_i 求和",
+        "default_en": "the sum from i equals one to n of a sub i",
+        "structural_en": "upper sigma with subscript i equals one and superscript n"
+      },
+      "semantic_default": "summation",
+      "candidates": [
+        {
+          "id": "summation",
+          "zh": "求和",
+          "en": "summation / sum",
+          "when": "Finite or infinite summation."
+        }
+      ],
+      "default_candidate": "summation"
+    },
+    {
+      "id": "product",
+      "forms": [
+        "\\prod",
+        "∏",
+        "\\prod_{i=1}^{n} a_i"
+      ],
+      "category": "large_operator",
+      "direct": {
+        "zh": "连乘号",
+        "en": "product sign"
+      },
+      "read_aloud": {
+        "default_zh": "从 i 等于 1 到 n 对 a_i 连乘",
+        "default_en": "the product from i equals one to n of a sub i",
+        "structural_en": "upper pi with subscript i equals one and superscript n"
+      },
+      "semantic_default": "product",
+      "candidates": [
+        {
+          "id": "product",
+          "zh": "连乘",
+          "en": "product",
+          "when": "Product over an index set."
+        }
+      ],
+      "default_candidate": "product"
+    },
+    {
+      "id": "limit",
+      "forms": [
+        "\\lim",
+        "\\lim_{x\\to 0} f(x)"
+      ],
+      "category": "operator",
+      "direct": {
+        "zh": "极限符号",
+        "en": "limit operator"
+      },
+      "read_aloud": {
+        "default_zh": "当 x 趋向于 0 时 f(x) 的极限",
+        "default_en": "the limit as x approaches zero of f of x",
+        "structural_en": "limit with subscript x approaches zero"
+      },
+      "semantic_default": "limit",
+      "candidates": [
+        {
+          "id": "limit",
+          "zh": "极限",
+          "en": "limit",
+          "when": "Limit expression."
+        }
+      ],
+      "default_candidate": "limit"
+    },
+    {
+      "id": "infinity",
+      "forms": [
+        "\\infty",
+        "∞"
+      ],
+      "category": "constant",
+      "direct": {
+        "zh": "无穷大符号",
+        "en": "infinity sign"
+      },
+      "read_aloud": {
+        "default_zh": "无穷大",
+        "default_en": "infinity",
+        "structural_en": "infinity"
+      },
+      "semantic_default": "infinity",
+      "candidates": [
+        {
+          "id": "infinity",
+          "zh": "无穷大",
+          "en": "infinity",
+          "when": "Limit, extended real number, cardinality context."
+        }
+      ],
+      "default_candidate": "infinity"
+    },
+    {
+      "id": "partial_derivative",
+      "forms": [
+        "\\partial",
+        "∂",
+        "\\frac{\\partial f}{\\partial x}"
+      ],
+      "category": "calculus",
+      "direct": {
+        "zh": "偏导符号",
+        "en": "partial-derivative symbol"
+      },
+      "read_aloud": {
+        "default_zh": "f 对 x 的偏导数",
+        "default_en": "the partial derivative of f with respect to x",
+        "structural_en": "partial f over partial x"
+      },
+      "semantic_default": "partial_derivative",
+      "candidates": [
+        {
+          "id": "partial_derivative",
+          "zh": "偏导数",
+          "en": "partial derivative",
+          "when": "Multivariable calculus."
+        }
+      ],
+      "default_candidate": "partial_derivative"
+    },
+    {
+      "id": "nabla",
+      "forms": [
+        "\\nabla",
+        "∇"
+      ],
+      "category": "calculus",
+      "direct": {
+        "zh": "nabla 符号 / 倒三角算子",
+        "en": "nabla / del"
+      },
+      "read_aloud": {
+        "default_zh": "梯度 / nabla",
+        "default_en": "gradient / nabla / del",
+        "structural_en": "nabla"
+      },
+      "semantic_default": "contextual_nabla",
+      "candidates": [
+        {
+          "id": "gradient",
+          "zh": "梯度",
+          "en": "gradient",
+          "when": "∇f."
+        },
+        {
+          "id": "divergence",
+          "zh": "散度",
+          "en": "divergence",
+          "when": "∇·F."
+        },
+        {
+          "id": "curl",
+          "zh": "旋度",
+          "en": "curl",
+          "when": "∇×F."
+        },
+        {
+          "id": "literal",
+          "zh": "nabla 符号",
+          "en": "nabla",
+          "when": "Notation discussion."
+        }
+      ],
+      "default_candidate": "gradient"
+    },
+    {
+      "id": "integral",
+      "forms": [
+        "\\int",
+        "∫",
+        "\\int_a^b f(x)\\,dx"
+      ],
+      "category": "calculus",
+      "direct": {
+        "zh": "积分号",
+        "en": "integral sign"
+      },
+      "read_aloud": {
+        "default_zh": "从 a 到 b 对 f(x) 关于 x 积分",
+        "default_en": "the integral from a to b of f of x d x",
+        "structural_en": "integral with lower limit a and upper limit b"
+      },
+      "semantic_default": "integral",
+      "candidates": [
+        {
+          "id": "integral",
+          "zh": "积分",
+          "en": "integral",
+          "when": "Definite or indefinite integral."
+        }
+      ],
+      "default_candidate": "integral"
+    },
+    {
+      "id": "absolute_value",
+      "forms": [
+        "|x|",
+        "\\lvert x \\rvert"
+      ],
+      "category": "delimiter",
+      "direct": {
+        "zh": "竖线",
+        "en": "vertical bars"
+      },
+      "read_aloud": {
+        "default_zh": "x 的绝对值",
+        "default_en": "absolute value of x",
+        "structural_en": "vertical bar x vertical bar"
+      },
+      "semantic_default": "contextual_vertical_bars",
+      "candidates": [
+        {
+          "id": "absolute_value",
+          "zh": "绝对值",
+          "en": "absolute value",
+          "when": "Scalar real/complex magnitude."
+        },
+        {
+          "id": "cardinality",
+          "zh": "基数 / 元素个数",
+          "en": "cardinality / size",
+          "when": "Set context: |A|."
+        },
+        {
+          "id": "determinant",
+          "zh": "行列式",
+          "en": "determinant",
+          "when": "Matrix context, older notation: |A|."
+        },
+        {
+          "id": "literal",
+          "zh": "竖线",
+          "en": "vertical bars",
+          "when": "Ambiguous notation discussion."
+        }
+      ],
+      "notes": "This is a canonical ambiguity; semantic reading needs context.",
+      "default_candidate": "absolute_value"
+    },
+    {
+      "id": "norm",
+      "forms": [
+        "\\|x\\|",
+        "\\lVert x \\rVert",
+        "‖x‖"
+      ],
+      "category": "delimiter",
+      "direct": {
+        "zh": "双竖线",
+        "en": "double vertical bars"
+      },
+      "read_aloud": {
+        "default_zh": "x 的范数",
+        "default_en": "norm of x",
+        "structural_en": "double vertical bar x double vertical bar"
+      },
+      "semantic_default": "norm",
+      "candidates": [
+        {
+          "id": "norm",
+          "zh": "范数",
+          "en": "norm",
+          "when": "Linear algebra, analysis, optimization."
+        },
+        {
+          "id": "literal",
+          "zh": "双竖线",
+          "en": "double vertical bars",
+          "when": "Notation discussion."
+        }
+      ],
+      "default_candidate": "norm"
+    },
+    {
+      "id": "not_equals",
+      "forms": [
+        "\\ne",
+        "\\neq",
+        "≠",
+        "!="
+      ],
+      "category": "relation",
+      "direct": {
+        "zh": "不等号",
+        "en": "not-equals sign"
+      },
+      "read_aloud": {
+        "default_zh": "不等于",
+        "default_en": "does not equal / is not equal to",
+        "structural_en": "not equal to"
+      },
+      "semantic_default": "not_equal",
+      "candidates": [
+        {
+          "id": "not_equal",
+          "zh": "不等于",
+          "en": "is not equal to",
+          "when": "Inequality relation."
+        }
+      ],
+      "notes": "Important omission for any basic symbol table.",
+      "default_candidate": "not_equal"
+    },
+    {
+      "id": "approximately_equals",
+      "forms": [
+        "\\approx",
+        "≈",
+        "\\simeq",
+        "≃"
+      ],
+      "category": "relation",
+      "direct": {
+        "zh": "约等号",
+        "en": "approximately-equals sign"
+      },
+      "read_aloud": {
+        "default_zh": "约等于",
+        "default_en": "is approximately equal to",
+        "structural_en": "approximately equals"
+      },
+      "semantic_default": "approximately_equal",
+      "candidates": [
+        {
+          "id": "approximately_equal",
+          "zh": "约等于",
+          "en": "is approximately equal to",
+          "when": "Numerical approximation or approximate equivalence."
+        },
+        {
+          "id": "asymptotic_or_similar",
+          "zh": "近似 / 相似",
+          "en": "is similar to",
+          "when": "Some fields use \\simeq for similarity or approximate isomorphism."
+        }
+      ],
+      "notes": "Do not collapse ≈, ∼, ≃, ≅ without domain-specific rules.",
+      "default_candidate": "approximately_equal"
+    },
+    {
+      "id": "equiv",
+      "forms": [
+        "\\equiv",
+        "≡"
+      ],
+      "category": "relation",
+      "direct": {
+        "zh": "恒等号 / 等价号",
+        "en": "equivalence sign"
+      },
+      "read_aloud": {
+        "default_zh": "等价于 / 恒等于",
+        "default_en": "is equivalent to / is identically equal to",
+        "structural_en": "equivalent to"
+      },
+      "semantic_default": "contextual_equivalence",
+      "candidates": [
+        {
+          "id": "logical_equiv",
+          "zh": "逻辑等价于",
+          "en": "is logically equivalent to",
+          "when": "Logic."
+        },
+        {
+          "id": "identity",
+          "zh": "恒等于",
+          "en": "is identically equal to",
+          "when": "Algebra or functions."
+        },
+        {
+          "id": "congruence",
+          "zh": "同余于",
+          "en": "is congruent to",
+          "when": "Number theory: a ≡ b mod n."
+        }
+      ],
+      "notes": "The meaning is strongly field-dependent.",
+      "default_candidate": "logical_equiv"
+    },
+    {
+      "id": "less_than",
+      "forms": [
+        "<"
+      ],
+      "category": "order_relation",
+      "direct": {
+        "zh": "小于号",
+        "en": "less-than sign"
+      },
+      "read_aloud": {
+        "default_zh": "小于",
+        "default_en": "is less than",
+        "structural_en": "less than"
+      },
+      "semantic_default": "less_than",
+      "candidates": [
+        {
+          "id": "less_than",
+          "zh": "小于",
+          "en": "is less than",
+          "when": "Strict order."
+        }
+      ],
+      "default_candidate": "less_than"
+    },
+    {
+      "id": "greater_than",
+      "forms": [
+        ">"
+      ],
+      "category": "order_relation",
+      "direct": {
+        "zh": "大于号",
+        "en": "greater-than sign"
+      },
+      "read_aloud": {
+        "default_zh": "大于",
+        "default_en": "is greater than",
+        "structural_en": "greater than"
+      },
+      "semantic_default": "greater_than",
+      "candidates": [
+        {
+          "id": "greater_than",
+          "zh": "大于",
+          "en": "is greater than",
+          "when": "Strict order."
+        }
+      ],
+      "default_candidate": "greater_than"
+    },
+    {
+      "id": "less_equal",
+      "forms": [
+        "\\le",
+        "\\leq",
+        "≤"
+      ],
+      "category": "order_relation",
+      "direct": {
+        "zh": "小于等于号",
+        "en": "less-than-or-equal-to sign"
+      },
+      "read_aloud": {
+        "default_zh": "小于等于",
+        "default_en": "is less than or equal to",
+        "structural_en": "less than or equal to"
+      },
+      "semantic_default": "less_equal",
+      "candidates": [
+        {
+          "id": "less_equal",
+          "zh": "小于等于",
+          "en": "is less than or equal to",
+          "when": "Non-strict order."
+        }
+      ],
+      "default_candidate": "less_equal"
+    },
+    {
+      "id": "greater_equal",
+      "forms": [
+        "\\ge",
+        "\\geq",
+        "≥"
+      ],
+      "category": "order_relation",
+      "direct": {
+        "zh": "大于等于号",
+        "en": "greater-than-or-equal-to sign"
+      },
+      "read_aloud": {
+        "default_zh": "大于等于",
+        "default_en": "is greater than or equal to",
+        "structural_en": "greater than or equal to"
+      },
+      "semantic_default": "greater_equal",
+      "candidates": [
+        {
+          "id": "greater_equal",
+          "zh": "大于等于",
+          "en": "is greater than or equal to",
+          "when": "Non-strict order."
+        }
+      ],
+      "default_candidate": "greater_equal"
+    },
+    {
+      "id": "tilde_relation",
+      "forms": [
+        "\\sim",
+        "∼",
+        "~"
+      ],
+      "category": "relation",
+      "direct": {
+        "zh": "波浪关系符",
+        "en": "tilde relation"
+      },
+      "read_aloud": {
+        "default_zh": "服从 / 相似于 / 渐近等价于",
+        "default_en": "is distributed as / is similar to / is asymptotic to",
+        "structural_en": "tilde"
+      },
+      "semantic_default": "contextual_sim",
+      "candidates": [
+        {
+          "id": "distributed_as",
+          "zh": "服从……分布",
+          "en": "is distributed as",
+          "when": "Probability/statistics: X ∼ N(0,1)."
+        },
+        {
+          "id": "asymptotic_to",
+          "zh": "渐近等价于",
+          "en": "is asymptotic to",
+          "when": "Asymptotic analysis: f(n) ∼ g(n)."
+        },
+        {
+          "id": "similar_to",
+          "zh": "相似于 / 等价关系",
+          "en": "is similar to / is equivalent under a relation",
+          "when": "Geometry, algebra, or equivalence relation."
+        },
+        {
+          "id": "literal",
+          "zh": "波浪号",
+          "en": "tilde",
+          "when": "Notation discussion."
+        }
+      ],
+      "notes": "This relation was missing and is distinct from \\tilde{x}.",
+      "default_candidate": "distributed_as"
+    },
+    {
+      "id": "transpose",
+      "forms": [
+        "x^T",
+        "A^T",
+        "A^{\\top}",
+        "Aᵀ"
+      ],
+      "category": "script_semantic",
+      "direct": {
+        "zh": "转置上标",
+        "en": "transpose superscript"
+      },
+      "read_aloud": {
+        "default_zh": "A 转置",
+        "default_en": "A transpose / A transposed",
+        "structural_en": "A superscript T"
+      },
+      "semantic_default": "transpose",
+      "candidates": [
+        {
+          "id": "transpose",
+          "zh": "转置",
+          "en": "transpose",
+          "when": "Linear algebra matrices/vectors."
+        },
+        {
+          "id": "literal",
+          "zh": "上标 T",
+          "en": "superscript T",
+          "when": "When T is a label, not transpose."
+        }
+      ],
+      "notes": "Better represented as a separate symbol pattern, not only a candidate under generic superscript.",
+      "default_candidate": "transpose"
+    },
+    {
+      "id": "inverse",
+      "forms": [
+        "x^{-1}",
+        "A^{-1}",
+        "⁻¹"
+      ],
+      "category": "script_semantic",
+      "direct": {
+        "zh": "负一次方上标",
+        "en": "minus-one superscript"
+      },
+      "read_aloud": {
+        "default_zh": "A 的逆",
+        "default_en": "A inverse / the inverse of A",
+        "structural_en": "A superscript minus one"
+      },
+      "semantic_default": "inverse",
+      "candidates": [
+        {
+          "id": "matrix_or_function_inverse",
+          "zh": "逆矩阵 / 反函数",
+          "en": "inverse matrix / inverse function",
+          "when": "Linear algebra or functions."
+        },
+        {
+          "id": "reciprocal",
+          "zh": "倒数",
+          "en": "reciprocal",
+          "when": "Scalar quantity: x^{-1} = 1/x."
+        },
+        {
+          "id": "literal",
+          "zh": "负一次方",
+          "en": "to the power minus one",
+          "when": "When exponentiation is intended."
+        }
+      ],
+      "notes": "For scalars, 'reciprocal' may be more precise than 'inverse'.",
+      "default_candidate": "matrix_or_function_inverse"
+    },
+    {
+      "id": "prime",
+      "forms": [
+        "x'",
+        "f'(x)",
+        "\\prime",
+        "′"
+      ],
+      "category": "accent_or_derivative",
+      "direct": {
+        "zh": "撇号",
+        "en": "prime"
+      },
+      "read_aloud": {
+        "default_zh": "f 撇 / f 的一阶导数",
+        "default_en": "f prime",
+        "structural_en": "prime"
+      },
+      "semantic_default": "contextual_prime",
+      "candidates": [
+        {
+          "id": "derivative",
+          "zh": "导数",
+          "en": "derivative",
+          "when": "Calculus: f'(x)."
+        },
+        {
+          "id": "modified_object",
+          "zh": "变体 / 新对象",
+          "en": "modified object / variant",
+          "when": "Algebra, geometry, algorithms: x'."
+        },
+        {
+          "id": "literal",
+          "zh": "撇号",
+          "en": "prime",
+          "when": "Notation discussion."
+        }
+      ],
+      "notes": "Prime is frequently used and should be included.",
+      "default_candidate": "derivative"
+    },
+    {
+      "id": "vec",
+      "forms": [
+        "\\vec{x}",
+        "\\mathbf{x}",
+        "\\boldsymbol{x}",
+        "x⃗"
+      ],
+      "category": "accent_or_font",
+      "direct": {
+        "zh": "向量符号",
+        "en": "vector notation"
+      },
+      "read_aloud": {
+        "default_zh": "向量 x",
+        "default_en": "vector x / bold x",
+        "structural_en": "x with vector arrow"
+      },
+      "semantic_default": "vector",
+      "candidates": [
+        {
+          "id": "vector",
+          "zh": "向量",
+          "en": "vector",
+          "when": "Linear algebra, geometry, ML."
+        },
+        {
+          "id": "bold_variable",
+          "zh": "粗体变量",
+          "en": "bold variable",
+          "when": "When discussing typography rather than semantics."
+        }
+      ],
+      "notes": "In ML papers, bold symbols often indicate vectors/matrices; this is convention, not guaranteed.",
+      "default_candidate": "vector"
+    },
+    {
+      "id": "nth_root",
+      "forms": [
+        "\\sqrt[n]{x}",
+        "ⁿ√x"
+      ],
+      "category": "radical",
+      "direct": {
+        "zh": "n 次根号",
+        "en": "n-th root sign"
+      },
+      "read_aloud": {
+        "default_zh": "x 的 n 次根",
+        "default_en": "n-th root of x",
+        "structural_en": "root index n of x"
+      },
+      "semantic_default": "nth_root",
+      "candidates": [
+        {
+          "id": "cube_root",
+          "zh": "立方根",
+          "en": "cube root",
+          "when": "n = 3."
+        },
+        {
+          "id": "nth_root",
+          "zh": "n 次根",
+          "en": "n-th root",
+          "when": "General radical index."
+        }
+      ],
+      "notes": "Missing if \\sqrt{x} is included.",
+      "default_candidate": "nth_root"
+    },
+    {
+      "id": "ellipsis",
+      "forms": [
+        "\\ldots",
+        "\\cdots",
+        "…",
+        "\\dots"
+      ],
+      "category": "punctuation",
+      "direct": {
+        "zh": "省略号",
+        "en": "ellipsis"
+      },
+      "read_aloud": {
+        "default_zh": "等等 / 一直到",
+        "default_en": "dot dot dot / and so on / up to",
+        "structural_en": "ellipsis"
+      },
+      "semantic_default": "continuation",
+      "candidates": [
+        {
+          "id": "continuation",
+          "zh": "序列继续",
+          "en": "continues / and so on",
+          "when": "Sequences, lists, sums."
+        },
+        {
+          "id": "centered_dots",
+          "zh": "居中省略号",
+          "en": "centered dots",
+          "when": "Operations such as a_1 + \\cdots + a_n."
+        },
+        {
+          "id": "literal",
+          "zh": "省略号",
+          "en": "ellipsis",
+          "when": "Notation discussion."
+        }
+      ],
+      "default_candidate": "continuation"
     }
   ]
 }
