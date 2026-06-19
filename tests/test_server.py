@@ -361,6 +361,49 @@ class ApiTests(unittest.TestCase):
             "The paragraph discusses control theory and barrier certificates. [SELECTED_TEXT]",
         )
 
+    def test_model_context_limits_scale_by_model_size(self):
+        self.assertLess(
+            server._model_context_limit("translategemma:4b", "translation"),
+            server._model_context_limit("glm4:9b", "translation"),
+        )
+        self.assertLess(
+            server._model_context_limit("glm4:9b", "translation"),
+            server._model_context_limit("qwen3:14b", "translation"),
+        )
+        self.assertLess(
+            server._model_context_limit("translategemma:4b", "formula"),
+            server._model_context_limit("qwen3:14b", "formula"),
+        )
+
+    def test_small_model_context_is_short_and_keeps_selection_marker(self):
+        selected = "It is safe."
+        context = (
+            "far before " * 200
+            + "The paragraph discusses neural barrier certificates. "
+            + selected
+            + " The next sentence explains fitting loss and barrier loss. "
+            + "far after " * 200
+        )
+
+        small = server._normalize_translation_context(
+            context,
+            selected,
+            "translategemma:4b",
+            "translation",
+        )
+        large = server._normalize_translation_context(
+            context,
+            selected,
+            "qwen3:14b",
+            "translation",
+        )
+
+        self.assertIsNotNone(small)
+        self.assertIn("[SELECTED_TEXT]", small)
+        self.assertLessEqual(len(small), server._model_context_limit("translategemma:4b", "translation"))
+        self.assertGreater(len(large), len(small))
+        self.assertIn("barrier certificates", small)
+
     def test_translate_prompt_marks_context_as_reference_only(self):
         captured = {}
 
@@ -716,6 +759,28 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["detail"], "Local formula verbalization failed")
         self.assertNotIn("secret formula prompt", response.text)
+
+    def test_formula_verbalization_caps_context_for_small_model(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeUrlopenResponse({"response": '["D sub I"]'})
+
+        long_context = "near formula context " * 200
+        with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+            result = server._call_ollama_formula_verbalization(
+                ["D_I"],
+                "translategemma:4b",
+                long_context,
+            )
+
+        self.assertEqual(result, ["D sub I"])
+        prompt = json.loads(captured["payload"]["prompt"])
+        self.assertLessEqual(
+            len(prompt["context"]),
+            server._model_context_limit("translategemma:4b", "formula"),
+        )
 
     def test_formula_verbalization_parser_accepts_json_array(self):
         parsed = server._parse_formula_verbalizations(

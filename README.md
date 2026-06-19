@@ -20,6 +20,7 @@
 - **Browser settings panel** — Change and persist voice, speed, translation model and target language from a floating gear icon
 - **Local translation** — Select text and translate it locally through Ollama (`translategemma:4b` by default, switchable to another local model)
 - **Context-aware selected translation** — Nearby text can be sent as reference context for terminology and pronoun disambiguation, but only the selected text is translated
+- **Model-aware context budgets** — 4B models receive short context for stability, while 9B/14B/larger models receive progressively longer context for translation and formula verbalization
 - **Progressive formula read-aloud** — For English selections with formulas, text starts playing first while formula verbalization runs in the background; playback waits only if it reaches a formula before the spoken formula is ready
 - **Formula-aware cleanup** — MathJax/MathML/LaTeX selections are extracted semantically when possible; read-aloud turns formulas into spoken English, while translation renders formulas as readable math with subscripts and superscripts
 - **Configurable math glossary** — `config/math_glossary.json` lists direct readings and contextual meanings for 50+ core symbols such as arrows, hats, subscripts, set braces and calculus operators, so formulas can be spoken more professionally
@@ -92,7 +93,7 @@ ollama pull translategemma:4b
 ollama pull qwen3:14b
 ```
 
-The default Ollama model is `translategemma:4b` for translation, read preparation and formula verbalization. Override it with `OLLAMA_TRANSLATE_MODEL`, `OLLAMA_READ_MODEL` or `OLLAMA_FORMULA_MODEL`, or change the translation model in the browser settings panel. The settings panel separates TTS and Translation controls, persists settings through Tampermonkey storage, shows whether the selected Ollama model is installed/running, and includes a translation test button.
+The default Ollama model is `translategemma:4b` for translation, read preparation and formula verbalization. Override it with `OLLAMA_TRANSLATE_MODEL`, `OLLAMA_READ_MODEL` or `OLLAMA_FORMULA_MODEL`, or change the translation model in the browser settings panel. The settings panel separates TTS and Translation controls, persists settings through Tampermonkey storage, shows whether the selected Ollama model is installed/running, and includes a translation test button. Context passed to Ollama is capped by model size: 4B models get short reference context, 9B models get moderate context, and 14B or larger models get longer context.
 
 Formula wording is guided by `config/math_glossary.json`. Each symbol can define a direct reading, read-aloud defaults and contextual readings, for example right arrow can mean `maps to`, `approaches`, `implies`, `gives`, or simply `right arrow`. Local rules choose common cases first; the same glossary is also included in Ollama prompts for harder formulas.
 

@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.12.3
+// @version      1.12.4
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -2250,7 +2250,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     return semanticText || plainText;
   }
 
-  function trimContextAroundSelection(contextText, selectedText, maxChars = 2400) {
+  function trimContextAroundSelection(contextText, selectedText, maxChars = 6000) {
     const context = KokoroTTSCore.normalizeLlmSourceText(contextText);
     const selected = KokoroTTSCore.normalizeLlmSourceText(selectedText);
     if (!context || !selected || context === selected) return "";
@@ -2748,6 +2748,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         data: JSON.stringify({
           text: sourceText,
           context: contextText || undefined,
+          model: settings.translateModel,
         }),
         responseType: "json",
         timeout: 120000,
@@ -2857,6 +2858,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         data: JSON.stringify({
           formulas,
           context: String(context || "").slice(0, 4000),
+          model: settings.translateModel,
         }),
         responseType: "json",
         timeout: 120000,
@@ -2910,6 +2912,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         data: JSON.stringify({
           formulas,
           context: String(context || "").slice(0, 4000),
+          model: settings.translateModel,
         }),
         responseType: "json",
         timeout: 120000,

@@ -319,7 +319,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.8",
+    version="1.7.9",
     lifespan=lifespan,
 )
 
@@ -429,7 +429,7 @@ class FormulaVerbalizeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     formulas: list[str] = Field(min_length=1, max_length=20)
-    context: Optional[str] = Field(default=None, max_length=4000)
+    context: Optional[str] = Field(default=None, max_length=12000)
     model: Optional[str] = Field(default=None, max_length=120)
 
     @field_validator("formulas")
@@ -597,16 +597,112 @@ def _normalize_llm_source_text(text: str) -> str:
     return "\n\n".join(paragraphs)
 
 
-def _normalize_translation_context(context: Optional[str], selected_text: str) -> Optional[str]:
+def _model_size_billions(model: Optional[str]) -> Optional[float]:
+    value = (model or "").lower()
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*b\b", value)
+    if not matches:
+        return None
+    try:
+        return float(matches[-1])
+    except ValueError:
+        return None
+
+
+def _model_context_limit(model: Optional[str], purpose: str = "translation") -> int:
+    size = _model_size_billions(model)
+    profiles = {
+        "translation": {
+            "small": 900,
+            "medium": 1800,
+            "large": 4000,
+            "xlarge": 6000,
+            "unknown": 1600,
+        },
+        "read_translation": {
+            "small": 700,
+            "medium": 1400,
+            "large": 3000,
+            "xlarge": 4500,
+            "unknown": 1200,
+        },
+        "formula": {
+            "small": 550,
+            "medium": 1000,
+            "large": 2500,
+            "xlarge": 3500,
+            "unknown": 900,
+        },
+    }
+    profile = profiles.get(purpose, profiles["translation"])
+    if size is None:
+        return profile["unknown"]
+    if size <= 4.5:
+        return profile["small"]
+    if size <= 9.5:
+        return profile["medium"]
+    if size <= 14.5:
+        return profile["large"]
+    return profile["xlarge"]
+
+
+def _trim_at_word_boundary(text: str, limit: int) -> str:
+    value = (text or "").strip()
+    if len(value) <= limit:
+        return value
+    clipped = value[:limit].rsplit(" ", 1)[0].strip()
+    return clipped or value[:limit].strip()
+
+
+def _trim_context_to_limit(context: str, limit: int) -> str:
+    value = (context or "").strip()
+    if len(value) <= limit:
+        return value
+
+    marker = "[SELECTED_TEXT]"
+    marker_index = value.find(marker)
+    if marker_index < 0:
+        return _trim_at_word_boundary(value, limit)
+
+    marker_len = len(marker)
+    side_budget = max(80, (limit - marker_len) // 2)
+    start = max(0, marker_index - side_budget)
+    end = min(len(value), marker_index + marker_len + side_budget)
+
+    if end - start < limit:
+        missing = limit - (end - start)
+        start = max(0, start - missing // 2)
+        end = min(len(value), end + missing)
+
+    trimmed = value[start:end].strip()
+    if marker not in trimmed:
+        return marker
+    return trimmed
+
+
+def _limit_model_context(
+    context: Optional[str],
+    model: Optional[str],
+    purpose: str = "translation",
+) -> Optional[str]:
+    normalized = _normalize_llm_source_text((context or "").strip())
+    if not normalized:
+        return None
+    return _trim_context_to_limit(normalized, _model_context_limit(model, purpose))
+
+
+def _normalize_translation_context(
+    context: Optional[str],
+    selected_text: str,
+    model: Optional[str] = None,
+    purpose: str = "translation",
+) -> Optional[str]:
     normalized = _normalize_llm_source_text((context or "").strip())
     selected = _normalize_llm_source_text(selected_text)
     if not normalized or normalized == selected:
         return None
     if selected and selected in normalized:
         normalized = normalized.replace(selected, "[SELECTED_TEXT]", 1)
-    if len(normalized) > 4000:
-        normalized = normalized[:4000].rsplit(" ", 1)[0].strip() or normalized[:4000].strip()
-    return normalized
+    return _trim_context_to_limit(normalized, _model_context_limit(model, purpose))
 
 
 def _call_ollama_json(path: str, timeout: float = 5.0):
@@ -1148,10 +1244,10 @@ def _call_ollama_formula_verbalization_zh_single(
     cf = formula.strip()
     cf = _unwrap_formula_for_translation(cf)
 
-    context_block = (context or "").strip()
+    context_block = _limit_model_context(context, model, "formula") or ""
     prompt = f"Formula: {cf}"
     if context_block:
-        prompt = f"Context: {context_block[:4000]}\nFormula: {cf}"
+        prompt = f"Context: {context_block}\nFormula: {cf}"
 
     glossary_prompt = _math_glossary_prompt("zh")
     payload = {
@@ -1264,6 +1360,7 @@ def _call_ollama_translate_raw(
     context: Optional[str] = None,
 ) -> str:
     prompt = protected_text
+    context = _limit_model_context(context, model, "translation")
     if context:
         prompt = (
             "<REFERENCE_CONTEXT_DO_NOT_TRANSLATE>\n"
@@ -1540,7 +1637,7 @@ def _call_ollama_read_prepare(
     context: Optional[str] = None,
 ) -> str:
     protected_text, formulas = _protect_formulas(text)
-    formula_context = _normalize_llm_source_text(context or text)[:4000]
+    formula_context = _limit_model_context(context or text, model, "formula") or ""
     translation_context_source = _normalize_llm_source_text(context or text)
 
     formula_verbalizations: list[str] = []
@@ -1565,7 +1662,12 @@ def _call_ollama_read_prepare(
                 pieces.append("formula omitted")
             continue
         if kind == "zh":
-            segment_context = _normalize_translation_context(translation_context_source, value) or formula_context
+            segment_context = _normalize_translation_context(
+                translation_context_source,
+                value,
+                model,
+                "read_translation",
+            ) or formula_context
             translated = _translate_read_chinese_segment(value, model, segment_context)
             if translated:
                 pieces.append(translated)
@@ -1621,10 +1723,10 @@ def _call_ollama_formula_verbalization(
     model: str,
     context: Optional[str] = None,
 ) -> list[str]:
-    context_block = (context or "").strip()
+    context_block = _limit_model_context(context, model, "formula") or ""
     glossary_prompt = _math_glossary_prompt("en")
     prompt = {
-        "context": context_block[:4000],
+        "context": context_block,
         "formulas": formulas,
     }
     payload = {
@@ -1918,7 +2020,7 @@ async def translate_endpoint(request: TranslateRequest):
 
     model = request.model or OLLAMA_TRANSLATE_MODEL
     target_language = request.target_language or "Simplified Chinese"
-    context = _normalize_translation_context(request.context, text)
+    context = _normalize_translation_context(request.context, text, model, "translation")
 
     try:
         t0 = time.perf_counter()
@@ -2005,13 +2107,14 @@ async def read_prepare_endpoint(request: ReadPrepareRequest):
 async def formula_verbalize_endpoint(request: FormulaVerbalizeRequest):
     """Convert formulas into concise spoken English through local Ollama."""
     model = request.model or OLLAMA_FORMULA_MODEL
+    context = _limit_model_context(request.context, model, "formula")
     try:
         t0 = time.perf_counter()
         verbalizations = await asyncio.to_thread(
             _call_ollama_formula_verbalization,
             request.formulas,
             model,
-            _normalize_llm_source_text(request.context or ""),
+            context,
         )
         elapsed = time.perf_counter() - t0
         print(
