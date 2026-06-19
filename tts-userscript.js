@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.11.4
+// @version      1.12.0
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -204,6 +204,38 @@ const KokoroTTSCore = (() => {
       )
       .filter(Boolean)
       .join("\n\n");
+  }
+
+  function splitLatexSegments(text) {
+    const value = String(text || "");
+    const pattern = /(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$)/g;
+    const segments = [];
+    let lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(value)) !== null) {
+      if (match.index > lastIndex) {
+        segments.push({
+          type: "text",
+          value: value.slice(lastIndex, match.index),
+          block: false,
+        });
+      }
+      const formula = match[0];
+      segments.push({
+        type: "latex",
+        value: formula,
+        block: formula.startsWith("$$") || formula.startsWith("\\["),
+      });
+      lastIndex = pattern.lastIndex;
+    }
+    if (lastIndex < value.length) {
+      segments.push({
+        type: "text",
+        value: value.slice(lastIndex),
+        block: false,
+      });
+    }
+    return segments.length ? segments : [{ type: "text", value, block: false }];
   }
 
   function verbalizeSimpleFormula(formula) {
@@ -501,6 +533,7 @@ const KokoroTTSCore = (() => {
     releaseAudio,
     replaceFormulaDelimiters,
     selectBlobAudioFormat,
+    splitLatexSegments,
     stripUnreadableReadText,
     supportsWebMOpus,
     verbalizeSimpleFormula,
@@ -828,6 +861,30 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       white-space: pre-wrap;
       word-break: break-word;
       font-size: 14px;
+    }
+
+    .tts-latex-code {
+      display: inline;
+      padding: 1px 5px;
+      border: 1px solid rgba(80, 210, 155, 0.22);
+      border-radius: 5px;
+      background: rgba(80, 210, 155, 0.1);
+      color: #cdf7e7;
+      font-family: 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+      font-size: 12.5px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .tts-latex-code.tts-latex-block {
+      display: block;
+      max-width: 100%;
+      margin: 7px 0;
+      padding: 8px;
+      overflow-x: auto;
+      white-space: pre;
+      word-break: normal;
     }
 
     /* -- Icon -- */
@@ -1867,6 +1924,46 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     return semanticText || plainText;
   }
 
+  function trimContextAroundSelection(contextText, selectedText, maxChars = 2400) {
+    const context = KokoroTTSCore.normalizeLlmSourceText(contextText);
+    const selected = KokoroTTSCore.normalizeLlmSourceText(selectedText);
+    if (!context || !selected || context === selected) return "";
+
+    const index = context.indexOf(selected);
+    if (index < 0) {
+      return context.length <= maxChars ? context : context.slice(0, maxChars).trim();
+    }
+
+    const before = Math.floor((maxChars - selected.length) / 2);
+    const start = Math.max(0, index - Math.max(before, 400));
+    const end = Math.min(context.length, index + selected.length + Math.max(before, 400));
+    return context.slice(start, end).trim();
+  }
+
+  function getSelectionContext(selectedText) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return "";
+
+    const range = expandRangeToContainMath(selection.getRangeAt(0));
+    const common = range.commonAncestorContainer;
+    const element = common && common.nodeType === 1
+      ? common
+      : common && (common.parentElement || common.parentNode);
+    if (!element || element.nodeType !== 1) return "";
+
+    const broadRoot = element.closest &&
+      element.closest("article, main, section, [role='main']");
+    const localRoot = element.closest &&
+      element.closest("p, li, blockquote, figcaption, div");
+    const root = broadRoot || (localRoot && localRoot.parentElement) || localRoot;
+    if (!root) return "";
+
+    return trimContextAroundSelection(
+      serializeSelectionNode(root.cloneNode(true)),
+      selectedText
+    );
+  }
+
   function removeButton() {
     cancelTranslationRequest();
     document.querySelectorAll(".tts-float-container").forEach((container) => {
@@ -1971,7 +2068,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     container.style.top = `${Math.round(top)}px`;
   }
 
-  function showButton(selectionRect, text) {
+  function showButton(selectionRect, text, context = "") {
     removeButton();
     cancelRequest();
     cancelTranslationRequest();
@@ -1980,6 +2077,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     const container = document.createElement("div");
     container.className = "tts-float-container";
     container._ttsSelectionRect = normalizeSelectionRect(selectionRect);
+    container._ttsSelectionContext = context || "";
     const actions = document.createElement("div");
     actions.className = "tts-float-actions";
 
@@ -2259,9 +2357,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
-  async function fetchTranslation(text, generation) {
+  async function fetchTranslation(text, context, generation) {
     return new Promise((resolve, reject) => {
       const sourceText = KokoroTTSCore.normalizeLlmSourceText(text);
+      const contextText = KokoroTTSCore.normalizeLlmSourceText(context);
       const request = GM_xmlhttpRequest({
         method: "POST",
         url: API_TRANSLATE_URL,
@@ -2271,6 +2370,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         },
         data: JSON.stringify({
           text: sourceText,
+          context: contextText || undefined,
           model: settings.translateModel,
           target_language: settings.targetLanguage,
         }),
@@ -2467,6 +2567,27 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
+  async function resolveFormulaReadPlan(plan, context, generation) {
+    if (!plan.formulas || plan.formulas.length === 0) {
+      return plan;
+    }
+    const verbalizations = await fetchFormulaVerbalizations(
+      plan.formulas,
+      context,
+      generation
+    );
+    const readableText = KokoroTTSCore.applyFormulaVerbalizations(
+      plan.text,
+      verbalizations
+    );
+    return {
+      ...plan,
+      text: readableText,
+      changed: true,
+      empty: readableText.length === 0,
+    };
+  }
+
   async function prepareReadableTextForSpeak(text, generation) {
     let readPreparationError = null;
     let englishTranslationError = null;
@@ -2507,13 +2628,18 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         .replace(/[ \t]{2,}/g, " ")
         .trim();
       if (translatedText) {
+        const translatedPlan = KokoroTTSCore.prepareTextForReadPlan(translatedText);
+        const spokenPlan = await resolveFormulaReadPlan(
+          translatedPlan,
+          translatedText,
+          generation
+        );
         return {
-          text: translatedText,
-          formulas: [],
+          ...spokenPlan,
           changed: translatedText !== String(text || "").trim(),
           removedChinese: /[\u3400-\u9FFF\uF900-\uFAFF]/.test(String(text || "")) &&
             !/[\u3400-\u9FFF\uF900-\uFAFF]/.test(translatedText),
-          empty: false,
+          empty: spokenPlan.empty,
           translatedForRead: true,
         };
       }
@@ -2530,21 +2656,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       }
       return plan;
     }
-    const verbalizations = await fetchFormulaVerbalizations(
-      plan.formulas,
-      text,
-      generation
-    );
-    const readableText = KokoroTTSCore.applyFormulaVerbalizations(
-      plan.text,
-      verbalizations
-    );
-    return {
-      ...plan,
-      text: readableText,
-      changed: true,
-      empty: readableText.length === 0,
-    };
+    return resolveFormulaReadPlan(plan, text, generation);
   }
 
   function removeTranslationCard(container) {
@@ -2572,6 +2684,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
   }
 
+  function appendTranslationTextWithLatex(container, text) {
+    container.textContent = "";
+    const segments = KokoroTTSCore.splitLatexSegments(text);
+    segments.forEach((segment) => {
+      if (segment.type !== "latex") {
+        container.appendChild(document.createTextNode(segment.value));
+        return;
+      }
+      const code = document.createElement("code");
+      code.className = segment.block
+        ? "tts-latex-code tts-latex-block"
+        : "tts-latex-code";
+      code.textContent = segment.value;
+      container.appendChild(code);
+    });
+  }
+
   function showTranslationCard(container, payload) {
     if (!container) return;
     removeTranslationCard(container);
@@ -2592,7 +2721,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     const body = document.createElement("div");
     body.className = "tts-translation-text";
-    body.textContent = payload.translated_text || "";
+    appendTranslationTextWithLatex(body, payload.translated_text || "");
 
     copyBtn.addEventListener("click", (e) => {
       if (!e.isTrusted) return;
@@ -2618,6 +2747,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   async function translateSelectedText(text, btnElement, buttonContainer) {
     isTranslating = true;
     const generation = translationGate.begin();
+    const context = buttonContainer && buttonContainer._ttsSelectionContext
+      ? buttonContainer._ttsSelectionContext
+      : "";
     removeTranslationCard(buttonContainer);
     focusFloatingAction(buttonContainer, btnElement);
 
@@ -2631,7 +2763,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
 
     try {
-      const payload = await fetchTranslation(text, generation);
+      const payload = await fetchTranslation(text, context, generation);
       if (!translationGate.isCurrent(generation)) return;
       showTranslationCard(buttonContainer, payload);
       if (btnElement) {
@@ -3006,7 +3138,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         if (selection.rangeCount > 0) {
           const range = expandRangeToContainMath(selection.getRangeAt(0));
           const rect = range.getBoundingClientRect();
-          showButton(rect, text);
+          showButton(rect, text, getSelectionContext(text));
         }
       } else {
         removeButton();
@@ -3050,7 +3182,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         if (selection.rangeCount > 0) {
           const range = expandRangeToContainMath(selection.getRangeAt(0));
           const rect = range.getBoundingClientRect();
-          showButton(rect, text);
+          showButton(rect, text, getSelectionContext(text));
           const btn = floatingBtn.querySelector(".tts-speak-btn");
           if (btn) speak(text, btn);
         }

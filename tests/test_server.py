@@ -291,6 +291,7 @@ class ApiTests(unittest.TestCase):
             "Hello, world",
             "translategemma:4b",
             "Simplified Chinese",
+            None,
         )
 
     def test_translate_rejects_blank_text(self):
@@ -318,6 +319,31 @@ class ApiTests(unittest.TestCase):
             "B 0 (x) -> D w\n\n中文说明",
             "translategemma:4b",
             "Simplified Chinese",
+            None,
+        )
+
+    def test_translate_uses_context_for_disambiguation(self):
+        with patch.object(
+            server,
+            "_call_ollama_translate_raw",
+            create=True,
+            return_value="屏障证书是安全的。",
+        ) as call:
+            response = self.client.post(
+                "/translate",
+                json={
+                    "text": "It is safe.",
+                    "context": "The paragraph discusses control theory and barrier certificates. It is safe.",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["translated_text"], "屏障证书是安全的。")
+        call.assert_called_once_with(
+            "It is safe.",
+            "translategemma:4b",
+            "Simplified Chinese",
+            "The paragraph discusses control theory and barrier certificates. It is safe.",
         )
 
     def test_translate_hides_ollama_errors(self):
@@ -336,7 +362,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "Local Ollama translation failed")
         self.assertNotIn("secret model path", response.text)
 
-    def test_translate_restores_formula_symbol_with_chinese_description(self):
+    def test_translate_restores_formula_as_latex_without_description(self):
         with patch.object(
             server,
             "_call_ollama_translate_raw",
@@ -354,26 +380,26 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertIn("D_w → B̂(x)", payload["translated_text"])
-        self.assertIn("由D的下标w得到B的估计函数在x处的值", payload["translated_text"])
+        self.assertIn(r"$D_w \rightarrow \hat{B}(x)$", payload["translated_text"])
+        self.assertNotIn("估计函数", payload["translated_text"])
         self.assertNotIn("__MATH_0__", payload["translated_text"])
         translate_call.assert_called_once_with(
             "This stage uses __MATH_0__.",
             "translategemma:4b",
             "Simplified Chinese",
+            None,
         )
 
-    def test_translate_english_formula_description_for_read_fallback(self):
+    def test_translate_english_preserves_formula_as_latex(self):
         with patch.object(
             server,
             "_call_ollama_translate_raw",
             create=True,
             return_value="This stage uses __MATH_0__.",
-        ), patch.object(
+        ) as translate_call, patch.object(
             server,
             "_call_ollama_formula_verbalization",
             create=True,
-            return_value=["D sub w maps to B hat of x"],
         ) as verbalize_call:
             response = self.client.post(
                 "/translate",
@@ -385,16 +411,18 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertIn("D_w → B̂(x)", payload["translated_text"])
-        self.assertIn("D sub w maps to B hat of x", payload["translated_text"])
+        self.assertIn(r"$D_w \rightarrow \hat{B}(x)$", payload["translated_text"])
+        self.assertNotIn("D sub w maps to B hat of x", payload["translated_text"])
         self.assertNotIn("下标", payload["translated_text"])
-        verbalize_call.assert_called_once_with(
-            ["[[MATH: D_w \\rightarrow \\hat{B}(x)]]"],
+        translate_call.assert_called_once_with(
+            "This stage uses __MATH_0__.",
             "translategemma:4b",
+            "English",
             None,
         )
+        verbalize_call.assert_not_called()
 
-    def test_translate_describes_dataset_arrow_without_mapping_wording(self):
+    def test_translate_dataset_formula_keeps_latex_code(self):
         with patch.object(
             server,
             "_call_ollama_translate_raw",
@@ -411,9 +439,8 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         translated = response.json()["translated_text"]
-        self.assertIn("B_θ(x) → D_w={(x_i,B_θ(x_i),w_i)}", translated)
-        self.assertIn("由B的下标theta在x处的值得到D的下标w", translated)
-        self.assertIn("D的下标w定义为由三元组", translated)
+        self.assertIn(r"$B_\theta(x)\rightarrow D_w=\{(x_i,B_\theta(x_i),w_i)\}$", translated)
+        self.assertNotIn("下标", translated)
         self.assertNotIn("映射到", translated)
 
     def test_formula_description_handles_unbraced_hat(self):

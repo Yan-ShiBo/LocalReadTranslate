@@ -18,6 +18,7 @@ test("userscript core can be imported without browser globals", () => {
   assert.equal(typeof core.normalizeLlmSourceText, "function");
   assert.equal(typeof core.prepareTextForReadPlan, "function");
   assert.equal(typeof core.applyFormulaVerbalizations, "function");
+  assert.equal(typeof core.splitLatexSegments, "function");
 });
 
 
@@ -284,6 +285,25 @@ i
     normalized,
     "前两阶段是:\n\nB 0 (x) -> D w = {(x i , B 0 (x i ), w i )}"
   );
+});
+
+
+test("translation display splits LaTeX formulas for code styling", () => {
+  const { splitLatexSegments } = require("../tts-userscript.js");
+  const segments = splitLatexSegments("使用 $D_w \\to \\hat{B}(x)$，并保持 $$x^2+y^2=z^2$$。");
+
+  assert.deepEqual(
+    segments.map((segment) => [segment.type, segment.block]),
+    [
+      ["text", false],
+      ["latex", false],
+      ["text", false],
+      ["latex", true],
+      ["text", false],
+    ]
+  );
+  assert.equal(segments[1].value, "$D_w \\to \\hat{B}(x)$");
+  assert.equal(segments[3].value, "$$x^2+y^2=z^2$$");
 });
 
 

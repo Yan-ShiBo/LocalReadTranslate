@@ -20,7 +20,8 @@
 - **Browser settings panel** — Change voice, speed and translation model from a floating gear icon
 - **Local translation** — Select text and translate it locally through Ollama (`translategemma:4b` by default, switchable to another local model)
 - **LLM read preparation** — Before read-aloud, selected text is normalized through local `translategemma:4b`: English is kept, Chinese is translated to English, and formulas become spoken English
-- **Formula-aware cleanup** — MathJax/MathML/LaTeX selections are extracted semantically when possible; translation keeps formula symbols and appends a Chinese/English description instead of replacing the formula
+- **Formula-aware cleanup** — MathJax/MathML/LaTeX selections are extracted semantically when possible; read-aloud turns formulas into spoken English, while translation preserves formulas as copyable LaTeX code
+- **Context-aware translation** — The browser can send nearby page text as local-only context so Ollama can choose more accurate terminology without translating the surrounding paragraph
 - **Configurable math glossary** — `config/math_glossary.json` lists direct readings and contextual meanings for 50+ core symbols such as arrows, hats, subscripts, set braces and calculus operators, so formulas can be spoken more professionally
 - **Selection-aware UI** — Read/Translate controls stay below the selection, can run independently, and translation cards reposition around the selected text to reduce overlap
 - **Partial formula selection recovery** — Selecting only part of a MathJax/MathML/KaTeX formula expands to the full formula container before translation or read preparation, without dropping surrounding sentence text
@@ -168,6 +169,7 @@ Returns `audio/webm; codecs="opus"` as a continuous stream for MediaSource playb
 ```json
 {
   "text": "Hello, how are you?",
+  "context": "Optional nearby text used only for disambiguation",
   "target_language": "Simplified Chinese",
   "model": "translategemma:4b"
 }

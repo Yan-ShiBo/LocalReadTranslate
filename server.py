@@ -363,6 +363,7 @@ class TranslateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(max_length=12000)
+    context: Optional[str] = Field(default=None, max_length=12000)
     model: Optional[str] = Field(default=None, max_length=120)
     target_language: Optional[str] = Field(default="Simplified Chinese", max_length=80)
 
@@ -595,6 +596,15 @@ def _normalize_llm_source_text(text: str) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _normalize_translation_context(context: Optional[str], selected_text: str) -> Optional[str]:
+    normalized = _normalize_llm_source_text((context or "").strip())
+    if not normalized or normalized == selected_text:
+        return None
+    if len(normalized) > 4000:
+        normalized = normalized[:4000].rsplit(" ", 1)[0].strip() or normalized[:4000].strip()
+    return normalized
+
+
 def _call_ollama_json(path: str, timeout: float = 5.0):
     req = urllib_request.Request(
         f"{OLLAMA_BASE_URL}{path}",
@@ -680,6 +690,81 @@ def _unwrap_formula_for_translation(formula: str) -> str:
     if cleaned.startswith("$") and cleaned.endswith("$"):
         return cleaned[1:-1].strip()
     return cleaned
+
+
+_FORMULA_SYMBOL_LATEX = {
+    "α": r"\alpha",
+    "β": r"\beta",
+    "γ": r"\gamma",
+    "δ": r"\delta",
+    "ε": r"\epsilon",
+    "λ": r"\lambda",
+    "μ": r"\mu",
+    "π": r"\pi",
+    "σ": r"\sigma",
+    "θ": r"\theta",
+    "Θ": r"\Theta",
+    "ω": r"\omega",
+    "Ω": r"\Omega",
+    "→": r"\to",
+    "↦": r"\mapsto",
+    "⇒": r"\Rightarrow",
+    "≤": r"\le",
+    "≥": r"\ge",
+    "≠": r"\ne",
+    "≈": r"\approx",
+    "×": r"\times",
+    "·": r"\cdot",
+    "∈": r"\in",
+    "∑": r"\sum",
+    "∫": r"\int",
+    "∞": r"\infty",
+    "∂": r"\partial",
+    "∇": r"\nabla",
+}
+
+
+def _formula_content_as_latex(formula: str) -> str:
+    value = _unwrap_formula_for_translation(formula)
+    if not value:
+        return ""
+
+    value = value.replace("\u00a0", " ")
+    value = re.sub(
+        r"([A-Za-zΑ-Ωα-ω])\u0302",
+        lambda match: rf"\hat{{{match.group(1)}}}",
+        value,
+    )
+    value = re.sub(
+        r"([A-Za-zΑ-Ωα-ω])\u0304",
+        lambda match: rf"\bar{{{match.group(1)}}}",
+        value,
+    )
+    value = re.sub(
+        r"([A-Za-zΑ-Ωα-ω])\u0303",
+        lambda match: rf"\tilde{{{match.group(1)}}}",
+        value,
+    )
+    for symbol, latex in _FORMULA_SYMBOL_LATEX.items():
+        value = value.replace(symbol, latex)
+    return value.strip()
+
+
+def _format_formula_for_translation(formula: str) -> str:
+    original = (formula or "").strip()
+    content = _formula_content_as_latex(original)
+    if not content:
+        return original
+    if original.startswith(("$$", r"\[")):
+        return f"$${content}$$"
+    return f"${content}$"
+
+
+def _restore_formulas_as_latex(text: str, formulas: list[tuple[str, str]]) -> str:
+    result = text
+    for placeholder, original in formulas:
+        result = result.replace(placeholder, _format_formula_for_translation(original))
+    return result
 
 
 _FORMULA_SYMBOL_DISPLAY = {
@@ -1158,18 +1243,33 @@ def _restore_formulas_with_verbalizations(
     return result
 
 
-def _call_ollama_translate_raw(protected_text: str, model: str, target_language: str) -> str:
+def _call_ollama_translate_raw(
+    protected_text: str,
+    model: str,
+    target_language: str,
+    context: Optional[str] = None,
+) -> str:
+    prompt = protected_text
+    if context:
+        prompt = (
+            "Context for terminology and disambiguation only. Do not translate or output this context:\n"
+            f"{context}\n\n"
+            "Selected text to translate:\n"
+            f"{protected_text}"
+        )
     payload = {
         "model": model,
         "stream": False,
         "system": (
             "You are a precise translation engine. The input contains text with placeholders "
             "like __MATH_0__, __MATH_1__, etc. which represent mathematical formulas. "
+            "Use surrounding context, if provided, only to choose accurate terminology and references. "
+            "Translate only the selected text, never the context block. "
             f"Translate the prose into {target_language}. Keep all names, numbers, and punctuation. "
             "CRITICAL: Do NOT translate, modify, omit, or change the capitalization of the placeholders (e.g. __MATH_0__). Keep them exactly as they are. "
             "Return only the translated text, with no reasoning, notes, markdown fences, or explanations."
         ),
-        "prompt": protected_text,
+        "prompt": prompt,
         "options": {
             "temperature": 0.1,
             "top_p": 0.9,
@@ -1659,61 +1759,24 @@ async def translate_endpoint(request: TranslateRequest):
 
     model = request.model or OLLAMA_TRANSLATE_MODEL
     target_language = request.target_language or "Simplified Chinese"
+    context = _normalize_translation_context(request.context, text)
 
     try:
         t0 = time.perf_counter()
         # 1. 提取并保护公式，用 __MATH_N__ 占位符替代
         protected_text, formulas = _protect_formulas(text)
-        formula_desc_in_english = target_language.strip().lower().startswith("english")
         
         if formulas:
-            # 有公式，并发执行翻译与各公式中文口语化描述，最大化减少延迟
-            formula_texts = [f[1] for f in formulas]
-            translated_raw_task = asyncio.to_thread(
+            # 翻译只处理正文；公式通过占位符保护，最后恢复为可复制的 LaTeX 代码。
+            translated_raw = await asyncio.to_thread(
                 _call_ollama_translate_raw,
                 protected_text,
                 model,
                 target_language,
+                context,
             )
-            if formula_desc_in_english:
-                verbalize_tasks = [
-                    asyncio.to_thread(
-                        _call_ollama_formula_verbalization,
-                        [form],
-                        model,
-                        None,
-                    )
-                    for form in formula_texts
-                ]
-            else:
-                # 为每个公式各创建一个独立的并行任务
-                verbalize_tasks = [
-                    asyncio.to_thread(
-                        _call_ollama_formula_verbalization_zh_single,
-                        form,
-                        model,
-                        None,
-                    )
-                    for form in formula_texts
-                ]
-            results = await asyncio.gather(
-                translated_raw_task,
-                *verbalize_tasks,
-            )
-            translated_raw = results[0]
-            if formula_desc_in_english:
-                verbalizations_zh = [
-                    value[0] if isinstance(value, list) and value else ""
-                    for value in results[1:]
-                ]
-            else:
-                verbalizations_zh = results[1:]
-            # 2. 还原公式，并将 [[MATH: ...]] 渲染为标准 $...$ 且附带中文描述
-            translated_text = _restore_formulas_with_verbalizations(
-                translated_raw,
-                formulas,
-                verbalizations_zh,
-            )
+            # 2. 还原公式，并将 [[MATH: ...]] 等统一渲染为标准 LaTeX 包裹格式。
+            translated_text = _restore_formulas_as_latex(translated_raw, formulas)
         else:
             # 无公式，常规翻译
             translated_text = await asyncio.to_thread(
@@ -1721,6 +1784,7 @@ async def translate_endpoint(request: TranslateRequest):
                 protected_text,
                 model,
                 target_language,
+                context,
             )
             
         elapsed = time.perf_counter() - t0
