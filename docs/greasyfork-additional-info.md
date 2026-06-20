@@ -17,6 +17,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 - `Read`：英文含公式时先读正文，同时后台处理公式；播放到公式处如果还没处理好再等待，然后继续交给 Kokoro TTS 朗读
 - `Translate`：调用本机 Ollama 模型翻译，默认 `translategemma:4b`
+- `Copy`：不翻译，只复制选中原文；MathJax/MathML/KaTeX 公式会尽量扩展到完整公式框并复制为 LaTeX
 - 在设置面板里切换并保存声音、语速、翻译模型和目标语言
 - 查看本地 TTS 服务与 Ollama 模型状态
 - 在 Translation 设置栏手动常驻或卸载当前 Ollama 模型；频繁使用时减少首次加载等待，不用时释放显存
@@ -30,6 +31,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - 如果朗读稿准备接口不可用，`Read` 会退回到 `/translate` 并指定翻译成 English 后再朗读
 - `Read` 和 `Translate` 可以同时进行；按钮行固定在选区下方，译文卡片会根据空间避让，减少遮挡正文
 - 只选中 MathJax/MathML/KaTeX 公式的一部分时，脚本会尽量扩展到完整公式框；如果选中的是包含公式的一整句话，会保留公式前后的句子内容
+- 如果 Gemini 等页面右下角齿轮都没有出现，优先检查 Tampermonkey/Chrome 扩展是否允许脚本在该域名运行；如果齿轮出现但划词按钮不出现，脚本会通过 `selectionchange` 兜底监听动态页面选区
 
 ## 重要：需要本地服务
 

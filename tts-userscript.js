@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.12.6
+// @version      1.12.7
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -17,6 +17,7 @@
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_setClipboard
 // @connect      127.0.0.1
 // @compatible   chrome Requires Tampermonkey and the local API server.
 // @compatible   edge Requires Tampermonkey and the local API server.
@@ -214,6 +215,17 @@ const KokoroTTSCore = (() => {
         return value ? `$${value}$` : "";
       }
     );
+  }
+
+  function normalizeCopyTextWithLatex(text) {
+    return normalizeDisplayMathWrappers(text)
+      .replace(/[\u200B-\u200F\uFEFF]/g, "")
+      .replace(/[ \t]*\n[ \t]*/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\s+([,.;:!?，。；：！？])/g, "$1")
+      .replace(/([([{（])\s+/g, "$1")
+      .replace(/\s+([)\]}）])/g, "$1")
+      .trim();
   }
 
   function splitLatexSegments(text) {
@@ -794,6 +806,7 @@ const KokoroTTSCore = (() => {
     latexToReadableFormula,
     normalizeAudioBuffer,
     normalizeAudioBlob,
+    normalizeCopyTextWithLatex,
     normalizeDisplayMathWrappers,
     normalizeLlmSourceText,
     prepareProgressiveReadPlan,
@@ -1015,7 +1028,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     /* -- Main button -- */
     .tts-speak-btn,
-    .tts-translate-btn {
+    .tts-translate-btn,
+    .tts-copy-btn {
       position: relative;
       display: inline-flex;
       align-items: center;
@@ -1043,6 +1057,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     .tts-translate-btn {
       background: linear-gradient(135deg, #0f9b8e 0%, #2f80ed 100%);
       box-shadow: 0 4px 15px rgba(47, 128, 237, 0.32),
+                  0 1px 3px rgba(0, 0, 0, 0.15);
+    }
+
+    .tts-copy-btn {
+      background: linear-gradient(135deg, #46566f 0%, #6f7f95 100%);
+      box-shadow: 0 4px 15px rgba(92, 112, 138, 0.32),
                   0 1px 3px rgba(0, 0, 0, 0.15);
     }
 
@@ -1079,26 +1099,30 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
 
     .tts-speak-btn:hover,
-    .tts-translate-btn:hover {
+    .tts-translate-btn:hover,
+    .tts-copy-btn:hover {
       transform: translateY(-1px);
       box-shadow: 0 6px 20px rgba(102, 126, 234, 0.55),
                   0 2px 6px rgba(0, 0, 0, 0.2);
     }
 
     .tts-speak-btn:active,
-    .tts-translate-btn:active {
+    .tts-translate-btn:active,
+    .tts-copy-btn:active {
       transform: translateY(0);
     }
 
     /* -- Loading state -- */
     .tts-speak-btn.loading,
-    .tts-translate-btn.loading {
+    .tts-translate-btn.loading,
+    .tts-copy-btn.loading {
       background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
       cursor: pointer;
     }
 
     .tts-speak-btn.loading .tts-icon,
-    .tts-translate-btn.loading .tts-icon {
+    .tts-translate-btn.loading .tts-icon,
+    .tts-copy-btn.loading .tts-icon {
       animation: tts-pulse 1s ease-in-out infinite;
     }
 
@@ -1124,7 +1148,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     /* -- Error state -- */
     .tts-speak-btn.error,
-    .tts-translate-btn.error {
+    .tts-translate-btn.error,
+    .tts-copy-btn.error {
       background: linear-gradient(135deg, #fc5c7d 0%, #6a82fb 100%);
     }
 
@@ -2650,8 +2675,20 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       translateSelectedText(text, translateBtn, container);
     });
 
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "tts-copy-btn";
+    copyBtn.innerHTML = '<span class="tts-icon">\u2398</span><span class="tts-label">Copy</span>';
+
+    copyBtn.addEventListener("click", (e) => {
+      if (!e.isTrusted) return;
+      e.preventDefault();
+      e.stopPropagation();
+      copySelectedTextAsLatex(text, copyBtn);
+    });
+
     actions.appendChild(btn);
     actions.appendChild(translateBtn);
+    actions.appendChild(copyBtn);
     container.appendChild(actions);
 
     document.body.appendChild(container);
@@ -2660,6 +2697,49 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     requestAnimationFrame(() => {
       positionFloatingContainer(container, container._ttsSelectionRect);
     });
+  }
+
+  function selectionRangeIsInsideIgnoredUi(range) {
+    if (!range) return false;
+    const node = range.commonAncestorContainer;
+    const element = node && node.nodeType === 1
+      ? node
+      : node && (node.parentElement || node.parentNode);
+    if (!element || element.nodeType !== 1 || typeof element.closest !== "function") {
+      return false;
+    }
+    return Boolean(
+      element.closest(
+        "input, textarea, [contenteditable='true'], .tts-settings-panel, .tts-settings-gear, .tts-float-container"
+      )
+    );
+  }
+
+  function showButtonForCurrentSelection({ autoSpeak = false } = {}) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      removeButton();
+      return;
+    }
+    const rawRange = selection.getRangeAt(0);
+    if (selectionRangeIsInsideIgnoredUi(rawRange)) {
+      removeButton();
+      return;
+    }
+
+    const text = getSelectedText();
+    if (text.length <= 1) {
+      removeButton();
+      return;
+    }
+
+    const range = expandRangeToContainMath(rawRange);
+    const rect = range.getBoundingClientRect();
+    showButton(rect, text, getSelectionContext(text));
+    if (autoSpeak && floatingBtn) {
+      const btn = floatingBtn.querySelector(".tts-speak-btn");
+      if (btn) speak(text, btn);
+    }
   }
 
   /**
@@ -2672,6 +2752,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         btnElement.dataset.ttsBaseClass = "tts-test-btn";
       } else if (btnElement.classList.contains("tts-translate-btn")) {
         btnElement.dataset.ttsBaseClass = "tts-translate-btn";
+      } else if (btnElement.classList.contains("tts-copy-btn")) {
+        btnElement.dataset.ttsBaseClass = "tts-copy-btn";
       } else {
         btnElement.dataset.ttsBaseClass = "tts-speak-btn";
       }
@@ -2688,7 +2770,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         name &&
         name !== "tts-speak-btn" &&
         name !== "tts-test-btn" &&
-        name !== "tts-translate-btn"
+        name !== "tts-translate-btn" &&
+        name !== "tts-copy-btn"
       );
     btnElement.className = [baseClass, ...stateClasses].join(" ");
     btnElement.style.removeProperty("--tts-progress");
@@ -3225,6 +3308,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   }
 
   function copyTextToClipboard(text) {
+    if (typeof GM_setClipboard === "function") {
+      GM_setClipboard(text, "text");
+      return Promise.resolve();
+    }
     if (navigator.clipboard && window.isSecureContext) {
       return navigator.clipboard.writeText(text);
     }
@@ -3240,6 +3327,40 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       return Promise.resolve();
     } finally {
       area.remove();
+    }
+  }
+
+  async function copySelectedTextAsLatex(text, btnElement) {
+    const copyText = KokoroTTSCore.normalizeCopyTextWithLatex(text);
+    if (!copyText) {
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-copy-btn error", "\u274C", "Empty");
+        setTimeout(() => {
+          setButtonHtml(btnElement, "tts-copy-btn", "\u2398", "Copy");
+        }, 1200);
+      }
+      return;
+    }
+
+    if (btnElement) {
+      setButtonHtml(btnElement, "tts-copy-btn loading", "\u23F3", "Copying");
+    }
+    try {
+      await copyTextToClipboard(copyText);
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-copy-btn done", "\u2705", "Copied");
+        setTimeout(() => {
+          setButtonHtml(btnElement, "tts-copy-btn", "\u2398", "Copy");
+        }, 1200);
+      }
+    } catch (error) {
+      console.warn("[Kokoro TTS] Copy failed", error);
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-copy-btn error", "\u274C", "Failed");
+        setTimeout(() => {
+          setButtonHtml(btnElement, "tts-copy-btn", "\u2398", "Copy");
+        }, 1500);
+      }
     }
   }
 
@@ -3957,19 +4078,22 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
 
     setTimeout(() => {
-      const text = getSelectedText();
-
-      if (text.length > 1) {
-        const selection = window.getSelection();
-        if (selection.rangeCount > 0) {
-          const range = expandRangeToContainMath(selection.getRangeAt(0));
-          const rect = range.getBoundingClientRect();
-          showButton(rect, text, getSelectionContext(text));
-        }
-      } else {
-        removeButton();
-      }
+      showButtonForCurrentSelection();
     }, 10);
+  });
+
+  let selectionChangeTimer = null;
+  document.addEventListener("selectionchange", () => {
+    if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
+    selectionChangeTimer = setTimeout(() => {
+      if (currentAudio || isLoading || isTranslating) return;
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || !String(selection.toString() || "").trim()) {
+        if (floatingBtn) removeButton();
+        return;
+      }
+      showButtonForCurrentSelection();
+    }, 120);
   });
 
   // Click elsewhere -> remove button
@@ -4001,18 +4125,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       e.shiftKey === SHORTCUT.shift &&
       e.key.toUpperCase() === SHORTCUT.key
     ) {
-      const text = getSelectedText();
-      if (text.length > 1) {
-        e.preventDefault();
-        const selection = window.getSelection();
-        if (selection.rangeCount > 0) {
-          const range = expandRangeToContainMath(selection.getRangeAt(0));
-          const rect = range.getBoundingClientRect();
-          showButton(rect, text, getSelectionContext(text));
-          const btn = floatingBtn.querySelector(".tts-speak-btn");
-          if (btn) speak(text, btn);
-        }
-      }
+      e.preventDefault();
+      showButtonForCurrentSelection({ autoSpeak: true });
     }
   });
 
@@ -4038,7 +4152,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   });
 
   console.log(
-    "%c[Local Read & Translate] Script loaded. Select text to read or translate, or press Ctrl+Shift+S to read.",
+    "%c[Local Read & Translate] Script loaded. Select text to read, translate, or copy as LaTeX; press Ctrl+Shift+S to read.",
     "color: #667eea; font-weight: bold;"
   );
 })();

@@ -15,6 +15,7 @@ test("userscript core can be imported without browser globals", () => {
   assert.equal(typeof core.selectBlobAudioFormat, "function");
   assert.equal(typeof core.normalizeAudioBlob, "function");
   assert.equal(typeof core.normalizeAudioBuffer, "function");
+  assert.equal(typeof core.normalizeCopyTextWithLatex, "function");
   assert.equal(typeof core.normalizeLlmSourceText, "function");
   assert.equal(typeof core.prepareTextForReadPlan, "function");
   assert.equal(typeof core.applyFormulaVerbalizations, "function");
@@ -318,6 +319,20 @@ test("translation display renders LaTeX formulas as readable math", () => {
     splitLatexSegments("记为 [[MATH: D_I]]。")[1].value,
     "$D_I$"
   );
+});
+
+test("copy text keeps prose and converts math wrappers to LaTeX", () => {
+  const { normalizeCopyTextWithLatex } = require("../tts-userscript.js");
+  const copied = normalizeCopyTextWithLatex(`
+The resulting sampled sets are denoted by [[MATH: D_I]], [[MATH: D_U]], and [[MATH: D_D]], respectively.
+其中 [[MATH: D_w \\to \\hat{B}(x)]] 表示数据构造。
+`);
+
+  assert.equal(
+    copied,
+    "The resulting sampled sets are denoted by $D_I$, $D_U$, and $D_D$, respectively. 其中 $D_w \\to \\hat{B}(x)$ 表示数据构造。"
+  );
+  assert.doesNotMatch(copied, /\[\[MATH:/);
 });
 
 
