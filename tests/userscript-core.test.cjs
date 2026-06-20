@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 
 
@@ -20,6 +22,17 @@ test("userscript core can be imported without browser globals", () => {
   assert.equal(typeof core.prepareTextForReadPlan, "function");
   assert.equal(typeof core.applyFormulaVerbalizations, "function");
   assert.equal(typeof core.splitLatexSegments, "function");
+});
+
+test("userscript avoids Trusted Types blocked HTML sinks", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+
+  assert.doesNotMatch(source, /\binnerHTML\b/);
+  assert.doesNotMatch(source, /\binsertAdjacentHTML\b/);
+  assert.doesNotMatch(source, /\bcreateContextualFragment\b/);
 });
 
 

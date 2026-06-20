@@ -20,6 +20,7 @@
 - **Browser settings panel** — Change and persist voice, speed, translation model and target language from a floating gear icon
 - **Local translation** — Select text and translate it locally through Ollama (`translategemma:4b` by default, switchable to another local model)
 - **Copy selection as LaTeX** — Copy selected prose without translation while converting detected MathJax/MathML/KaTeX formulas to LaTeX
+- **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Manual Ollama residency** — Keep the selected translation model loaded while reading heavily, then unload it from the browser settings panel to free VRAM
 - **Context-aware selected translation** — Nearby text can be sent as reference context for terminology and pronoun disambiguation, but only the selected text is translated
 - **Model-aware context budgets** — 4B models ignore reference context for translation and formula read-aloud stability, while 9B/14B/larger models receive progressively longer context
@@ -117,7 +118,7 @@ Formula wording is guided by `config/math_glossary.json`. Each symbol can define
 
 > ⌨️ Shortcut: `Ctrl+Shift+S` to read selected text directly.
 
-If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible.
+If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
 ## Greasy Fork Publishing
 

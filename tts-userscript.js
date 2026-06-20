@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.12.7
+// @version      1.12.8
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -992,6 +992,91 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       .replace(/'/g, "&#39;");
   }
 
+  function appendLabeledControl(parent, labelText, control) {
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    parent.appendChild(label);
+    parent.appendChild(control);
+    return control;
+  }
+
+  function createStatusRow(dotId, textId, initialText) {
+    const row = document.createElement("div");
+    row.className = "tts-settings-status";
+    const dot = document.createElement("span");
+    dot.className = "tts-status-dot checking";
+    dot.id = dotId;
+    const text = document.createElement("span");
+    text.id = textId;
+    text.textContent = initialText;
+    row.appendChild(dot);
+    row.appendChild(text);
+    return row;
+  }
+
+  function createSettingsButton(id, label) {
+    const button = document.createElement("button");
+    button.className = "tts-test-btn";
+    button.id = id;
+    button.type = "button";
+    button.textContent = label;
+    return button;
+  }
+
+  function createVoiceSelect() {
+    const select = document.createElement("select");
+    select.id = "tts-voice-select";
+    for (const group of VOICES) {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = group.group;
+      for (const voice of group.voices) {
+        const option = new Option(voice.label, voice.id);
+        option.selected = voice.id === settings.voice;
+        optgroup.appendChild(option);
+      }
+      select.appendChild(optgroup);
+    }
+    return select;
+  }
+
+  function createSpeedSelect() {
+    const select = document.createElement("select");
+    select.id = "tts-speed-select";
+    for (const speed of SPEEDS) {
+      const option = new Option(speed.label, String(speed.value));
+      option.selected = speed.value === settings.speed;
+      select.appendChild(option);
+    }
+    return select;
+  }
+
+  function createTranslateModelSelect() {
+    const select = document.createElement("select");
+    select.id = "tts-translate-model-select";
+    let hasSavedTranslateModel = false;
+    for (const model of TRANSLATION_MODELS) {
+      const option = new Option(model.label, model.value);
+      option.selected = model.value === settings.translateModel;
+      if (option.selected) hasSavedTranslateModel = true;
+      select.appendChild(option);
+    }
+    if (!hasSavedTranslateModel) {
+      const option = new Option(`Custom: ${settings.translateModel}`, settings.translateModel);
+      option.selected = true;
+      select.appendChild(option);
+    }
+    return select;
+  }
+
+  function createTextInput(id, value) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = id;
+    input.value = value;
+    input.spellcheck = false;
+    return input;
+  }
+
   // ════════════════════════════════════════════════════════
   //  Styles
   // ════════════════════════════════════════════════════════
@@ -1489,74 +1574,60 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     const panel = document.createElement("div");
     panel.className = "tts-settings-panel";
 
-    // Build voice options HTML
-    let voiceOptions = "";
-    for (const group of VOICES) {
-      voiceOptions += `<optgroup label="${group.group}">`;
-      for (const v of group.voices) {
-        const sel = v.id === settings.voice ? " selected" : "";
-        voiceOptions += `<option value="${v.id}"${sel}>${v.label}</option>`;
-      }
-      voiceOptions += `</optgroup>`;
-    }
+    const title = document.createElement("h3");
+    title.textContent = "Local Read & Translate";
+    panel.appendChild(title);
 
-    // Build speed options HTML
-    let speedOptions = "";
-    for (const s of SPEEDS) {
-      const sel = s.value === settings.speed ? " selected" : "";
-      speedOptions += `<option value="${s.value}"${sel}>${s.label}</option>`;
-    }
+    const grid = document.createElement("div");
+    grid.className = "tts-settings-grid";
 
-    let translateModelOptions = "";
-    const hasSavedTranslateModel = TRANSLATION_MODELS.some(
-      (model) => model.value === settings.translateModel
+    const ttsColumn = document.createElement("div");
+    ttsColumn.className = "tts-settings-column";
+    const ttsTitle = document.createElement("h4");
+    ttsTitle.textContent = "TTS";
+    ttsColumn.appendChild(ttsTitle);
+    ttsColumn.appendChild(createStatusRow("tts-status-dot", "tts-status-text", "Checking..."));
+    appendLabeledControl(ttsColumn, "Voice", createVoiceSelect());
+    appendLabeledControl(ttsColumn, "Speed", createSpeedSelect());
+    ttsColumn.appendChild(
+      createSettingsButton("tts-test-btn", 'Test: "Hello, nice to meet you!"')
     );
-    for (const model of TRANSLATION_MODELS) {
-      const sel = model.value === settings.translateModel ? " selected" : "";
-      translateModelOptions +=
-        `<option value="${escapeHtml(model.value)}"${sel}>${escapeHtml(model.label)}</option>`;
-    }
-    if (!hasSavedTranslateModel) {
-      translateModelOptions +=
-        `<option value="${escapeHtml(settings.translateModel)}" selected>Custom: ${escapeHtml(settings.translateModel)}</option>`;
-    }
 
-    panel.innerHTML = `
-      <h3>Local Read & Translate</h3>
-      <div class="tts-settings-grid">
-        <div class="tts-settings-column">
-          <h4>TTS</h4>
-          <div class="tts-settings-status">
-            <span class="tts-status-dot checking" id="tts-status-dot"></span>
-            <span id="tts-status-text">Checking...</span>
-          </div>
-          <label>Voice</label>
-          <select id="tts-voice-select">${voiceOptions}</select>
-          <label>Speed</label>
-          <select id="tts-speed-select">${speedOptions}</select>
-          <button class="tts-test-btn" id="tts-test-btn">Test: "Hello, nice to meet you!"</button>
-        </div>
-        <div class="tts-settings-column">
-          <h4>Translation</h4>
-          <div class="tts-settings-status">
-            <span class="tts-status-dot checking" id="tts-translate-status-dot"></span>
-            <span id="tts-translate-status-text">Checking model...</span>
-          </div>
-          <label>Translate model</label>
-          <select id="tts-translate-model-select">${translateModelOptions}</select>
-          <label>Custom model</label>
-          <input type="text" id="tts-translate-model-input" value="${escapeHtml(settings.translateModel)}" spellcheck="false">
-          <label>Target language</label>
-          <input type="text" id="tts-target-language-input" value="${escapeHtml(settings.targetLanguage)}" spellcheck="false">
-          <div class="tts-model-actions">
-            <button class="tts-test-btn" id="tts-model-keepalive-btn">Keep loaded</button>
-            <button class="tts-test-btn" id="tts-model-unload-btn">Unload</button>
-          </div>
-          <button class="tts-test-btn" id="tts-translate-test-btn">Test translation</button>
-          <div class="tts-test-output" id="tts-translate-test-output">No translation test yet.</div>
-        </div>
-      </div>
-    `;
+    const translationColumn = document.createElement("div");
+    translationColumn.className = "tts-settings-column";
+    const translationTitle = document.createElement("h4");
+    translationTitle.textContent = "Translation";
+    translationColumn.appendChild(translationTitle);
+    translationColumn.appendChild(
+      createStatusRow("tts-translate-status-dot", "tts-translate-status-text", "Checking model...")
+    );
+    appendLabeledControl(translationColumn, "Translate model", createTranslateModelSelect());
+    appendLabeledControl(
+      translationColumn,
+      "Custom model",
+      createTextInput("tts-translate-model-input", settings.translateModel)
+    );
+    appendLabeledControl(
+      translationColumn,
+      "Target language",
+      createTextInput("tts-target-language-input", settings.targetLanguage)
+    );
+
+    const modelActions = document.createElement("div");
+    modelActions.className = "tts-model-actions";
+    modelActions.appendChild(createSettingsButton("tts-model-keepalive-btn", "Keep loaded"));
+    modelActions.appendChild(createSettingsButton("tts-model-unload-btn", "Unload"));
+    translationColumn.appendChild(modelActions);
+    translationColumn.appendChild(createSettingsButton("tts-translate-test-btn", "Test translation"));
+    const output = document.createElement("div");
+    output.className = "tts-test-output";
+    output.id = "tts-translate-test-output";
+    output.textContent = "No translation test yet.";
+    translationColumn.appendChild(output);
+
+    grid.appendChild(ttsColumn);
+    grid.appendChild(translationColumn);
+    panel.appendChild(grid);
 
     document.body.appendChild(panel);
     settingsPanel = panel;
@@ -1971,7 +2042,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   // Create gear button
   const gearBtn = document.createElement("button");
   gearBtn.className = "tts-settings-gear";
-  gearBtn.innerHTML = "\u2699\uFE0F";
+  gearBtn.textContent = "\u2699\uFE0F";
   gearBtn.title = "Local Read & Translate settings";
   gearBtn.setAttribute("aria-label", "Local Read and Translate settings");
   gearBtn.setAttribute("aria-expanded", "false");
@@ -2604,7 +2675,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     const btn = document.createElement("button");
     btn.className = "tts-speak-btn";
-    btn.innerHTML = '<span class="tts-icon">\uD83D\uDD0A</span><span class="tts-label">Read</span>';
+    setButtonHtml(btn, "tts-speak-btn", "\uD83D\uDD0A", "Read");
 
     btn.addEventListener("click", (e) => {
       if (!e.isTrusted) return;
@@ -2624,17 +2695,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (btn.classList.contains("playing")) {
         cancelRequest();
         stopAudio();
-        btn.className = "tts-speak-btn";
-        btn.innerHTML =
-          '<span class="tts-icon">\uD83D\uDD0A</span><span class="tts-label">Read</span>';
+        setButtonHtml(btn, "tts-speak-btn", "\uD83D\uDD0A", "Read");
         return;
       }
 
       if (btn.classList.contains("loading")) {
         cancelRequest();
-        btn.className = "tts-speak-btn";
-        btn.innerHTML =
-          '<span class="tts-icon">\uD83D\uDD0A</span><span class="tts-label">Read</span>';
+        setButtonHtml(btn, "tts-speak-btn", "\uD83D\uDD0A", "Read");
         return;
       }
 
@@ -2643,7 +2710,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     const translateBtn = document.createElement("button");
     translateBtn.className = "tts-translate-btn";
-    translateBtn.innerHTML = '<span class="tts-icon">\uD83C\uDF10</span><span class="tts-label">Translate</span>';
+    setButtonHtml(translateBtn, "tts-translate-btn", "\uD83C\uDF10", "Translate");
 
     translateBtn.addEventListener("click", (e) => {
       if (!e.isTrusted) return;
@@ -2677,7 +2744,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     const copyBtn = document.createElement("button");
     copyBtn.className = "tts-copy-btn";
-    copyBtn.innerHTML = '<span class="tts-icon">\u2398</span><span class="tts-label">Copy</span>';
+    setButtonHtml(copyBtn, "tts-copy-btn", "\u2398", "Copy");
 
     copyBtn.addEventListener("click", (e) => {
       if (!e.isTrusted) return;
@@ -2775,8 +2842,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       );
     btnElement.className = [baseClass, ...stateClasses].join(" ");
     btnElement.style.removeProperty("--tts-progress");
-    btnElement.innerHTML =
-      `<span class="tts-icon">${icon}</span><span class="tts-label">${label}</span>`;
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "tts-icon";
+    iconSpan.textContent = icon;
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "tts-label";
+    labelSpan.textContent = label;
+    btnElement.replaceChildren(iconSpan, labelSpan);
   }
 
   function setPlaybackProgress(btnElement, audio, streamEnded) {
@@ -2792,8 +2864,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       : [];
     btnElement.className = [baseClass, "playing", ...progressClasses].join(" ");
     btnElement.style.setProperty("--tts-progress", progress.percent + "%");
-    btnElement.innerHTML =
-      `<span class="tts-icon">\uD83D\uDD0A</span><span class="tts-label">${progress.label}</span>`;
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "tts-icon";
+    iconSpan.textContent = "\uD83D\uDD0A";
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "tts-label";
+    labelSpan.textContent = progress.label;
+    btnElement.replaceChildren(iconSpan, labelSpan);
   }
 
   function attachPlaybackUi(audio, btnElement, buttonContainer, isStreamEnded) {
@@ -3364,6 +3441,56 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
   }
 
+  function readScriptGroup(value, start) {
+    if (value[start] === "{") {
+      let depth = 0;
+      for (let i = start; i < value.length; i += 1) {
+        const char = value[i];
+        if (char === "{") depth += 1;
+        if (char === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            return {
+              text: value.slice(start + 1, i),
+              next: i + 1,
+            };
+          }
+        }
+      }
+    }
+    return {
+      text: value[start] || "",
+      next: Math.min(value.length, start + 1),
+    };
+  }
+
+  function appendReadableFormulaContent(container, formulaText) {
+    const readable = KokoroTTSCore.latexToReadableFormula(formulaText);
+    let buffer = "";
+    function flush() {
+      if (!buffer) return;
+      container.appendChild(document.createTextNode(buffer));
+      buffer = "";
+    }
+
+    for (let i = 0; i < readable.length; i += 1) {
+      const char = readable[i];
+      if ((char === "_" || char === "^") && i + 1 < readable.length) {
+        const group = readScriptGroup(readable, i + 1);
+        if (group.text) {
+          flush();
+          const node = document.createElement(char === "_" ? "sub" : "sup");
+          node.textContent = group.text;
+          container.appendChild(node);
+          i = group.next - 1;
+          continue;
+        }
+      }
+      buffer += char;
+    }
+    flush();
+  }
+
   function appendTranslationTextWithFormulas(container, text) {
     container.textContent = "";
     const segments = KokoroTTSCore.splitLatexSegments(text);
@@ -3376,7 +3503,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       formula.className = segment.block
         ? "tts-formula-rendered tts-formula-block"
         : "tts-formula-rendered";
-      formula.innerHTML = KokoroTTSCore.formulaToReadableHtml(segment.value);
+      appendReadableFormulaContent(formula, segment.value);
       container.appendChild(formula);
     });
   }
