@@ -19,6 +19,7 @@
 - **System tray app** — Runs silently in the background, right-click to control, with optional login auto-start
 - **Browser settings panel** — Change and persist voice, speed, translation model and target language from a floating gear icon
 - **Local translation** — Select text and translate it locally through Ollama (`translategemma:4b` by default, switchable to another local model)
+- **Manual Ollama residency** — Keep the selected translation model loaded while reading heavily, then unload it from the browser settings panel to free VRAM
 - **Context-aware selected translation** — Nearby text can be sent as reference context for terminology and pronoun disambiguation, but only the selected text is translated
 - **Model-aware context budgets** — 4B models ignore reference context for translation and formula read-aloud stability, while 9B/14B/larger models receive progressively longer context
 - **No-think Qwen3 requests** — Qwen3/QwQ/DeepSeek-R1 style reasoning models are called with Ollama `think: false` for lower latency in translation and read preparation
@@ -95,7 +96,9 @@ ollama pull translategemma:4b
 ollama pull qwen3:14b
 ```
 
-The default Ollama model is `translategemma:4b` for translation, read preparation and formula verbalization. Override it with `OLLAMA_TRANSLATE_MODEL`, `OLLAMA_READ_MODEL` or `OLLAMA_FORMULA_MODEL`, or change the translation model in the browser settings panel. The settings panel separates TTS and Translation controls, persists settings through Tampermonkey storage, shows whether the selected Ollama model is installed/running, and includes a translation test button. Context passed to Ollama is capped by model size: 4B models ignore reference context for translation and read-time Chinese-to-English conversion, 9B models get moderate context, and 14B or larger models get longer context. Qwen3/QwQ/DeepSeek-R1 style reasoning models are sent to Ollama with top-level `think: false`, so `qwen3:14b` keeps its larger context budget without spending tokens on hidden reasoning.
+The default Ollama model is `translategemma:4b` for translation, read preparation and formula verbalization. Override it with `OLLAMA_TRANSLATE_MODEL`, `OLLAMA_READ_MODEL` or `OLLAMA_FORMULA_MODEL`, or change the translation model in the browser settings panel. The settings panel separates TTS and Translation controls, persists settings through Tampermonkey storage, shows whether the selected Ollama model is installed/running, includes a translation test button, and can keep the selected model loaded or unload it manually. Context passed to Ollama is capped by model size: 4B models ignore reference context for translation and read-time Chinese-to-English conversion, 9B models get moderate context, and 14B or larger models get longer context. Qwen3/QwQ/DeepSeek-R1 style reasoning models are sent to Ollama with top-level `think: false`, so `qwen3:14b` keeps its larger context budget without spending tokens on hidden reasoning.
+
+Use **Keep loaded** in the Translation settings when you plan to translate or read many selections with the same Ollama model. This preloads the model with `keep_alive: -1m` and keeps sending that setting for the pinned model, avoiding repeated first-token delays. Use **Unload** when you are done to release VRAM.
 
 Formula wording is guided by `config/math_glossary.json`. Each symbol can define a direct reading, read-aloud defaults and contextual readings, for example right arrow can mean `maps to`, `approaches`, `implies`, `gives`, or simply `right arrow`. Local rules choose common cases first. For 4B models, the formula read-aloud path deliberately prefers these literal rules and omits formula context where possible; the same glossary is included in Ollama prompts only for harder formulas.
 
@@ -206,7 +209,15 @@ Fallback endpoint returning concise spoken English descriptions for formulas tha
 
 ### `GET /translate/health?model=translategemma:4b`
 
-Checks local Ollama without starting a generation. Returns whether Ollama is reachable, whether the model is installed, and whether it is currently running.
+Checks local Ollama without starting a generation. Returns whether Ollama is reachable, whether the model is installed, whether it is currently running, and whether this service has pinned it with keep-alive.
+
+### `POST /translate/model/keepalive`
+
+Preloads a local Ollama model and keeps it resident. The browser settings panel uses `keep_alive: -1m` for manual model residency.
+
+### `POST /translate/model/unload`
+
+Unloads a local Ollama model and removes its keep-alive pin.
 
 ### `GET /health` — Server status
 ### `GET /voices` — Available voices

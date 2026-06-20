@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.12.5
+// @version      1.12.6
 // @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
 // @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
 // @author       Yan-ShiBo
@@ -831,6 +831,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   const API_STREAM_URL = API_BASE + "/tts/stream";
   const API_TRANSLATE_URL = API_BASE + "/translate";
   const API_TRANSLATE_HEALTH_URL = API_BASE + "/translate/health";
+  const API_TRANSLATE_KEEPALIVE_URL = API_BASE + "/translate/model/keepalive";
+  const API_TRANSLATE_UNLOAD_URL = API_BASE + "/translate/model/unload";
   const API_READ_PREPARE_URL = API_BASE + "/read/prepare";
   const API_FORMULA_VERBALIZE_URL = API_BASE + "/formula/verbalize";
   const SHORTCUT = { ctrl: true, shift: true, key: "S" }; // Ctrl+Shift+S
@@ -1399,6 +1401,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       transition: all 0.2s;
     }
 
+    .tts-settings-panel .tts-model-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .tts-settings-panel .tts-model-actions .tts-test-btn {
+      margin-top: 0;
+      min-height: 34px;
+    }
+
+    .tts-settings-panel .tts-test-btn:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+    }
+
     .tts-settings-panel .tts-test-btn:hover {
       background: rgba(102, 126, 234, 0.2);
       border-color: rgba(102, 126, 234, 0.5);
@@ -1504,6 +1523,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           <input type="text" id="tts-translate-model-input" value="${escapeHtml(settings.translateModel)}" spellcheck="false">
           <label>Target language</label>
           <input type="text" id="tts-target-language-input" value="${escapeHtml(settings.targetLanguage)}" spellcheck="false">
+          <div class="tts-model-actions">
+            <button class="tts-test-btn" id="tts-model-keepalive-btn">Keep loaded</button>
+            <button class="tts-test-btn" id="tts-model-unload-btn">Unload</button>
+          </div>
           <button class="tts-test-btn" id="tts-translate-test-btn">Test translation</button>
           <div class="tts-test-output" id="tts-translate-test-output">No translation test yet.</div>
         </div>
@@ -1577,6 +1600,14 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       testTranslation(e.currentTarget);
     });
 
+    panel.querySelector("#tts-model-keepalive-btn").addEventListener("click", (e) => {
+      keepTranslationModelLoaded(e.currentTarget);
+    });
+
+    panel.querySelector("#tts-model-unload-btn").addEventListener("click", (e) => {
+      unloadTranslationModel(e.currentTarget);
+    });
+
     // Check server status
     checkServerStatus();
     checkTranslationStatus();
@@ -1628,6 +1659,67 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     select.value = settings.translateModel;
   }
 
+  function updateTranslationModelControls(payload) {
+    const keepBtn = document.getElementById("tts-model-keepalive-btn");
+    const unloadBtn = document.getElementById("tts-model-unload-btn");
+    if (!keepBtn || !unloadBtn) return;
+
+    const reachable = Boolean(payload && payload.ollama_reachable);
+    const available = Boolean(payload && payload.model_available);
+    const running = Boolean(payload && payload.model_running);
+    const pinned = Boolean(payload && payload.model_pinned);
+    const canLoad = reachable && available;
+
+    keepBtn.disabled = !canLoad;
+    unloadBtn.disabled = !reachable || !running;
+
+    if (pinned) {
+      setButtonHtml(keepBtn, "tts-test-btn playing", "\u2705", "Kept loaded");
+    } else {
+      setButtonHtml(keepBtn, "tts-test-btn", "\uD83D\uDCCC", running ? "Keep loaded" : "Load & keep");
+    }
+
+    if (running) {
+      setButtonHtml(unloadBtn, "tts-test-btn", "\u23CF", "Unload");
+    } else {
+      setButtonHtml(unloadBtn, "tts-test-btn", "\u23CF", "Not loaded");
+    }
+  }
+
+  function requestTranslationModelResidency(url, body, timeout = 180000) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url,
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        data: JSON.stringify(body),
+        responseType: "json",
+        timeout,
+        onload: (response) => {
+          if (response.status >= 200 && response.status < 300) {
+            try {
+              resolve(response.response || JSON.parse(response.responseText || "{}"));
+            } catch (error) {
+              reject(error);
+            }
+          } else {
+            let detail = response.statusText || "Model residency request failed";
+            try {
+              const payload = JSON.parse(response.responseText || "{}");
+              if (payload.detail) detail = payload.detail;
+            } catch {}
+            reject(new Error(`Server returned ${response.status}: ${detail}`));
+          }
+        },
+        onerror: () => reject(new Error("Cannot connect to local TTS server. Run start.bat first.")),
+        ontimeout: () => reject(new Error("Model residency request timeout.")),
+      });
+    });
+  }
+
   function checkTranslationStatus() {
     const dot = document.getElementById("tts-translate-status-dot");
     const text = document.getElementById("tts-translate-status-text");
@@ -1636,6 +1728,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     dot.className = "tts-status-dot checking";
     text.textContent = "Checking model...";
     text.style.color = "#f0c040";
+    updateTranslationModelControls(null);
 
     GM_xmlhttpRequest({
       method: "GET",
@@ -1659,21 +1752,27 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         }
 
         if (!payload.ollama_reachable) {
+          updateTranslationModelControls(payload);
           dot.className = "tts-status-dot offline";
           text.textContent = "Ollama offline";
           text.style.color = "#e57373";
         } else if (payload.model_running) {
           syncInstalledTranslationModels(payload.available_models);
+          updateTranslationModelControls(payload);
           dot.className = "tts-status-dot online";
-          text.textContent = `${payload.model} running`;
+          text.textContent = payload.model_pinned
+            ? `${payload.model} kept loaded`
+            : `${payload.model} running`;
           text.style.color = "#81c784";
         } else if (payload.model_available) {
           syncInstalledTranslationModels(payload.available_models);
+          updateTranslationModelControls(payload);
           dot.className = "tts-status-dot warning";
           text.textContent = `${payload.model} installed, not loaded`;
           text.style.color = "#f0c040";
         } else {
           syncInstalledTranslationModels(payload.available_models);
+          updateTranslationModelControls(payload);
           dot.className = "tts-status-dot offline";
           text.textContent = `${payload.model} not installed`;
           text.style.color = "#e57373";
@@ -1690,6 +1789,69 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         text.style.color = "#e57373";
       },
     });
+  }
+
+  async function keepTranslationModelLoaded(btnElement) {
+    if (btnElement && btnElement.classList.contains("loading")) return;
+    syncSettingsFromPanel();
+    const unloadBtn = document.getElementById("tts-model-unload-btn");
+    if (btnElement) {
+      setButtonHtml(btnElement, "tts-test-btn loading", "\u23F3", "Loading...");
+      btnElement.disabled = true;
+    }
+    if (unloadBtn) unloadBtn.disabled = true;
+
+    try {
+      await requestTranslationModelResidency(API_TRANSLATE_KEEPALIVE_URL, {
+        model: settings.translateModel,
+        keep_alive: "-1m",
+      });
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-test-btn playing", "\u2705", "Kept loaded");
+      }
+      checkTranslationStatus();
+    } catch (err) {
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Load failed");
+        btnElement.disabled = false;
+      }
+      const output = document.getElementById("tts-translate-test-output");
+      if (output) {
+        output.textContent = err.message || "Cannot keep model loaded";
+        output.style.color = "#e57373";
+      }
+    }
+  }
+
+  async function unloadTranslationModel(btnElement) {
+    if (btnElement && btnElement.classList.contains("loading")) return;
+    syncSettingsFromPanel();
+    const keepBtn = document.getElementById("tts-model-keepalive-btn");
+    if (btnElement) {
+      setButtonHtml(btnElement, "tts-test-btn loading", "\u23F3", "Unloading...");
+      btnElement.disabled = true;
+    }
+    if (keepBtn) keepBtn.disabled = true;
+
+    try {
+      await requestTranslationModelResidency(API_TRANSLATE_UNLOAD_URL, {
+        model: settings.translateModel,
+      }, 60000);
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-test-btn", "\u23CF", "Not loaded");
+      }
+      checkTranslationStatus();
+    } catch (err) {
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Unload failed");
+        btnElement.disabled = false;
+      }
+      const output = document.getElementById("tts-translate-test-output");
+      if (output) {
+        output.textContent = err.message || "Cannot unload model";
+        output.style.color = "#e57373";
+      }
+    }
   }
 
   async function testTranslation(btnElement) {

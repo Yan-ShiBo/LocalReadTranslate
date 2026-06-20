@@ -80,7 +80,9 @@ OLLAMA_TRANSLATE_MODEL = os.environ.get("OLLAMA_TRANSLATE_MODEL", "translategemm
 OLLAMA_FORMULA_MODEL = os.environ.get("OLLAMA_FORMULA_MODEL", "translategemma:4b")
 OLLAMA_READ_MODEL = os.environ.get("OLLAMA_READ_MODEL", "translategemma:4b")
 OLLAMA_TRANSLATE_TIMEOUT = float(os.environ.get("OLLAMA_TRANSLATE_TIMEOUT", "90"))
+OLLAMA_KEEP_ALIVE_PIN_VALUE = os.environ.get("OLLAMA_KEEP_ALIVE_PIN_VALUE", "-1m")
 MATH_GLOSSARY_FILE = Path(__file__).resolve().parent / "config" / "math_glossary.json"
+PINNED_OLLAMA_MODELS: set[str] = set()
 _GLOSSARY_SYMBOL_ALIASES = {
     "double_arrow": "right_double_arrow",
     "tilde": "tilde_accent",
@@ -319,7 +321,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.12",
+    version="1.7.13",
     lifespan=lifespan,
 )
 
@@ -398,6 +400,69 @@ class TranslateResponse(BaseModel):
     elapsed: float
 
 
+class OllamaModelKeepAliveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(max_length=120)
+    keep_alive: str | int | float = Field(default=OLLAMA_KEEP_ALIVE_PIN_VALUE)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value):
+        model = value.strip()
+        if not model:
+            raise ValueError("model cannot be blank")
+        if any(ch.isspace() for ch in model):
+            raise ValueError("model cannot contain whitespace")
+        return model
+
+    @field_validator("keep_alive")
+    @classmethod
+    def validate_keep_alive(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("keep_alive cannot be boolean")
+        if isinstance(value, (int, float)):
+            if not math.isfinite(value):
+                raise ValueError("keep_alive must be finite")
+            return value
+        cleaned = str(value).strip()
+        if not cleaned:
+            raise ValueError("keep_alive cannot be blank")
+        if re.fullmatch(r"-?\d+", cleaned):
+            return int(cleaned)
+        if re.fullmatch(r"-?\d+\.\d+", cleaned):
+            return float(cleaned)
+        if not re.fullmatch(r"-?\d+(?:\.\d+)?(?:ms|s|m|h)", cleaned):
+            raise ValueError("keep_alive must be a duration like -1, 30m, 8h, or 0")
+        return cleaned
+
+
+class OllamaModelUnloadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(max_length=120)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value):
+        model = value.strip()
+        if not model:
+            raise ValueError("model cannot be blank")
+        if any(ch.isspace() for ch in model):
+            raise ValueError("model cannot contain whitespace")
+        return model
+
+
+class OllamaModelKeepAliveResponse(BaseModel):
+    status: str
+    model: str
+    keep_alive: str | int | float
+    model_running: bool
+    model_pinned: bool
+    elapsed: float
+    done_reason: Optional[str] = None
+
+
 class ReadPrepareRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -472,6 +537,7 @@ class TranslateHealthResponse(BaseModel):
     model: str
     model_available: bool
     model_running: bool
+    model_pinned: bool = False
     available_models: list[str]
     running_models: list[str]
     error: Optional[str] = None
@@ -620,6 +686,18 @@ def _apply_ollama_thinking_mode(payload: dict, model: Optional[str]) -> None:
         payload["think"] = False
 
 
+def _apply_ollama_keep_alive(payload: dict, model: Optional[str]) -> None:
+    selected_model = (model or "").strip()
+    if selected_model and selected_model in PINNED_OLLAMA_MODELS:
+        payload["keep_alive"] = OLLAMA_KEEP_ALIVE_PIN_VALUE
+
+
+def _prepare_ollama_generate_payload(payload: dict, model: Optional[str]) -> dict:
+    _apply_ollama_thinking_mode(payload, model)
+    _apply_ollama_keep_alive(payload, model)
+    return payload
+
+
 def _model_context_limit(model: Optional[str], purpose: str = "translation") -> int:
     size = _model_size_billions(model)
     profiles = {
@@ -743,6 +821,37 @@ def _call_ollama_json(path: str, timeout: float = 5.0):
         raise RuntimeError("Ollama returned invalid JSON") from error
 
 
+def _call_ollama_model_keep_alive(model: str, keep_alive: str | int | float):
+    payload = {
+        "model": model,
+        "prompt": "",
+        "stream": False,
+        "keep_alive": keep_alive,
+    }
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib_request.Request(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib_request.urlopen(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib_error.HTTPError as error:
+        raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
+    except urllib_error.URLError as error:
+        raise RuntimeError("Cannot connect to Ollama") from error
+    except TimeoutError as error:
+        raise RuntimeError("Ollama keep-alive request timed out") from error
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Ollama returned invalid JSON") from error
+
+
 def _ollama_model_names(payload) -> list[str]:
     names = []
     for item in payload.get("models", []) if isinstance(payload, dict) else []:
@@ -752,6 +861,31 @@ def _ollama_model_names(payload) -> list[str]:
         if isinstance(name, str) and name:
             names.append(name)
     return names
+
+
+def _ollama_model_is_running(model: str) -> bool:
+    return model in _ollama_model_names(_call_ollama_json("/api/ps"))
+
+
+def _wait_for_ollama_model_state(
+    model: str,
+    *,
+    running: bool,
+    timeout: float = 3.0,
+    interval: float = 0.25,
+) -> bool:
+    deadline = time.perf_counter() + max(0.0, timeout)
+    last_state = False
+    while True:
+        try:
+            last_state = _ollama_model_is_running(model)
+        except RuntimeError:
+            return False
+        if last_state is running:
+            return last_state
+        if time.perf_counter() >= deadline:
+            return last_state
+        time.sleep(interval)
 
 
 def _protect_formulas(text: str) -> tuple[str, list[tuple[str, str]]]:
@@ -1309,7 +1443,7 @@ def _call_ollama_formula_verbalization_zh_single(
             "top_p": 0.9,
         },
     }
-    _apply_ollama_thinking_mode(payload, model)
+    _prepare_ollama_generate_payload(payload, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/generate",
@@ -1410,7 +1544,7 @@ def _call_ollama_translate_raw(
             "top_p": 0.9,
         },
     }
-    _apply_ollama_thinking_mode(payload, model)
+    _prepare_ollama_generate_payload(payload, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/generate",
@@ -1561,7 +1695,7 @@ def _call_ollama_text_generation(
             "top_p": 0.9,
         },
     }
-    _apply_ollama_thinking_mode(payload, model)
+    _prepare_ollama_generate_payload(payload, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/generate",
@@ -1856,7 +1990,7 @@ def _call_ollama_formula_verbalization(
             "top_p": 0.9,
         },
     }
-    _apply_ollama_thinking_mode(payload, model)
+    _prepare_ollama_generate_payload(payload, model)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/generate",
@@ -2104,6 +2238,7 @@ async def translate_health(model: Optional[str] = None):
             model=selected_model,
             model_available=model_available,
             model_running=model_running,
+            model_pinned=selected_model in PINNED_OLLAMA_MODELS,
             available_models=available_models,
             running_models=running_models,
         )
@@ -2115,10 +2250,69 @@ async def translate_health(model: Optional[str] = None):
             model=selected_model,
             model_available=False,
             model_running=False,
+            model_pinned=selected_model in PINNED_OLLAMA_MODELS,
             available_models=[],
             running_models=[],
             error="Cannot connect to Ollama",
         )
+
+
+@app.post("/translate/model/keepalive", response_model=OllamaModelKeepAliveResponse)
+async def translate_model_keepalive(request: OllamaModelKeepAliveRequest):
+    """Preload a local Ollama model and keep it resident until explicitly unloaded."""
+    t0 = time.perf_counter()
+    model = request.model
+    try:
+        result = await asyncio.to_thread(
+            _call_ollama_model_keep_alive,
+            model,
+            request.keep_alive,
+        )
+        PINNED_OLLAMA_MODELS.add(model)
+        model_running = await asyncio.to_thread(
+            _wait_for_ollama_model_state,
+            model,
+            running=True,
+        )
+        return OllamaModelKeepAliveResponse(
+            status="pinned",
+            model=model,
+            keep_alive=request.keep_alive,
+            model_running=model_running,
+            model_pinned=True,
+            elapsed=round(time.perf_counter() - t0, 3),
+            done_reason=result.get("done_reason") if isinstance(result, dict) else None,
+        )
+    except RuntimeError as error:
+        print(f"[ERROR] Ollama keep-alive failed: {error}")
+        raise HTTPException(status_code=502, detail="Local Ollama keep-alive failed")
+
+
+@app.post("/translate/model/unload", response_model=OllamaModelKeepAliveResponse)
+async def translate_model_unload(request: OllamaModelUnloadRequest):
+    """Unload a local Ollama model and remove its keep-alive pin."""
+    t0 = time.perf_counter()
+    model = request.model
+    try:
+        result = await asyncio.to_thread(_call_ollama_model_keep_alive, model, 0)
+        PINNED_OLLAMA_MODELS.discard(model)
+        model_running = await asyncio.to_thread(
+            _wait_for_ollama_model_state,
+            model,
+            running=False,
+        )
+        return OllamaModelKeepAliveResponse(
+            status="unloaded",
+            model=model,
+            keep_alive=0,
+            model_running=model_running,
+            model_pinned=False,
+            elapsed=round(time.perf_counter() - t0, 3),
+            done_reason=result.get("done_reason") if isinstance(result, dict) else None,
+        )
+    except RuntimeError as error:
+        print(f"[ERROR] Ollama unload failed: {error}")
+        raise HTTPException(status_code=502, detail="Local Ollama unload failed")
 
 
 @app.post("/translate", response_model=TranslateResponse)

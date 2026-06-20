@@ -154,6 +154,8 @@ class ApiTests(unittest.TestCase):
         self.original_pipeline = server.pipeline
         self.original_british_pipeline = server.british_pipeline
         self.original_inference_lock = server.inference_lock
+        self.original_pinned_ollama_models = set(server.PINNED_OLLAMA_MODELS)
+        server.PINNED_OLLAMA_MODELS.clear()
         server.pipeline = FakePipeline()
         server.british_pipeline = FakePipeline()
         server.inference_lock = asyncio.Lock()
@@ -164,6 +166,8 @@ class ApiTests(unittest.TestCase):
         server.pipeline = self.original_pipeline
         server.british_pipeline = self.original_british_pipeline
         server.inference_lock = self.original_inference_lock
+        server.PINNED_OLLAMA_MODELS.clear()
+        server.PINNED_OLLAMA_MODELS.update(self.original_pinned_ollama_models)
         self.print_patcher.stop()
 
     def test_tts_returns_wav_and_uses_requested_settings(self):
@@ -503,6 +507,26 @@ class ApiTests(unittest.TestCase):
         self.assertLess(prompt.index("</REFERENCE_CONTEXT_DO_NOT_TRANSLATE>"), prompt.index("<SELECTED_TEXT_TRANSLATE_ONLY>"))
         self.assertIn("Translate ONLY the content inside <SELECTED_TEXT_TRANSLATE_ONLY>", system)
         self.assertIn("Never translate or summarize anything inside <REFERENCE_CONTEXT_DO_NOT_TRANSLATE>", system)
+
+    def test_pinned_model_generation_requests_keep_alive(self):
+        captured = {}
+        server.PINNED_OLLAMA_MODELS.add("qwen3:14b")
+
+        def fake_urlopen(request, timeout):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeUrlopenResponse({"response": "只翻译选中内容"})
+
+        with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+            result = server._call_ollama_translate_raw(
+                "selected sentence",
+                "qwen3:14b",
+                "Simplified Chinese",
+                None,
+            )
+
+        self.assertEqual(result, "只翻译选中内容")
+        self.assertIs(captured["payload"]["think"], False)
+        self.assertEqual(captured["payload"]["keep_alive"], server.OLLAMA_KEEP_ALIVE_PIN_VALUE)
 
     def test_translate_hides_ollama_errors(self):
         with patch.object(
@@ -916,6 +940,94 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(payload["ollama_reachable"])
         self.assertTrue(payload["model_available"])
         self.assertTrue(payload["model_running"])
+        self.assertFalse(payload["model_pinned"])
+
+    def test_translate_health_reports_pinned_model(self):
+        server.PINNED_OLLAMA_MODELS.add("translategemma:4b")
+
+        def fake_ollama_json(path):
+            if path == "/api/tags":
+                return {"models": [{"name": "translategemma:4b"}]}
+            if path == "/api/ps":
+                return {"models": [{"name": "translategemma:4b"}]}
+            raise AssertionError(path)
+
+        with patch.object(
+            server,
+            "_call_ollama_json",
+            create=True,
+            side_effect=fake_ollama_json,
+        ):
+            response = self.client.get("/translate/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["model_pinned"])
+
+    def test_translate_model_keepalive_pins_model(self):
+        def fake_ollama_json(path):
+            if path == "/api/ps":
+                return {"models": [{"name": "qwen3:14b"}]}
+            raise AssertionError(path)
+
+        with patch.object(
+            server,
+            "_call_ollama_model_keep_alive",
+            create=True,
+            return_value={"done_reason": "load"},
+        ) as keepalive, patch.object(
+            server,
+            "_call_ollama_json",
+            create=True,
+            side_effect=fake_ollama_json,
+        ):
+            response = self.client.post(
+                "/translate/model/keepalive",
+                json={"model": "qwen3:14b"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "pinned")
+        self.assertEqual(payload["model"], "qwen3:14b")
+        self.assertEqual(payload["keep_alive"], server.OLLAMA_KEEP_ALIVE_PIN_VALUE)
+        self.assertTrue(payload["model_running"])
+        self.assertTrue(payload["model_pinned"])
+        self.assertIn("qwen3:14b", server.PINNED_OLLAMA_MODELS)
+        keepalive.assert_called_once_with("qwen3:14b", server.OLLAMA_KEEP_ALIVE_PIN_VALUE)
+
+    def test_translate_model_unload_unpins_model(self):
+        server.PINNED_OLLAMA_MODELS.add("qwen3:14b")
+
+        def fake_ollama_json(path):
+            if path == "/api/ps":
+                return {"models": []}
+            raise AssertionError(path)
+
+        with patch.object(
+            server,
+            "_call_ollama_model_keep_alive",
+            create=True,
+            return_value={"done_reason": "unload"},
+        ) as unload, patch.object(
+            server,
+            "_call_ollama_json",
+            create=True,
+            side_effect=fake_ollama_json,
+        ):
+            response = self.client.post(
+                "/translate/model/unload",
+                json={"model": "qwen3:14b"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "unloaded")
+        self.assertEqual(payload["model"], "qwen3:14b")
+        self.assertEqual(payload["keep_alive"], 0)
+        self.assertFalse(payload["model_running"])
+        self.assertFalse(payload["model_pinned"])
+        self.assertNotIn("qwen3:14b", server.PINNED_OLLAMA_MODELS)
+        unload.assert_called_once_with("qwen3:14b", 0)
 
     def test_translate_health_handles_ollama_offline(self):
         with patch.object(

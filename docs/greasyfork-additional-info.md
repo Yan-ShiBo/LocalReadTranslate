@@ -19,6 +19,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - `Translate`：调用本机 Ollama 模型翻译，默认 `translategemma:4b`
 - 在设置面板里切换并保存声音、语速、翻译模型和目标语言
 - 查看本地 TTS 服务与 Ollama 模型状态
+- 在 Translation 设置栏手动常驻或卸载当前 Ollama 模型；频繁使用时减少首次加载等待，不用时释放显存
 - 英文会尽量原样保留，中文会翻成英文；英文含公式的朗读会优先开始正文，公式在后台变成英文口语描述
 - MathJax/MathML/LaTeX 会优先提取语义公式；翻译结果会把公式渲染为带上下标的易读公式，而不是显示原始 LaTeX 代码
 - 翻译请求可附带附近正文作为本地参考上下文，只用于术语和指代消歧；真正翻译和输出的只有选中内容
@@ -44,7 +45,7 @@ ollama pull translategemma:4b
 ollama pull qwen3:14b
 ```
 
-翻译、朗读稿准备和复杂公式口语化默认都使用 `translategemma:4b`。可在服务端通过 `OLLAMA_TRANSLATE_MODEL`、`OLLAMA_READ_MODEL`、`OLLAMA_FORMULA_MODEL` 覆盖，也可在脚本设置里切换当前翻译/朗读准备模型。如果第一次变慢，通常是 Ollama 正在加载模型。4B 模型的翻译和公式朗读不参考上下文，公式朗读也会优先采用保守字面规则；14B 模型会保留更多上下文。使用 `qwen3:14b`、QwQ、DeepSeek-R1 等推理模型时，服务端会自动向 Ollama 传入 `think: false`，让翻译和朗读准备直接输出结果。
+翻译、朗读稿准备和复杂公式口语化默认都使用 `translategemma:4b`。可在服务端通过 `OLLAMA_TRANSLATE_MODEL`、`OLLAMA_READ_MODEL`、`OLLAMA_FORMULA_MODEL` 覆盖，也可在脚本设置里切换当前翻译/朗读准备模型。如果第一次变慢，通常是 Ollama 正在加载模型。设置栏里的 **Keep loaded** 会用 Ollama `keep_alive: -1m` 常驻当前模型，**Unload** 会用 `keep_alive: 0` 卸载模型释放显存。4B 模型的翻译和公式朗读不参考上下文，公式朗读也会优先采用保守字面规则；14B 模型会保留更多上下文。使用 `qwen3:14b`、QwQ、DeepSeek-R1 等推理模型时，服务端会自动向 Ollama 传入 `think: false`，让翻译和朗读准备直接输出结果。
 数学符号读法可在项目的 `config/math_glossary.json` 中调整，当前覆盖箭头、上下标、集合、逻辑、求和、积分、偏导等常见论文符号。
 
 ## 隐私说明
