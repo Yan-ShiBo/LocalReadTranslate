@@ -1,5 +1,8 @@
 # Remote Ollama Service Implementation Plan
 
+> [!WARNING]
+> **Archived implementation plan.** This file preserves the original RED/GREEN steps, paths, versions, and expected test counts for historical traceability; do not execute it against the current checkout. The former `D:/local-tts-env` path no longer describes this project. Use the current [README](../../../README.md), [remote-service design](../specs/2026-06-27-remote-ollama-service-design.md), and [iteration 4 release record](../../iteration-4-2026-07-18.md) instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a tray-configured remote Ollama source so the browser can choose either local Ollama models or models exposed through an SSH tunnel to a LAN server.

@@ -174,7 +174,7 @@ def test_stream_endpoint_returns_webm_headers(monkeypatch):
     FakeWebMEncoder.instances = []
     fake_pipeline = FakePipeline()
     monkeypatch.setattr(server, "pipeline", fake_pipeline)
-    monkeypatch.setattr(server, "british_pipeline", FakePipeline())
+    monkeypatch.setattr(server, "british_pipeline", fake_pipeline)
     monkeypatch.setattr(
         server,
         "WebMOpusEncoder",
@@ -194,7 +194,9 @@ def test_stream_endpoint_returns_webm_headers(monkeypatch):
 
 
 def test_stream_endpoint_rejects_format_query(monkeypatch):
-    monkeypatch.setattr(server, "pipeline", FakePipeline())
+    fake_pipeline = FakePipeline()
+    monkeypatch.setattr(server, "pipeline", fake_pipeline)
+    monkeypatch.setattr(server, "british_pipeline", fake_pipeline)
     client = TestClient(server.app)
 
     response = client.post("/tts/stream?format=ogg", json={"text": "Hello"})
@@ -203,7 +205,9 @@ def test_stream_endpoint_rejects_format_query(monkeypatch):
 
 
 def test_stream_endpoint_returns_429_when_lock_is_busy(monkeypatch):
-    monkeypatch.setattr(server, "pipeline", FakePipeline())
+    fake_pipeline = FakePipeline()
+    monkeypatch.setattr(server, "pipeline", fake_pipeline)
+    monkeypatch.setattr(server, "british_pipeline", fake_pipeline)
 
     async def exercise():
         await server.inference_lock.acquire()

@@ -32,7 +32,8 @@ from tts_catalog import (
     SPEEDS,
     VOICE_GROUPS,
 )
-from windows_runtime import WindowsNamedMutex
+from windows_protocol import ensure_start_protocol_registered, is_start_protocol_url
+from windows_runtime import WindowsNamedAutoResetEvent, WindowsNamedMutex
 from windows_startup import (
     StartupShortcutError,
     inspect_startup_shortcut,
@@ -53,6 +54,7 @@ LOG_FILE = APP_DATA_DIR / "server.log"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
+START_SERVER_EVENT_NAME = r"Local\LocalReadTranslate.StartServer"
 
 VOICES = {
     group["label_en"]: [
@@ -122,15 +124,64 @@ def find_conda_pythonw(env_name: str) -> Path:
 def default_remote_ollama_settings():
     return {
         "enabled": False,
-        "name": "",
-        "host": "",
+        "name": "10.12.96.203",
+        "connection_mode": "ssh",
+        "host": "10.12.96.203",
         "ssh_port": 22,
-        "username": "",
+        "username": "test",
         "password": "",
+        "key_file": "",
         "ollama_host": "127.0.0.1",
         "ollama_port": 11434,
         "local_port": 0,
+        "base_url": "http://10.12.96.203:11434",
     }
+
+
+def _remote_connection_mode(settings):
+    value = str((settings or {}).get("connection_mode") or "ssh").strip().lower()
+    return "api" if value in {"api", "direct", "direct_api"} else "ssh"
+
+
+def _remote_api_base_url(settings):
+    remote = settings or {}
+    base_url = str(remote.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        host = str(remote.get("host") or "").strip()
+        if not host:
+            return ""
+        port = int(remote.get("ollama_port") or 11434)
+        base_url = f"http://{host}:{port}"
+    elif "://" not in base_url:
+        base_url = f"http://{base_url}"
+    return base_url
+
+
+def _load_openssh_host_config(paramiko, host):
+    config_path = Path.home() / ".ssh" / "config"
+    if not config_path.is_file():
+        return {}
+    try:
+        config = paramiko.SSHConfig()
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            config.parse(config_file)
+        return dict(config.lookup(host) or {})
+    except (OSError, ValueError):
+        return {}
+
+
+def _expand_ssh_key_files(value):
+    if not value:
+        return None
+    raw_values = value if isinstance(value, (list, tuple)) else [value]
+    paths = [
+        os.path.expandvars(os.path.expanduser(str(path).strip()))
+        for path in raw_values
+        if str(path).strip()
+    ]
+    if not paths:
+        return None
+    return paths[0] if len(paths) == 1 else paths
 
 
 def slugify_source_id(value):
@@ -162,14 +213,22 @@ def load_settings():
         defaults["speed"] = DEFAULT_SPEED
     defaults["auto_start"] = bool(defaults.get("auto_start", False))
     remote = default_remote_ollama_settings()
-    if isinstance(defaults.get("remote_ollama"), dict):
-        remote.update(defaults["remote_ollama"])
+    saved_remote = defaults.get("remote_ollama")
+    if isinstance(saved_remote, dict):
+        remote.update(saved_remote)
     remote["enabled"] = bool(remote.get("enabled", False))
+    remote["connection_mode"] = _remote_connection_mode(remote)
     for key in ("ssh_port", "ollama_port", "local_port"):
         try:
             remote[key] = int(remote.get(key) or default_remote_ollama_settings()[key])
         except (TypeError, ValueError):
             remote[key] = default_remote_ollama_settings()[key]
+    if isinstance(saved_remote, dict) and "base_url" not in saved_remote:
+        legacy_host = str(remote.get("host") or "").strip()
+        if legacy_host:
+            remote["base_url"] = f"http://{legacy_host}:{remote['ollama_port']}"
+    remote["base_url"] = _remote_api_base_url(remote)
+    remote["key_file"] = str(remote.get("key_file") or "").strip()
     defaults["remote_ollama"] = remote
     return defaults
 
@@ -241,33 +300,47 @@ class RemoteOllamaTunnel:
         import paramiko
 
         host = str(self.settings.get("host") or "").strip()
-        username = str(self.settings.get("username") or "").strip()
+        ssh_config = _load_openssh_host_config(paramiko, host) if host else {}
+        connect_host = str(ssh_config.get("hostname") or host).strip()
+        username = str(
+            self.settings.get("username") or ssh_config.get("user") or ""
+        ).strip()
         password = str(self.settings.get("password") or "")
         if not host:
             raise RuntimeError("Remote server IP is required")
         if not username:
             raise RuntimeError("Remote username is required")
-        if not password:
-            raise RuntimeError("Remote password is required")
 
-        ssh_port = int(self.settings.get("ssh_port") or 22)
+        ssh_port = int(
+            self.settings.get("ssh_port") or ssh_config.get("port") or 22
+        )
         ollama_host = str(self.settings.get("ollama_host") or "127.0.0.1").strip()
         ollama_port = int(self.settings.get("ollama_port") or 11434)
         requested_local_port = int(self.settings.get("local_port") or 0)
+        key_filename = _expand_ssh_key_files(
+            self.settings.get("key_file") or ssh_config.get("identityfile")
+        )
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=host,
-            port=ssh_port,
-            username=username,
-            password=password,
-            look_for_keys=False,
-            allow_agent=False,
-            timeout=10,
-            banner_timeout=10,
-            auth_timeout=10,
-        )
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        connect_kwargs = {
+            "hostname": connect_host,
+            "port": ssh_port,
+            "username": username,
+            "look_for_keys": True,
+            "allow_agent": True,
+            "timeout": 10,
+            "banner_timeout": 10,
+            "auth_timeout": 10,
+        }
+        if key_filename:
+            connect_kwargs["key_filename"] = key_filename
+        if password:
+            # Paramiko tries explicit/default keys and the SSH agent before
+            # falling back to this password in the same connection attempt.
+            connect_kwargs["password"] = password
+        client.connect(**connect_kwargs)
         transport = client.get_transport()
         if transport is None or not transport.is_active():
             client.close()
@@ -337,7 +410,12 @@ class RemoteOllamaTunnel:
 
 
 class TrayApp:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        start_background_tasks=True,
+        enable_windows_protocol=True,
+    ):
         self.server_process = None
         self.owns_server = False
         self._log_handle = None
@@ -348,9 +426,55 @@ class TrayApp:
         self.python_exe = find_conda_python(CONDA_ENV_NAME)
         self.remote_tunnel = None
         self.remote_tunnel_local_port = None
+        self._enable_windows_protocol = bool(enable_windows_protocol)
+        self._start_server_event = None
+        self._protocol_listener_stop = threading.Event()
+        self._protocol_listener_thread = None
         # 缓存开机自启状态，避免右键托盘菜单渲染时同步拉起 PowerShell 子进程导致系统假死
         self.auto_start_cached = bool(self.settings.get("auto_start", False))
-        threading.Thread(target=self._init_and_reconcile_auto_start, daemon=True).start()
+        if self._enable_windows_protocol:
+            self._initialize_windows_protocol(
+                start_listener=bool(start_background_tasks),
+            )
+        if start_background_tasks:
+            threading.Thread(
+                target=self._init_and_reconcile_auto_start,
+                daemon=True,
+            ).start()
+
+    def _initialize_windows_protocol(self, *, start_listener):
+        try:
+            ensure_start_protocol_registered(
+                find_conda_pythonw(CONDA_ENV_NAME),
+                SCRIPT_DIR / "tray_app.py",
+            )
+        except Exception:
+            # URL registration is a convenience feature and must never prevent
+            # the tray or API server from starting normally.
+            pass
+
+        if not start_listener:
+            return
+        try:
+            event = WindowsNamedAutoResetEvent(START_SERVER_EVENT_NAME).create()
+        except Exception:
+            return
+        self._start_server_event = event
+        listener = threading.Thread(
+            target=self._listen_for_start_server_requests,
+            daemon=True,
+        )
+        self._protocol_listener_thread = listener
+        listener.start()
+
+    def _listen_for_start_server_requests(self):
+        while not self._protocol_listener_stop.is_set():
+            try:
+                requested = self._start_server_event.wait(timeout_ms=500)
+            except Exception:
+                return
+            if requested and not self._protocol_listener_stop.is_set():
+                self.start_server()
 
     def get_health(self, port=DEFAULT_PORT):
         try:
@@ -471,14 +595,18 @@ class TrayApp:
         remote = self.settings.get("remote_ollama") or {}
         if not remote.get("enabled"):
             return ""
-        try:
-            local_port = int(
-                self.remote_tunnel_local_port or remote.get("local_port") or 0
-            )
-        except (TypeError, ValueError):
-            local_port = 0
-        if local_port <= 0:
-            return ""
+        if _remote_connection_mode(remote) == "api":
+            base_url = _remote_api_base_url(remote)
+            if not base_url:
+                return ""
+        else:
+            try:
+                local_port = int(self.remote_tunnel_local_port or 0)
+            except (TypeError, ValueError):
+                local_port = 0
+            if local_port <= 0:
+                return ""
+            base_url = f"http://127.0.0.1:{local_port}"
         name = (remote.get("name") or remote.get("host") or "Remote Ollama").strip()
         source_id = slugify_source_id(name)
         return json.dumps(
@@ -486,15 +614,20 @@ class TrayApp:
                 {
                     "id": source_id,
                     "name": name,
-                    "base_url": f"http://127.0.0.1:{local_port}",
+                    "base_url": base_url,
                 }
             ],
             ensure_ascii=False,
         )
 
     def _test_remote_ollama_tunnel(self, local_port):
-        with urllib.request.urlopen(
-            f"http://{DEFAULT_HOST}:{local_port}/api/tags",
+        self._test_remote_ollama_api(f"http://{DEFAULT_HOST}:{local_port}")
+
+    def _test_remote_ollama_api(self, base_url):
+        tags_url = f"{str(base_url or '').strip().rstrip('/')}/api/tags"
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(
+            tags_url,
             timeout=5,
         ) as response:
             if response.status != 200:
@@ -511,9 +644,18 @@ class TrayApp:
         remote = self.settings.get("remote_ollama") or {}
         if not remote.get("enabled"):
             return False
-        if self.remote_tunnel and self.remote_tunnel_local_port:
+        mode = _remote_connection_mode(remote)
+        if mode == "ssh" and self.remote_tunnel and self.remote_tunnel_local_port:
             return True
+        tunnel = None
         try:
+            if mode == "api":
+                base_url = _remote_api_base_url(remote)
+                if not base_url:
+                    raise RuntimeError("Remote Ollama API base URL is required")
+                self._test_remote_ollama_api(base_url)
+                self._stop_remote_ollama_tunnel()
+                return True
             tunnel = RemoteOllamaTunnel(remote)
             local_port = tunnel.start()
             self._test_remote_ollama_tunnel(local_port)
@@ -524,28 +666,50 @@ class TrayApp:
             save_settings(self.settings)
             return True
         except Exception as error:
-            self._stop_remote_ollama_tunnel()
-            remote = dict(remote)
-            remote["enabled"] = False
-            remote["local_port"] = 0
-            self.settings["remote_ollama"] = remote
+            if tunnel is not None:
+                tunnel.stop()
             self.show_error("Remote Service", str(error))
             return False
 
-    def connect_remote_ollama(self):
-        self._stop_remote_ollama_tunnel()
-        remote = self.settings.get("remote_ollama") or default_remote_ollama_settings()
-        tunnel = RemoteOllamaTunnel(remote)
+    def connect_remote_ollama(self, remote_settings=None):
+        previous_tunnel = self.remote_tunnel
+        previous_local_port = self.remote_tunnel_local_port
+        remote = default_remote_ollama_settings()
+        candidate = remote_settings
+        if candidate is None:
+            candidate = self.settings.get("remote_ollama") or {}
+        if isinstance(candidate, dict):
+            remote.update(candidate)
+        remote["enabled"] = True
+        remote["connection_mode"] = _remote_connection_mode(remote)
+        remote["base_url"] = _remote_api_base_url(remote)
+        tunnel = None
         try:
-            local_port = tunnel.start()
-            self._test_remote_ollama_tunnel(local_port)
+            if remote["connection_mode"] == "api":
+                if not remote["base_url"]:
+                    raise RuntimeError("Remote Ollama API base URL is required")
+                self._test_remote_ollama_api(remote["base_url"])
+                local_port = 0
+            else:
+                tunnel_settings = dict(remote)
+                if (
+                    previous_tunnel is not None
+                    and int(tunnel_settings.get("local_port") or 0)
+                    == int(previous_local_port or 0)
+                ):
+                    tunnel_settings["local_port"] = 0
+                tunnel = RemoteOllamaTunnel(tunnel_settings)
+                local_port = tunnel.start()
+                self._test_remote_ollama_tunnel(local_port)
         except Exception:
-            tunnel.stop()
+            if tunnel is not None:
+                tunnel.stop()
             raise
 
+        if previous_tunnel is not None:
+            previous_tunnel.stop()
         self.remote_tunnel = tunnel
-        self.remote_tunnel_local_port = local_port
-        remote["enabled"] = True
+        self.remote_tunnel_local_port = local_port or None
         remote["local_port"] = local_port
         self.settings["remote_ollama"] = remote
         save_settings(self.settings)
@@ -600,12 +764,19 @@ class TrayApp:
 
         fields = [
             ("Server name", "name", remote.get("name") or ""),
+            (
+                "Connection mode (ssh/api)",
+                "connection_mode",
+                _remote_connection_mode(remote),
+            ),
             ("Server IP", "host", remote.get("host") or ""),
             ("SSH port", "ssh_port", str(remote.get("ssh_port") or 22)),
             ("Username", "username", remote.get("username") or ""),
             ("Password", "password", remote.get("password") or ""),
+            ("SSH key file (optional)", "key_file", remote.get("key_file") or ""),
             ("Ollama host", "ollama_host", remote.get("ollama_host") or "127.0.0.1"),
             ("Ollama port", "ollama_port", str(remote.get("ollama_port") or 11434)),
+            ("Direct API base URL", "base_url", _remote_api_base_url(remote)),
         ]
         entries = {}
         for row, (label, key, value) in enumerate(fields):
@@ -616,10 +787,20 @@ class TrayApp:
                 pady=5,
                 sticky="e",
             )
-            entry = tk.Entry(window, width=32, show="*" if key == "password" else "")
-            entry.insert(0, str(value))
-            entry.grid(row=row, column=1, padx=10, pady=5, sticky="we")
-            entries[key] = entry
+            if key == "connection_mode":
+                mode_var = tk.StringVar(value=str(value))
+                mode_menu = tk.OptionMenu(window, mode_var, "ssh", "api")
+                mode_menu.grid(row=row, column=1, padx=10, pady=5, sticky="we")
+                entries[key] = mode_var
+            else:
+                entry = tk.Entry(
+                    window,
+                    width=32,
+                    show="*" if key == "password" else "",
+                )
+                entry.insert(0, str(value))
+                entry.grid(row=row, column=1, padx=10, pady=5, sticky="we")
+                entries[key] = entry
         entries["host"].focus_set()
         window.after(100, window.focus_force)
 
@@ -632,18 +813,24 @@ class TrayApp:
             values.update(
                 {
                     "name": entries["name"].get().strip(),
+                    "connection_mode": entries["connection_mode"].get().strip().lower(),
                     "host": entries["host"].get().strip(),
                     "username": entries["username"].get().strip(),
                     "password": entries["password"].get(),
+                    "key_file": entries["key_file"].get().strip(),
                     "ollama_host": entries["ollama_host"].get().strip() or "127.0.0.1",
+                    "base_url": entries["base_url"].get().strip(),
                 }
             )
+            if values["connection_mode"] not in {"ssh", "api"}:
+                raise RuntimeError("connection mode must be ssh or api")
             for key, fallback in (("ssh_port", 22), ("ollama_port", 11434)):
                 try:
                     values[key] = int(entries[key].get().strip() or fallback)
                 except ValueError:
                     raise RuntimeError(f"{key.replace('_', ' ')} must be a number")
             values["name"] = values["name"] or values["host"] or "Remote Ollama"
+            values["base_url"] = _remote_api_base_url(values)
             values["local_port"] = int(remote.get("local_port") or 0)
             return values
 
@@ -662,10 +849,9 @@ class TrayApp:
             try:
                 values = read_remote_settings()
                 values["enabled"] = True
-                self.settings["remote_ollama"] = values
                 status.config(text="Connecting...")
                 window.update_idletasks()
-                self.connect_remote_ollama()
+                self.connect_remote_ollama(values)
                 messagebox.showinfo("Remote Service", "Connected.", parent=window)
                 window.destroy()
             except Exception as error:
@@ -777,6 +963,18 @@ class TrayApp:
     def quit_app(self, _=None):
         watchdog = self._schedule_force_exit()
         try:
+            self._protocol_listener_stop.set()
+            if self._start_server_event is not None:
+                try:
+                    self._start_server_event.set()
+                    if (
+                        self._protocol_listener_thread is not None
+                        and self._protocol_listener_thread is not threading.current_thread()
+                    ):
+                        self._protocol_listener_thread.join(timeout=1)
+                    self._start_server_event.close()
+                except Exception:
+                    pass
             try:
                 self._stop_remote_ollama_tunnel()
             except Exception:
@@ -877,9 +1075,14 @@ class TrayApp:
 #  Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    start_requested = any(is_start_protocol_url(value) for value in args)
     instance_mutex = WindowsNamedMutex(r"Local\KokoroTTS.Tray")
     if not instance_mutex.acquire():
+        if start_requested:
+            WindowsNamedAutoResetEvent.signal_existing(START_SERVER_EVENT_NAME)
+            return 0
         import ctypes
 
         ctypes.windll.user32.MessageBoxW(
@@ -888,9 +1091,14 @@ if __name__ == "__main__":
             "Kokoro TTS",
             0x40,
         )
-        raise SystemExit(0)
+        return 0
     try:
         app = TrayApp()
         app.run()
     finally:
         instance_mutex.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

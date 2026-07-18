@@ -1,11 +1,11 @@
 # 本地划词听译助手 - Local Selection Read & Translate
 
-> Select text in Chrome, then read it aloud locally with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) or translate it locally through Ollama. Your selected text stays on your machine.
+> Select text in Chrome, then read it aloud with local [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) or translate it through local Ollama by default. You can also opt into a project-server Ollama source that you configure yourself.
 
 [![CI](https://github.com/Yan-ShiBo/LocalReadTranslate/actions/workflows/ci.yml/badge.svg)](https://github.com/Yan-ShiBo/LocalReadTranslate/actions/workflows/ci.yml)
 
 <p align="center">
-  <strong>Local read-aloud · Local translation · Privacy-first</strong>
+  <strong>Local read-aloud · Local-first translation · User-controlled remote option</strong>
 </p>
 
 ---
@@ -18,7 +18,7 @@
 - **17 voices** — American male/female + British female, easily switchable
 - **System tray app** — Runs silently in the background, right-click to control, with optional login auto-start
 - **Browser settings panel** — Change and persist voice, speed, translation model and target language from a floating gear icon
-- **Local translation** — Select text and translate it locally through Ollama (`translategemma:4b` by default, switchable to another local model)
+- **Local-first translation** — Use local Ollama by default, or explicitly select a model exposed by the tray-managed project server
 - **Copy selection as LaTeX** — Copy selected prose without translation while converting detected MathJax/MathML/KaTeX formulas to LaTeX
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Manual Ollama residency** — Keep the selected translation model loaded while reading heavily, then unload it from the browser settings panel to free VRAM
@@ -35,20 +35,26 @@
 - **Robust UI cleanup** — Frontend uses `MutationObserver` and `AbortController` to cleanly handle SPA routing changes
 - **Playback progress** — Floating button shows a horizontal progress fill; streaming mode shows played seconds until final duration is known
 - **GPU-accelerated** — Near real-time inference on NVIDIA GPUs
-- **Fully offline** — No internet required after initial model download (~200MB)
+- **Offline-capable local mode** — After models are downloaded, local TTS and local Ollama do not require the internet; remote mode intentionally sends requests to the configured server
 
 ## 📐 Architecture
 
+```text
+┌──────────────────────┐       HTTP on loopback       ┌───────────────────────┐
+│ Chrome + Tampermonkey│  ──────────────────────►  │ Local FastAPI broker  │
+│                      │      127.0.0.1:5000      │                       │
+│ Read / Translate     │  ◄──────────────────────  │ /tts → lazy Kokoro   │
+│ Settings actions     │                            │ /translate → Ollama │
+└──────────────────────┘                            └──────────┬────────────┘
+           │ localreadtranslate://start          │
+           ▼                                     ├─► Local Ollama
+┌──────────────────────┐                 SSH/API    └─► Configured remote Ollama
+│ Windows tray app     │
+│ start or wake server │
+└──────────────────────┘
 ```
-┌──────────────────────────┐                        ┌─────────────────────────┐
-│   Chrome Browser          │   POST /tts            │   Local API Server      │
-│   Tampermonkey Script     │  ───────────────────►  │   FastAPI + Kokoro TTS  │
-│                           │                        │   127.0.0.1:5000        │
-│   ① Select English text   │  ◄───────────────────  │                         │
-│   ② Click 🔊 button       │    audio/wav stream     │   ③ GPU inference       │
-│   ④ HTML5 Audio plays     │                        │                         │
-└──────────────────────────┘                        └─────────────────────────┘
-```
+
+The userscript never receives SSH credentials or talks directly to Ollama. The local API is the single browser boundary; the tray app owns process startup, SSH/API configuration and tunnel lifecycle.
 
 ## 💻 Requirements
 
@@ -83,12 +89,26 @@ pip install -r requirements.txt
 ### 3. Start the Server
 
 **Option A: System tray app** (recommended)
-- Double-click `Kokoro TTS.bat` — starts the tray app without relying on Windows `.pyw` file associations
+- Double-click `Kokoro TTS.bat` — starts the tray app without relying on Windows `.pyw` file associations. On Windows, the tray app also creates or repairs the current-user `localreadtranslate://start` URL handler.
 
 **Option B: Terminal mode**
 - Double-click `start.bat` — shows a console window with logs
 
-Both `.bat` launchers locate the `kokoro-tts` Conda environment Python directly, so normal startup does not require `conda init`. `Kokoro TTS.pyw` is kept as a no-console Python launcher, but it only works by double-click when Windows has a `.pyw` file association.
+Both `.bat` launchers locate the `kokoro-tts` Conda environment Python directly, so normal startup does not require `conda init`. `Kokoro TTS.pyw` is kept as a no-console Python launcher, but it only works by double-click when Windows has a `.pyw` file association. Terminal mode starts only the FastAPI process; use the tray app when you need an SSH tunnel or the browser's one-click service start.
+
+You can register or repair the browser start handler explicitly:
+
+```powershell
+conda run -n kokoro-tts python windows_protocol.py register
+```
+
+The handler is stored under the current user's registry hive and does not require administrator rights. It contains absolute paths, so rerun the command after moving or renaming the project folder.
+
+To remove only this per-user handler:
+
+```powershell
+conda run -n kokoro-tts python windows_protocol.py unregister
+```
 
 For local translation, install [Ollama](https://ollama.com/) and pull a model:
 
@@ -104,9 +124,20 @@ Use **Keep loaded** in the Translation settings when you plan to translate or re
 
 ### Remote Ollama over LAN
 
-Right-click the Kokoro TTS tray icon and choose `Remote Service`. Enter the server name, IP, SSH port, username, password, and remote Ollama host/port. The app creates a local SSH tunnel to the server's native Ollama API, then the browser model selector will show models as `Server Name / model`.
+Right-click the Kokoro TTS tray icon and choose `Remote Service`. The bundled profile is prefilled for `10.12.96.203` but remains disabled by default, so normal startup stays local. Choose one of two connection modes:
 
-The browser script never receives the SSH password. For convenience, the tray app stores the remote profile in `tray_settings.json`.
+- `ssh`: uses your SSH agent, default keys, or matching `~/.ssh/config` entry first; an optional key file can be supplied explicitly, and a password is only used as fallback. The app loads system/OpenSSH host keys and rejects an unknown host, then forwards the remote Ollama endpoint through a local tunnel.
+- `api`: connects directly to an Ollama API base URL such as `http://10.12.96.203:11434` without creating a tunnel.
+
+After connecting, the browser model selector shows models as `Server Name / model`. The userscript never switches a local selection to a remote model automatically: click **Use project server** or choose a remote entry yourself. Ollama requests bypass ambient HTTP proxy settings so loopback and LAN prompts are not sent through an unrelated proxy.
+
+The browser script never receives the SSH password or key path. The tray app stores the remote profile in the ignored `tray_settings.json` file. This file is not encrypted: if you enter a fallback password, it is stored as plaintext on this computer. Prefer an SSH agent, OpenSSH config or a key file, and protect the local account and file permissions.
+
+Direct API mode targets a native Ollama base URL. It does not add API-key headers or turn Ollama into an authenticated public service. A URL such as `http://10.12.96.203:11434` is plaintext and should be used only on a trusted LAN or VPN; do not expose an unauthenticated Ollama port to the public internet.
+
+> SSH host identity is fail-closed: the client calls `load_system_host_keys()` and uses Paramiko `RejectPolicy`. Add a host to `known_hosts` only after verifying its fingerprint through a trusted channel. The configured `10.12.96.203` entry exists on this machine and was verified by a successful real reconnection.
+
+The Kokoro TTS model is loaded lazily on the first Read request. Starting the API or translating through a remote model does not initialize Torch/Kokoro or allocate local GPU memory; `/health` exposes `api_ready` and `tts_model_loaded` separately.
 
 Formula wording is guided by `config/math_glossary.json`. Each symbol can define a direct reading, read-aloud defaults and contextual readings, for example right arrow can mean `maps to`, `approaches`, `implies`, `gives`, or simply `right arrow`. Local rules choose common cases first. For 4B models, the formula read-aloud path deliberately prefers these literal rules and omits formula context where possible; the same glossary is included in Ollama prompts only for harder formulas.
 
@@ -116,17 +147,35 @@ Formula wording is guided by `config/math_glossary.json`. Each symbol can define
 2. Install the published script from Greasy Fork, or open the [GitHub raw userscript](https://raw.githubusercontent.com/Yan-ShiBo/LocalReadTranslate/main/tts-userscript.js) for the development version
 3. Confirm installation in Tampermonkey
 
+Editing the repository file does not update a copy already installed in Tampermonkey. See [Tampermonkey development and publishing](#tampermonkey-development-and-publishing) for the local test and release flow.
+
 ### 5. Use it!
 
 1. Open any webpage
 2. **Select text** → floating `Read`, `Translate`, and `Copy` buttons appear
-3. Click `Read` for local English TTS with background formula verbalization, `Translate` for local Ollama translation, or `Copy` to copy the selection while preserving formulas as LaTeX
+3. Click `Read` for local English TTS with background formula verbalization, `Translate` with the selected local or remote Ollama model, or `Copy` to copy the selection while preserving formulas as LaTeX
+4. Open the gear panel for explicit service actions:
+   - **Use project server** refreshes remote options, keeps an already available remote choice or selects the first available remote model, saves it, and checks that model's remote health. It does not establish SSH credentials or a tunnel; configure and connect `Remote Service` in the tray app first.
+   - **Initialize local model** calls Ollama keep-alive for the selected local translation model. Select a local model first; this action does not load Kokoro.
+   - **Start local service** opens `localreadtranslate://start`. After the browser's external-app confirmation, it starts a new tray instance or wakes the existing tray to start FastAPI, then polls `/health` for about 20 seconds. It does not initialize either model by itself.
 
 > ⌨️ Shortcut: `Ctrl+Shift+S` to read selected text directly.
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
-## Greasy Fork Publishing
+## Tampermonkey Development and Publishing
+
+For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
+
+The current repository metadata version is `1.13.0`.
+
+For each release:
+
+1. Increment the userscript `@version`; Tampermonkey will not replace an installed copy with the same version.
+2. Run the catalog, Python, JavaScript and metadata checks in [Tests](#-tests).
+3. Commit and push the tested files. Both `@downloadURL` and `@updateURL` point at the raw `main` script, so a versioned push is a userscript release.
+4. Open the [raw userscript](https://raw.githubusercontent.com/Yan-ShiBo/LocalReadTranslate/main/tts-userscript.js), or use Tampermonkey's **Check for updates**, and verify that the installed version matches the repository.
+5. Publish the same script version on Greasy Fork and update its additional information from `docs/greasyfork-additional-info.md`.
 
 The script metadata includes:
 
@@ -134,7 +183,7 @@ The script metadata includes:
 - `@supportURL`: GitHub Issues, shown as the feedback/support link
 - `@license`: MIT
 
-When publishing on Greasy Fork, paste the Markdown from [`docs/greasyfork-additional-info.md`](docs/greasyfork-additional-info.md) into the script's additional info field. The GitHub repository should be linked both through `@homepageURL` and in that additional info section.
+Keep the GitHub repository linked both through `@homepageURL` and in the Greasy Fork additional information. Before announcing a release, verify that the local file, GitHub raw response, Tampermonkey installation and Greasy Fork page show the same version.
 
 ## 🎭 Available Voices
 
@@ -149,6 +198,7 @@ browser script and built-in test page are generated from this catalog.
 | `server.py` | FastAPI server with Kokoro TTS inference |
 | `audio_encoding.py` | Bundled FFmpeg helpers for OGG/Opus and WebM/Opus |
 | `tray_app.py` | System tray application (background mode) |
+| `windows_protocol.py` | Per-user `localreadtranslate://start` registration and validation |
 | `windows_startup.py` | Windows Startup shortcut management for tray auto-start |
 | `Kokoro TTS.bat` | Recommended tray launcher; does not require `.pyw` file association |
 | `Kokoro TTS.pyw` | No-console launcher for tray app |
@@ -160,6 +210,7 @@ browser script and built-in test page are generated from this catalog.
 | `requirements-test.txt` | Lightweight CI/test dependencies (no Torch/Kokoro) |
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
+| `docs/iteration-4-2026-07-18.md` | Current service-control and remote-translation release record |
 | `.github/workflows/ci.yml` | Windows CI |
 
 ## 🔌 API
@@ -219,31 +270,58 @@ Fallback endpoint returning concise spoken English descriptions for formulas tha
 
 ### `GET /translate/health?model=translategemma:4b`
 
-Checks local Ollama without starting a generation. Returns whether Ollama is reachable, whether the model is installed, whether it is currently running, and whether this service has pinned it with keep-alive.
+Checks the selected Ollama source without starting a translation. A plain model name selects local Ollama; `remote:<source-id>:<model>` selects a tray-configured remote source. The response reports source metadata, available model options, installation/running state and whether this service pinned the model.
 
 ### `POST /translate/model/keepalive`
 
-Preloads a local Ollama model and keeps it resident. The browser settings panel uses `keep_alive: -1m` for manual model residency.
+Preloads the selected local or remote Ollama model and keeps it resident. The explicit **Initialize local model** action accepts only a local selection, while the general **Keep loaded** action follows the currently selected source.
 
 ### `POST /translate/model/unload`
 
-Unloads a local Ollama model and removes its keep-alive pin.
+Unloads the selected local or remote Ollama model and removes its source-aware keep-alive pin.
 
-### `GET /health` — Server status
+### `GET /health` — API and TTS status
+
+Returns `api_ready` and `tts_model_loaded` separately. A healthy translation-only service can report `api_ready: true`, `tts_model_loaded: false`, `device: null` and no local GPU allocation until the first Read request.
+
 ### `GET /voices` — Available voices
 ### `GET /` — Built-in test page
+
+## Troubleshooting
+
+### `Start local service` does not open anything
+
+Run the tray app once or repair the current-user protocol registration:
+
+```powershell
+conda run -n kokoro-tts python windows_protocol.py register
+```
+
+Chrome may ask whether it can open an external application; allow it only when you intentionally clicked the button. If the project folder moved, register again so the absolute handler paths point at the new location. You can always start manually with `Kokoro TTS.bat`.
+
+### The project-server button finds no models
+
+The browser cannot log in to SSH or read credentials. Open the tray menu, configure and connect **Remote Service**, wait for the local API restart, then click **Use project server** again. For Direct API mode, confirm `/api/tags` is reachable directly from this computer without an HTTP proxy.
+
+### Local model initialization fails
+
+Select a non-`remote:` model, make sure local Ollama is running and pull the model first. **Initialize local model** controls the translation model only; Kokoro is loaded by the first **Read** request.
 
 ## ✅ Tests
 
 ```powershell
 conda run -n kokoro-tts python -m pytest tests -v
+conda run -n kokoro-tts python -m py_compile server.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
+node --check tts-userscript.js
 node --test tests/userscript-core.test.cjs
-python scripts/sync_catalog.py --check
-python -c "from audio_encoding import validate_ffmpeg; validate_ffmpeg()"
+conda run -n kokoro-tts python scripts/sync_catalog.py --check
+conda run -n kokoro-tts python -c "from audio_encoding import validate_ffmpeg; validate_ffmpeg()"
+conda run -n kokoro-tts python -m pip check
+git diff --check
 ```
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
-The detailed expert review is in `docs/expert-review-2026-06-15.md`.
+The current release record is in [`docs/iteration-4-2026-07-18.md`](docs/iteration-4-2026-07-18.md); the original expert review remains in `docs/expert-review-2026-06-15.md` as history.
 
 ## License
 

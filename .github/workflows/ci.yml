@@ -29,7 +29,7 @@ jobs:
         run: python scripts/sync_catalog.py --check
 
       - name: Python syntax
-        run: python -m py_compile server.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_runtime.py windows_startup.py
+        run: python -m py_compile server.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py
 
       - name: Bundled FFmpeg check
         run: python -c "from audio_encoding import validate_ffmpeg; validate_ffmpeg()"

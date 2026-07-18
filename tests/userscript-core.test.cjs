@@ -451,3 +451,219 @@ test("model option merge includes remote health metadata", () => {
     { value: "remote:lab-server:qwen3:14b", label: "Lab Server / qwen3:14b" },
   ]);
 });
+
+test("translation model fallback never opts into a remote model silently", () => {
+  const { chooseTranslationModelFallback } = require("../tts-userscript.js");
+
+  const selected = chooseTranslationModelFallback(
+    {
+      available_model_options: [
+        {
+          value: "remote:project-server:qwen3:14b",
+          label: "Project Server / qwen3:14b",
+          source: "project-server",
+          model: "qwen3:14b",
+        },
+      ],
+    },
+    "translategemma:4b",
+    "translategemma:4b"
+  );
+
+  assert.equal(selected, "translategemma:4b");
+});
+
+test("translation model fallback preserves an available remote selection", () => {
+  const { chooseTranslationModelFallback } = require("../tts-userscript.js");
+  const remoteModel = "remote:project-server:qwen3:14b";
+
+  const selected = chooseTranslationModelFallback(
+    {
+      available_model_options: [
+        { value: remoteModel, label: "Project Server / qwen3:14b" },
+      ],
+    },
+    remoteModel,
+    "translategemma:4b"
+  );
+
+  assert.equal(selected, remoteModel);
+});
+
+test("translation model fallback preserves an unavailable explicit local selection", () => {
+  const { chooseTranslationModelFallback } = require("../tts-userscript.js");
+
+  const selected = chooseTranslationModelFallback(
+    {
+      available_model_options: [
+        {
+          value: "qwen3:4b",
+          label: "Local Ollama / qwen3:4b",
+          source: "local",
+        },
+        {
+          value: "remote:project-server:qwen3:14b",
+          label: "Project Server / qwen3:14b",
+          source: "project-server",
+        },
+      ],
+    },
+    "translategemma:4b",
+    "translategemma:4b"
+  );
+
+  assert.equal(selected, "translategemma:4b");
+});
+
+test("project server action explicitly selects the first remote model", () => {
+  const {
+    chooseProjectServerTranslationModel,
+    getRemoteTranslationModelOptions,
+  } = require("../tts-userscript.js");
+  const payload = {
+    available_model_options: [
+      { value: "qwen3:4b", label: "Local Ollama / qwen3:4b", source: "local" },
+      {
+        value: "remote:project-server:qwen3:14b",
+        label: "Project Server / qwen3:14b",
+        source: "project-server",
+      },
+    ],
+  };
+
+  assert.deepEqual(getRemoteTranslationModelOptions(payload), [
+    {
+      value: "remote:project-server:qwen3:14b",
+      label: "Project Server / qwen3:14b",
+    },
+  ]);
+  assert.deepEqual(chooseProjectServerTranslationModel(payload, "qwen3:4b"), {
+    count: 1,
+    value: "remote:project-server:qwen3:14b",
+    label: "Project Server / qwen3:14b",
+    message: "Using Project Server / qwen3:14b. Checking remote model status...",
+  });
+});
+
+test("project server action preserves an available remote selection", () => {
+  const { chooseProjectServerTranslationModel } = require("../tts-userscript.js");
+  const current = "remote:project-server:qwen3:8b";
+  const payload = {
+    available_model_options: [
+      {
+        value: "remote:project-server:qwen3:14b",
+        label: "Project Server / qwen3:14b",
+      },
+      { value: current, label: "Project Server / qwen3:8b" },
+    ],
+  };
+
+  assert.deepEqual(chooseProjectServerTranslationModel(payload, current), {
+    count: 2,
+    value: current,
+    label: "Project Server / qwen3:8b",
+    message: "Using Project Server / qwen3:8b. Checking remote model status...",
+  });
+});
+
+test("project server action explains when tray remote service is not connected", () => {
+  const { chooseProjectServerTranslationModel } = require("../tts-userscript.js");
+
+  assert.deepEqual(chooseProjectServerTranslationModel({}, "translategemma:4b"), {
+    count: 0,
+    value: "",
+    label: "",
+    message: "No project server models found. Configure and connect Remote Service in the local tray app, then try again.",
+  });
+});
+
+test("local model initialization rejects an explicitly selected remote model", () => {
+  const { getLocalModelInitializationError } = require("../tts-userscript.js");
+
+  assert.equal(
+    getLocalModelInitializationError("remote:project-server:qwen3:14b"),
+    "Choose a local model before initializing. Remote models are started by the project server."
+  );
+  assert.equal(getLocalModelInitializationError("translategemma:4b"), "");
+});
+
+test("local service control distinguishes offline, starting, and running states", () => {
+  const { getLocalServiceControlState } = require("../tts-userscript.js");
+
+  assert.deepEqual(getLocalServiceControlState({ online: false, starting: false }), {
+    label: "Start local service",
+    icon: "\u25B6",
+    disabled: false,
+  });
+  assert.deepEqual(getLocalServiceControlState({ online: false, starting: true }), {
+    label: "Starting local service...",
+    icon: "\u23F3",
+    disabled: true,
+  });
+  assert.deepEqual(getLocalServiceControlState({ online: true, starting: true }), {
+    label: "Local service running",
+    icon: "\u2705",
+    disabled: true,
+  });
+});
+
+test("local service health accepts only the Kokoro API readiness contract", () => {
+  const { isKokoroHealthResponse } = require("../tts-userscript.js");
+
+  assert.equal(
+    isKokoroHealthResponse(
+      200,
+      JSON.stringify({ service: "kokoro-tts", ready: true })
+    ),
+    true
+  );
+  assert.equal(
+    isKokoroHealthResponse(
+      200,
+      JSON.stringify({ service: "kokoro-tts", api_ready: true })
+    ),
+    true
+  );
+  assert.equal(
+    isKokoroHealthResponse(
+      200,
+      JSON.stringify({ service: "another-service", ready: true })
+    ),
+    false
+  );
+  assert.equal(isKokoroHealthResponse(200, "not-json"), false);
+  assert.equal(
+    isKokoroHealthResponse(
+      503,
+      JSON.stringify({ service: "kokoro-tts", ready: true })
+    ),
+    false
+  );
+  assert.equal(
+    isKokoroHealthResponse(
+      200,
+      JSON.stringify({ service: "kokoro-tts", ready: false, api_ready: false })
+    ),
+    false
+  );
+});
+
+test("settings expose explicit project, local initialization, and protocol launch controls", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+
+  assert.match(source, /"tts-project-server-btn"/);
+  assert.match(source, /"tts-init-local-model-btn"/);
+  assert.match(source, /"tts-start-local-service-btn"/);
+  assert.match(source, /const LOCAL_SERVICE_START_URL = "localreadtranslate:\/\/start"/);
+  assert.match(source, /window\.location\.assign\(LOCAL_SERVICE_START_URL\)/);
+  assert.match(source, /function pollLocalServiceStatus\(/);
+  assert.match(source, /settings\.translateModel = selection\.value/);
+  assert.equal(
+    (source.match(/KokoroTTSCore\.isKokoroHealthResponse/g) || []).length,
+    2
+  );
+  assert.doesNotMatch(source, /ssh_password|private_key|identity_file|auth_password/i);
+});
