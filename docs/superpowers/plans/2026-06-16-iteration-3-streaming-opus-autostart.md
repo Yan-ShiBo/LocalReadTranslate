@@ -1,5 +1,8 @@
 # Kokoro TTS Third Iteration Implementation Plan
 
+> [!WARNING]
+> **Archived implementation plan.** This file preserves the original RED/GREEN steps, user-specific paths, dependency versions, and expected test counts for historical traceability; do not execute it against the current checkout. The former `D:/local-tts-env` path and embedded interpreter paths are historical. Use the current [README](../../../README.md) and [iteration 4 release record](../../iteration-4-2026-07-18.md) instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add continuous WebM/Opus streaming, complete OGG/Opus responses, honest playback progress, tray login auto-start, and full boundary/concurrency coverage while preserving WAV compatibility.

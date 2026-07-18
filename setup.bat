@@ -12,7 +12,7 @@ echo    Kokoro TTS Environment Setup
 echo ========================================
 echo.
 
-echo [0/4] Checking prerequisites...
+echo [0/5] Checking prerequisites...
 where conda >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] Conda was not found in PATH.
@@ -30,7 +30,7 @@ if errorlevel 1 (
 echo [OK] Conda and eSpeak-NG are available.
 echo.
 
-echo [1/4] Checking Conda environment...
+echo [1/5] Checking Conda environment...
 call conda env list | findstr /R /C:"^%ENV_NAME% " >nul
 if errorlevel 1 (
     echo Creating %ENV_NAME% with Python 3.10...
@@ -44,7 +44,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [2/4] Installing PyTorch 2.6.0 with CUDA 12.4...
+echo [2/5] Installing PyTorch 2.6.0 with CUDA 12.4...
 call conda run -n "%ENV_NAME%" python -m pip install ^
     torch==2.6.0 torchaudio==2.6.0 ^
     --index-url https://download.pytorch.org/whl/cu124
@@ -54,7 +54,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/4] Installing project dependencies...
+echo [3/5] Installing project dependencies...
 call conda run -n "%ENV_NAME%" python -m pip install -r "%PROJECT_DIR%requirements.txt"
 if errorlevel 1 (
     echo [ERROR] Project dependency installation failed.
@@ -62,7 +62,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [4/4] Verifying the environment...
+echo [4/5] Verifying the environment...
 call conda run -n "%ENV_NAME%" python -m pip check
 if errorlevel 1 (
     echo [ERROR] Dependency verification failed.
@@ -82,10 +82,20 @@ if errorlevel 1 (
 )
 
 echo.
+echo [5/5] Registering the browser start link for the current user...
+call conda run -n "%ENV_NAME%" python "%PROJECT_DIR%windows_protocol.py" register
+if errorlevel 1 (
+    echo [ERROR] Could not register localreadtranslate://start.
+    echo         You can still start the app manually with Kokoro TTS.bat.
+    goto :fail
+)
+
+echo.
 echo ========================================
 echo    Setup complete!
-echo    Next: double-click start.bat
-echo          or Kokoro TTS.pyw
+echo    Next: click Start local service in the userscript
+echo          or double-click Kokoro TTS.bat.
+echo    Re-run setup.bat after moving this project folder.
 echo ========================================
 echo.
 pause

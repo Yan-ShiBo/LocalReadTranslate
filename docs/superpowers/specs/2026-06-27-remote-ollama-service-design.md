@@ -1,157 +1,164 @@
 # Remote Ollama Service Design
 
+**Status:** Implemented and verified on 2026-07-18. This document describes the current contract; the original task-by-task implementation plan is archived separately.
+
 ## Goal
 
-Add an optional remote Ollama source for translation-related models while keeping the existing local Ollama path working. The user configures the remote server from the Windows tray app, then the browser model selector shows both local models and remote server models.
+Keep local Ollama as the default translation source while allowing the user to opt into a project-server Ollama source configured by the Windows tray app. The browser must continue to use only the loopback FastAPI service and must never receive remote credentials.
 
 ## User Flow
 
-1. The user right-clicks the Kokoro TTS tray icon and opens `Remote Service`.
-2. A small settings window lets the user enter:
-   - server display name
-   - server IP or host
-   - SSH port, default `22`
-   - username
-   - password
-   - remote Ollama host and port, default `127.0.0.1:11434`
-3. The user clicks connect.
-4. The tray app opens an SSH tunnel from a local ephemeral port to the remote server's Ollama endpoint.
-5. The local FastAPI service discovers models from both the local Ollama and configured remote sources.
-6. The browser settings panel model selector shows grouped options for local models and the remote server name.
-7. Translation, read preparation, formula verbalization, keep loaded, unload, and health checks use the selected source.
+1. Launch the Kokoro TTS tray app. It creates or repairs the current-user `localreadtranslate://start` protocol registration and starts the local FastAPI service.
+2. To use a remote source, open the tray menu's `Remote Service` dialog, choose `ssh` or `api`, enter the connection details, and click connect.
+3. The tray app validates the remote native Ollama `/api/tags` endpoint. SSH mode creates a loopback tunnel; Direct API mode validates the configured base URL directly.
+4. The tray restarts its owned FastAPI process with a credential-free `KOKORO_OLLAMA_SOURCES` payload.
+5. The browser health response exposes grouped local and remote model choices.
+6. The userscript settings panel offers three explicit actions:
+   - **Use project server** selects an already available remote choice, or the first available remote choice, persists it, and checks health. If none exists, the user is directed back to the tray dialog.
+   - **Initialize local model** rejects `remote:` references and sends a local keepalive request for the selected local model.
+   - **Start local service** opens the fixed `localreadtranslate://start` action and polls loopback health for about 20 seconds.
+7. Translation, read preparation, formula verbalization, keepalive, unload, and translation health resolve the selected model's source before making an Ollama request.
 
-## Architecture
-
-The browser userscript continues to talk only to the local Kokoro TTS API at `127.0.0.1:5000`. It never receives the remote SSH password.
-
-The tray app owns remote connection setup because it already manages background process state and local settings. It saves the remote connection profile in `tray_settings.json` and starts the local server with environment variables that point to the active remote source configuration.
-
-The FastAPI server adds source-aware Ollama routing. Existing model names such as `translategemma:4b` keep using local Ollama. Remote model choices are represented with an internal source prefix, for example:
+## Trust and Process Boundaries
 
 ```text
-remote:<server-id>:qwen3:14b
+Web page + userscript
+        |
+        | HTTP only to 127.0.0.1:5000
+        v
+Local FastAPI mediator
+        |-- local model reference ------> local Ollama
+        `-- remote:<source>:<model> ----> tray-provided tunnel or Direct API
+
+localreadtranslate://start
+        `-------------------------------> Windows tray app
 ```
 
-API responses include display metadata so the browser can render friendly labels such as `Lab Server / qwen3:14b`.
+The userscript never sees an SSH password, key path, remote host, or remote Ollama base URL. Local mode keeps selected text and permitted context on the machine. When a remote model is selected, the local mediator sends the selected text and permitted context to that configured project server.
 
-## Components
+The tray owns the remote connection and process lifecycle because it already owns hidden FastAPI startup, login auto-start, settings persistence, and the system-tray UI. A bare `start.bat` launch does not establish an SSH tunnel and cannot provide a tray-managed remote source.
 
-### Tray App
+Kokoro is lazy-loaded on the first TTS request. Starting the API or translating through a remote model does not initialize Torch/Kokoro or allocate local TTS GPU memory. `/health` reports API readiness separately from `tts_model_loaded`.
 
-Add a `Remote Service` menu item. It opens a basic Tkinter dialog for configuration and connection. The dialog validates required fields and tests the tunnel by calling `/api/tags` through the local forwarded port.
+## Windows Start Protocol
 
-The tray app should store remote settings under a new `remote_ollama` key in `tray_settings.json`:
+The only supported URL is:
+
+```text
+localreadtranslate://start
+```
+
+`windows_protocol.py` registers the handler under `HKCU\Software\Classes\localreadtranslate`, so registration is per-user and does not require administrator privileges. The command stores quoted absolute paths to the environment's `pythonw.exe` and this checkout's `tray_app.py`; moving the environment or project requires re-registration:
+
+```powershell
+conda run -n kokoro-tts python windows_protocol.py register
+```
+
+The matching `windows_protocol.py unregister` command removes only this exact current-user protocol tree.
+
+The protocol parser rejects query strings, fragments, extra paths, and any action other than `start`. A web page can still prompt the browser to open a registered external application, so the browser's confirmation dialog remains an important user-consent boundary.
+
+The tray enforces a single instance with a Windows named mutex. A first protocol launch starts the tray and its server. If the tray is already running, the second invocation signals a named auto-reset event; the existing tray instance starts the server without creating another tray process.
+
+The protocol carries no host, credentials, model name, shell fragment, or arbitrary command.
+
+## Tray Configuration
+
+The `remote_ollama` object in the Git-ignored `tray_settings.json` has this shape:
 
 ```json
 {
-  "enabled": true,
-  "name": "Lab Server",
-  "host": "192.168.1.10",
+  "enabled": false,
+  "name": "10.12.96.203",
+  "connection_mode": "ssh",
+  "host": "10.12.96.203",
   "ssh_port": 22,
-  "username": "user",
-  "password": "password",
+  "username": "test",
+  "password": "",
+  "key_file": "",
   "ollama_host": "127.0.0.1",
   "ollama_port": 11434,
-  "local_port": 0
+  "local_port": 0,
+  "base_url": "http://10.12.96.203:11434"
 }
 ```
 
-`local_port: 0` means choose an available local port automatically. The tray app keeps the SSH tunnel process alive while the Kokoro app is running and restarts the local server after connection changes.
+`local_port: 0` requests an ephemeral loopback port. After an SSH connection succeeds, the selected port may be persisted as the preferred bind for the next connection, but FastAPI receives it only while the current tray process has a live tunnel on that runtime port. A failed reconnect never publishes a stale persisted port. The environment passed to FastAPI contains only a source id, display name, and effective base URL; it omits the SSH host, username, password, and key path.
 
-### Server
+The optional SSH password is stored as plaintext in `tray_settings.json`. Git ignores this file, but that is not encryption. Users should protect the Windows account and project directory, prefer an agent or key file, and never sync, commit, or share the settings file.
 
-Add an Ollama source abstraction with:
+## SSH Mode
 
-- source id
-- display name
-- base URL
-- whether the source is local or remote
+Authentication follows Paramiko's key-first behavior: an explicit key or matching OpenSSH configuration, then SSH agent/default keys, with the configured password available only as a fallback in the same connection attempt.
 
-Default source:
+Host identity is fail-closed. The client calls `load_system_host_keys()` and uses `RejectPolicy`, so a host absent from the user's known-hosts database is rejected rather than silently trusted. The deployed `10.12.96.203` host is present in this machine's `known_hosts`, and a real reconnection succeeded with this policy.
+
+The tunnel binds only to local loopback and forwards to the configured remote Ollama host/port, normally `127.0.0.1:11434` on the server. The tray keeps the tunnel alive for the lifetime of the app and stops it on disconnect or exit.
+
+## Direct API Mode
+
+Direct API mode accepts a native Ollama base URL and validates `/api/tags`. It does not add API-key or other authentication headers. An ordinary `http://` URL is unencrypted, so this mode is intended only for a trusted LAN or VPN and must not be used to expose an unauthenticated Ollama port to the public internet.
+
+Both tray validation and server Ollama requests use proxy-free openers. This prevents loopback or trusted-LAN requests, including selected page text, from being redirected through ambient HTTP proxy settings.
+
+## Server Routing
+
+The FastAPI service always defines the local source:
 
 ```text
 local -> http://127.0.0.1:11434
 ```
 
-Remote sources are loaded from environment JSON passed by the tray app, for example `KOKORO_OLLAMA_SOURCES`.
-
-The existing Ollama helper functions gain an optional source-aware model reference. They resolve `remote:<server-id>:<model>` into the selected source and clean model name before calling `/api/generate`, `/api/tags`, or `/api/ps`.
-
-Pinned models are tracked by full model reference instead of plain model name, so a local `qwen3:14b` and remote `qwen3:14b` do not collide.
-
-### Browser Userscript
-
-The settings panel keeps the current local custom model behavior. It also uses the health response's available model metadata to append remote model options.
-
-The selected model value can be either:
-
-```text
-qwen3:14b
-remote:lab-server:qwen3:14b
-```
-
-The browser sends that value unchanged to existing endpoints.
-
-## API Changes
-
-`GET /translate/health?model=...` remains backward-compatible.
-
-The response adds optional fields:
+The tray may add remote sources through `KOKORO_OLLAMA_SOURCES`, for example:
 
 ```json
-{
-  "source": "local",
-  "source_name": "Local Ollama",
-  "available_model_options": [
-    {
-      "value": "translategemma:4b",
-      "label": "Local Ollama / translategemma:4b",
-      "source": "local",
-      "source_name": "Local Ollama",
-      "model": "translategemma:4b"
-    },
-    {
-      "value": "remote:lab-server:qwen3:14b",
-      "label": "Lab Server / qwen3:14b",
-      "source": "lab-server",
-      "source_name": "Lab Server",
-      "model": "qwen3:14b"
-    }
-  ]
-}
+[
+  {
+    "id": "project-server",
+    "name": "Project Server",
+    "base_url": "http://127.0.0.1:49152"
+  }
+]
 ```
 
-Existing `available_models` remains a list of local-compatible strings for older userscripts.
+Plain model names remain local and backward-compatible. A remote choice uses an internal reference:
+
+```text
+remote:<source-id>:<model-name>
+```
+
+For example, `remote:project-server:qwen3:30b` resolves to model `qwen3:30b` at the project-server source. The source-aware helpers route `/api/generate`, `/api/tags`, `/api/ps`, keepalive, and unload consistently. Pinned models are keyed by the full reference, so local and remote models with the same Ollama name do not collide.
+
+`GET /translate/health?model=...` remains backward-compatible and adds source metadata plus `available_model_options`. `available_models` remains a list of local-compatible model strings for older userscripts. Health and API errors do not expose passwords or detailed connection strings.
+
+If a selected local model is unavailable, the browser keeps that explicit local selection and reports the problem; it never crosses the local/remote boundary automatically. The user must click **Use project server** or manually choose a `remote:` entry before selected text can be routed to a project server.
 
 ## Error Handling
 
-If the remote SSH tunnel cannot connect, the tray dialog shows a concise error and leaves the previous working settings unchanged.
+- A failed tray connection leaves the previous working settings and tunnel intact and shows a concise dialog error.
+- An unknown SSH host key fails closed; the user must add the verified host key to the system/OpenSSH known-hosts database before reconnecting.
+- If FastAPI starts without a working remote source, local Ollama remains usable.
+- Remote health failures return `ollama_reachable: false` without leaking credentials.
+- Translation endpoints continue to use generic upstream failure responses; logs may contain source display names but never passwords.
+- Protocol registration failure is non-fatal to ordinary tray startup. The CLI registration command provides an explicit repair path.
 
-If the local server starts without a working remote source, local Ollama still works. Health checks for remote selections return `ollama_reachable: false` and do not expose passwords or detailed connection strings.
+## Verification Contract
 
-Translation endpoints continue returning generic 502 errors. Logs may include source names but not passwords.
+The release is covered by server, tray, protocol, Windows-runtime, and userscript tests for:
 
-## Testing
+- local/remote model parsing, discovery, source routing, keepalive, unload, and pinned identity;
+- remote settings persistence and credential-free environment construction;
+- rejection of stale persisted SSH forwarding ports when no live tunnel exists;
+- SSH agent/key/password behavior, strict known-host rejection, Direct API validation, and proxy bypass;
+- exact protocol parsing, HKCU registration/repair, quoted commands, single-instance signaling, and existing-tray wakeup;
+- remote option merging, selection persistence, and the three settings-panel actions.
+- strict userscript `/health` identity/readiness validation before the local service is marked online.
 
-Add server tests for:
-
-- parsing local and remote model references
-- listing model options across local and remote sources
-- routing generate, tags, ps, keepalive, and unload requests to the selected source
-- pinned model identity including source id
-- backward compatibility for plain local model names
-
-Add tray tests for:
-
-- default remote settings shape
-- saving remote settings without breaking existing voice, speed, and auto-start settings
-- building a remote source environment payload without including unrelated fields
-
-Add userscript tests for:
-
-- appending remote model options from health metadata
-- preserving selected remote model values when saving settings
+The 2026-07-18 release verification completed **Python 196 passed + 15 subtests** and **Node 33/33 passed**. Real-machine checks covered first protocol launch, existing-tray event wakeup, `/health` with `tts_model_loaded=false`, a strict-host-key SSH reconnect, and remote `qwen3:30b` health availability.
 
 ## Non-Goals
 
-This change does not install or configure Ollama on the remote server. It also does not add public HTTP authentication for Ollama. The intended remote path is SSH login to a LAN server and forwarding to that server's native Ollama API.
+- Installing or configuring Ollama on the project server.
+- Public Ollama exposure or Direct API authentication.
+- Passing remote credentials or arbitrary commands through the browser or URL protocol.
+- Loading Kokoro during API startup or translation-only use.

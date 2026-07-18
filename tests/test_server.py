@@ -2,9 +2,11 @@ import asyncio
 import json
 import subprocess
 import sys
+import threading
+import types
 import unittest
 import warnings
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -50,17 +52,24 @@ class AudioCoreTests(unittest.TestCase):
         from audio_encoding import AudioEncodingError
 
         async def exercise():
-            with patch.object(
-                server,
-                "validate_ffmpeg",
-                create=True,
-                side_effect=AudioEncodingError("FFmpeg is unavailable"),
-            ):
-                async with server.lifespan(server.app):
-                    pass
+            async with server.lifespan(server.app):
+                pass
 
-        with self.assertRaises(AudioEncodingError):
-            asyncio.run(exercise())
+        with patch.object(
+            server,
+            "validate_ffmpeg",
+            create=True,
+            side_effect=AudioEncodingError("FFmpeg is unavailable"),
+        ) as validate, patch.object(
+            server,
+            "_load_tts_model",
+            create=True,
+        ) as load_model:
+            with self.assertRaises(AudioEncodingError):
+                asyncio.run(exercise())
+
+        validate.assert_called_once_with()
+        load_model.assert_not_called()
 
     def test_server_module_can_import_without_torch(self):
         script = """
@@ -81,6 +90,86 @@ assert server.torch is None
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_remote_translation_does_not_eagerly_load_local_tts_gpu(self):
+        pipeline_constructions = []
+
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def get_device_name(_index):
+                return "Fake GPU"
+
+            @staticmethod
+            def get_device_properties(_index):
+                return types.SimpleNamespace(total_memory=8 * 1024**3)
+
+            @staticmethod
+            def empty_cache():
+                return None
+
+        class FakeTorch:
+            cuda = FakeCuda()
+
+        class CountingPipeline:
+            def __init__(self, **kwargs):
+                pipeline_constructions.append(kwargs)
+                self.model = kwargs.get("model") or object()
+
+        fake_kokoro = types.SimpleNamespace(KPipeline=CountingPipeline)
+
+        async def exercise():
+            with patch.object(server, "validate_ffmpeg"), patch.object(
+                server, "torch", FakeTorch()
+            ), patch.object(server, "WARMUP_ENABLED", False), patch.dict(
+                sys.modules, {"kokoro": fake_kokoro}
+            ), patch.object(
+                server,
+                "_call_ollama_translate_raw",
+                return_value="远程翻译结果",
+            ):
+                async with server.lifespan(server.app):
+                    response = await server.translate_endpoint(
+                        server.TranslateRequest(
+                            text="Remote translation only",
+                            model="remote:lab-server:qwen3:14b",
+                        )
+                    )
+                    self.assertEqual(response.translated_text, "远程翻译结果")
+                    self.assertIsNone(server.pipeline)
+                    self.assertIsNone(server.british_pipeline)
+
+        asyncio.run(exercise())
+        self.assertEqual(pipeline_constructions, [])
+
+    def test_remote_translation_stays_available_without_local_tts_dependencies(self):
+        async def exercise():
+            with patch.object(server, "validate_ffmpeg") as validate, patch.object(
+                server, "torch", None
+            ), patch.object(server, "pipeline", None), patch.object(
+                server, "british_pipeline", None
+            ), patch.dict(
+                sys.modules, {"kokoro": None}
+            ), patch.object(
+                server,
+                "_call_ollama_translate_raw",
+                return_value="remote translation result",
+            ):
+                async with server.lifespan(server.app):
+                    response = await server.translate_endpoint(
+                        server.TranslateRequest(
+                            text="Remote translation only",
+                            model="remote:lab-server:qwen3:14b",
+                        )
+                    )
+
+            validate.assert_called_once_with()
+            self.assertEqual(response.translated_text, "remote translation result")
+
+        asyncio.run(exercise())
 
     def test_combines_segments_with_silence(self):
         combined = server._combine_audio_segments(
@@ -159,6 +248,7 @@ class ApiTests(unittest.TestCase):
         self.original_pipeline = server.pipeline
         self.original_british_pipeline = server.british_pipeline
         self.original_inference_lock = server.inference_lock
+        self.original_actual_device = server.actual_device
         self.original_pinned_ollama_models = set(server.PINNED_OLLAMA_MODELS)
         server.PINNED_OLLAMA_MODELS.clear()
         server.pipeline = FakePipeline()
@@ -171,6 +261,7 @@ class ApiTests(unittest.TestCase):
         server.pipeline = self.original_pipeline
         server.british_pipeline = self.original_british_pipeline
         server.inference_lock = self.original_inference_lock
+        server.actual_device = self.original_actual_device
         server.PINNED_OLLAMA_MODELS.clear()
         server.PINNED_OLLAMA_MODELS.update(self.original_pinned_ollama_models)
         self.print_patcher.stop()
@@ -188,6 +279,67 @@ class ApiTests(unittest.TestCase):
             server.pipeline.calls,
             [("Hello world", "af_bella", 1.0)],
         )
+
+    def test_first_tts_request_loads_model_on_demand(self):
+        server.pipeline = None
+        server.british_pipeline = None
+        server.actual_device = None
+
+        def fake_load_model():
+            server.pipeline = FakePipeline()
+            server.british_pipeline = FakePipeline()
+            server.actual_device = "cpu"
+
+        with patch.object(
+            server,
+            "_load_tts_model",
+            create=True,
+            side_effect=fake_load_model,
+        ) as load_model:
+            response = self.client.post("/tts", json={"text": "Load once"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"RIFF"))
+        load_model.assert_called_once_with()
+
+    def test_concurrent_first_tts_requests_load_model_once(self):
+        server.pipeline = None
+        server.british_pipeline = None
+        server.actual_device = None
+        original_ensure_loaded = getattr(server, "_ensure_tts_model_loaded", None)
+        callers_ready = threading.Barrier(2)
+
+        def synchronized_ensure_loaded():
+            callers_ready.wait(timeout=2)
+            return original_ensure_loaded()
+
+        def fake_load_model():
+            server.pipeline = FakePipeline()
+            server.british_pipeline = FakePipeline()
+            server.actual_device = "cpu"
+
+        async def exercise():
+            with patch.object(
+                server,
+                "_ensure_tts_model_loaded",
+                create=True,
+                side_effect=synchronized_ensure_loaded,
+            ), patch.object(
+                server,
+                "_load_tts_model",
+                create=True,
+                side_effect=fake_load_model,
+            ) as load_model:
+                responses = await asyncio.gather(
+                    server.tts_endpoint(server.TTSRequest(text="First request")),
+                    server.tts_endpoint(server.TTSRequest(text="Second request")),
+                )
+            return responses, load_model.call_count
+
+        responses, load_count = asyncio.run(exercise())
+
+        self.assertTrue(all(response.body.startswith(b"RIFF") for response in responses))
+        self.assertEqual(load_count, 1)
 
     def test_ogg_query_returns_opus(self):
         response = self.client.post(
@@ -493,7 +645,7 @@ class ApiTests(unittest.TestCase):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeUrlopenResponse({"response": "只翻译选中内容"})
 
-        with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(server, "_open_ollama_request", side_effect=fake_urlopen):
             result = server._call_ollama_translate_raw(
                 "selected sentence",
                 "qwen3:14b",
@@ -521,7 +673,7 @@ class ApiTests(unittest.TestCase):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeUrlopenResponse({"response": "只翻译选中内容"})
 
-        with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(server, "_open_ollama_request", side_effect=fake_urlopen):
             result = server._call_ollama_translate_raw(
                 "selected sentence",
                 "qwen3:14b",
@@ -543,7 +695,7 @@ class ApiTests(unittest.TestCase):
             return FakeUrlopenResponse({"response": "划词朗读"})
 
         try:
-            with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+            with patch.object(server, "_open_ollama_request", side_effect=fake_urlopen):
                 result = server._call_ollama_translate_raw(
                     "Selection read-aloud",
                     "remote:lab-server:qwen3:30b",
@@ -891,7 +1043,7 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("secret formula prompt", response.text)
 
     def test_small_model_formula_verbalization_prefers_conservative_rules(self):
-        with patch.object(server.urllib_request, "urlopen") as urlopen:
+        with patch.object(server, "_open_ollama_request") as urlopen:
             result = server._call_ollama_formula_verbalization(
                 [r"D_I", r"B_\theta(x)", r"\hat{B}(x)", r"D_w \to \hat{B}(x)"],
                 "translategemma:4b",
@@ -917,7 +1069,7 @@ class ApiTests(unittest.TestCase):
             return FakeUrlopenResponse({"response": '["a two row cases expression"]'})
 
         long_context = "near formula context " * 200
-        with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(server, "_open_ollama_request", side_effect=fake_urlopen):
             result = server._call_ollama_formula_verbalization(
                 [r"\begin{cases} x & x > 0 \\ -x & x < 0 \end{cases}"],
                 "translategemma:4b",
@@ -1063,7 +1215,7 @@ class ApiTests(unittest.TestCase):
             return FakeUrlopenResponse({"response": "remote result"})
 
         try:
-            with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+            with patch.object(server, "_open_ollama_request", side_effect=fake_urlopen):
                 result = server._call_ollama_translate_raw(
                     "Hello",
                     "remote:lab-server:qwen3:14b",
@@ -1076,6 +1228,31 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result, "remote result")
         self.assertEqual(captured["url"], "http://127.0.0.1:49152/api/generate")
         self.assertEqual(captured["payload"]["model"], "qwen3:14b")
+
+    def test_ollama_requests_bypass_environment_http_proxies(self):
+        response = FakeUrlopenResponse({"models": []})
+        opener = Mock()
+        opener.open.return_value = response
+
+        with patch.object(
+            server.urllib_request,
+            "build_opener",
+            return_value=opener,
+        ) as build_opener, patch.object(
+            server.urllib_request,
+            "urlopen",
+            side_effect=AssertionError("proxy-aware urlopen must not be used"),
+        ):
+            payload = server._call_ollama_json(
+                "/api/tags",
+                base_url="http://10.12.96.203:11434",
+            )
+
+        self.assertEqual(payload, {"models": []})
+        handler = build_opener.call_args.args[0]
+        self.assertIsInstance(handler, server.urllib_request.ProxyHandler)
+        self.assertEqual(handler.proxies, {})
+        opener.open.assert_called_once()
 
     def test_remote_pinned_model_generation_requests_keep_alive(self):
         original_sources = server.OLLAMA_SOURCES
@@ -1101,7 +1278,7 @@ class ApiTests(unittest.TestCase):
             return FakeUrlopenResponse({"response": "remote result"})
 
         try:
-            with patch.object(server.urllib_request, "urlopen", side_effect=fake_urlopen):
+            with patch.object(server, "_open_ollama_request", side_effect=fake_urlopen):
                 server._call_ollama_translate_raw(
                     "Hello",
                     "remote:lab-server:qwen3:14b",
@@ -1362,9 +1539,25 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(payload["service"], "kokoro-tts")
         self.assertTrue(payload["ready"])
+        self.assertTrue(payload["api_ready"])
+        self.assertTrue(payload["tts_model_loaded"])
         self.assertEqual(payload["default_translate_model"], server.OLLAMA_TRANSLATE_MODEL)
         self.assertEqual(payload["default_read_model"], server.OLLAMA_READ_MODEL)
         self.assertEqual(payload["default_formula_model"], server.OLLAMA_FORMULA_MODEL)
+
+    def test_health_reports_api_ready_before_tts_model_load(self):
+        server.pipeline = None
+        server.british_pipeline = None
+        server.actual_device = None
+
+        response = self.client.get("/health")
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["ready"])
+        self.assertTrue(payload["api_ready"])
+        self.assertFalse(payload["tts_model_loaded"])
+        self.assertIsNone(payload["device"])
 
     def test_openapi_declares_wav_response(self):
         content = server.app.openapi()["paths"]["/tts"]["post"]["responses"]["200"][

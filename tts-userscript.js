@@ -3,9 +3,10 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.12.8
-// @description  选中文本即可本地朗读或翻译：Kokoro TTS 负责语音朗读，Ollama 模型负责本地翻译，文本不上传云端。
-// @description:en Select text on any page to read aloud locally with Kokoro TTS or translate locally through Ollama.
+// @version      1.13.0
+// @description  默认在本地朗读和翻译选中文本，也可选择使用用户配置的项目服务器。
+// @description:zh-CN 默认在本地朗读和翻译选中文本，也可选择使用用户配置的项目服务器。
+// @description:en Read and translate selected text locally by default, with an option to use a user-configured project server.
 // @author       Yan-ShiBo
 // @license      MIT
 // @match        *://*/*
@@ -146,6 +147,79 @@ const KokoroTTSCore = (() => {
     }
 
     return merged;
+  }
+
+  function chooseTranslationModelFallback(_payload, selectedValue, defaultValue) {
+    const selected = String(selectedValue || "").trim();
+    const fallbackDefault = String(defaultValue || "").trim();
+    return selected || fallbackDefault;
+  }
+
+  function getRemoteTranslationModelOptions(payload) {
+    const options =
+      payload && Array.isArray(payload.available_model_options)
+        ? payload.available_model_options
+        : [];
+    return options
+      .map((option) => ({
+        value: String(option && option.value || "").trim(),
+        label: String(option && option.label || option && option.value || "").trim(),
+      }))
+      .filter((option) => option.value.startsWith("remote:"));
+  }
+
+  function chooseProjectServerTranslationModel(payload, selectedValue) {
+    const options = getRemoteTranslationModelOptions(payload);
+    if (!options.length) {
+      return {
+        count: 0,
+        value: "",
+        label: "",
+        message: "No project server models found. Configure and connect Remote Service in the local tray app, then try again.",
+      };
+    }
+    const selected = String(selectedValue || "").trim();
+    const option = options.find((item) => item.value === selected) || options[0];
+    return {
+      count: options.length,
+      value: option.value,
+      label: option.label,
+      message: `Using ${option.label}. Checking remote model status...`,
+    };
+  }
+
+  function getLocalModelInitializationError(model) {
+    return String(model || "").trim().startsWith("remote:")
+      ? "Choose a local model before initializing. Remote models are started by the project server."
+      : "";
+  }
+
+  function getLocalServiceControlState({ online = false, starting = false } = {}) {
+    if (online) {
+      return { label: "Local service running", icon: "\u2705", disabled: true };
+    }
+    if (starting) {
+      return { label: "Starting local service...", icon: "\u23F3", disabled: true };
+    }
+    return { label: "Start local service", icon: "\u25B6", disabled: false };
+  }
+
+  function isKokoroHealthResponse(status, payloadOrText) {
+    if (Number(status) !== 200) return false;
+    let payload = payloadOrText;
+    if (typeof payloadOrText === "string") {
+      try {
+        payload = JSON.parse(payloadOrText);
+      } catch {
+        return false;
+      }
+    }
+    return Boolean(
+      payload &&
+      typeof payload === "object" &&
+      payload.service === "kokoro-tts" &&
+      (payload.ready === true || payload.api_ready === true)
+    );
   }
 
   function formatPlaybackProgress({ currentTime = 0, duration = 0, streamEnded = false } = {}) {
@@ -834,15 +908,21 @@ const KokoroTTSCore = (() => {
   return {
     WEBM_OPUS_MIME,
     applyFormulaVerbalizations,
+    chooseProjectServerTranslationModel,
     choosePlaybackMode,
     cjkRatio,
     createAppendQueue,
     createRequestGate,
     formatPlaybackProgress,
     formulaToReadableHtml,
+    getLocalModelInitializationError,
+    getLocalServiceControlState,
+    getRemoteTranslationModelOptions,
     isUnsupportedMediaError,
+    isKokoroHealthResponse,
     latexToReadableFormula,
     mergeTranslationModelOptions,
+    chooseTranslationModelFallback,
     normalizeAudioBuffer,
     normalizeAudioBlob,
     normalizeCopyTextWithLatex,
@@ -887,6 +967,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   const API_TRANSLATE_UNLOAD_URL = API_BASE + "/translate/model/unload";
   const API_READ_PREPARE_URL = API_BASE + "/read/prepare";
   const API_FORMULA_VERBALIZE_URL = API_BASE + "/formula/verbalize";
+  const LOCAL_SERVICE_START_URL = "localreadtranslate://start";
   const SHORTCUT = { ctrl: true, shift: true, key: "S" }; // Ctrl+Shift+S
 
   /* CATALOG:START */
@@ -935,6 +1016,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   let isTranslating = false;
   let settingsPanel = null;
   let settingsVisible = false;
+  let localServicePollTimer = null;
+  let localServiceStartPending = false;
 
   // Load saved settings
   function loadSettings() {
@@ -1652,6 +1735,19 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       createTextInput("tts-target-language-input", settings.targetLanguage)
     );
 
+    const serviceActions = document.createElement("div");
+    serviceActions.className = "tts-model-actions";
+    serviceActions.appendChild(
+      createSettingsButton("tts-project-server-btn", "Use project server")
+    );
+    serviceActions.appendChild(
+      createSettingsButton("tts-init-local-model-btn", "Initialize local model")
+    );
+    serviceActions.appendChild(
+      createSettingsButton("tts-start-local-service-btn", "Start local service")
+    );
+    translationColumn.appendChild(serviceActions);
+
     const modelActions = document.createElement("div");
     modelActions.className = "tts-model-actions";
     modelActions.appendChild(createSettingsButton("tts-model-keepalive-btn", "Keep loaded"));
@@ -1743,9 +1839,197 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       unloadTranslationModel(e.currentTarget);
     });
 
+    panel.querySelector("#tts-project-server-btn").addEventListener("click", (e) => {
+      checkProjectServerOptions(e.currentTarget);
+    });
+
+    panel.querySelector("#tts-init-local-model-btn").addEventListener("click", (e) => {
+      initializeLocalTranslationModel(e.currentTarget);
+    });
+
+    panel.querySelector("#tts-start-local-service-btn").addEventListener("click", (e) => {
+      startLocalService(e.currentTarget);
+    });
+
     // Check server status
     checkServerStatus();
     checkTranslationStatus();
+  }
+
+  function setTranslationControlMessage(message, color = "#f0c040") {
+    const output = document.getElementById("tts-translate-test-output");
+    if (!output) return;
+    output.textContent = message;
+    output.style.color = color;
+  }
+
+  function updateLocalServiceControl(online, starting = localServiceStartPending) {
+    const button = document.getElementById("tts-start-local-service-btn");
+    if (!button) return;
+    const state = KokoroTTSCore.getLocalServiceControlState({ online, starting });
+    const className = online
+      ? "tts-test-btn playing"
+      : starting
+        ? "tts-test-btn loading"
+        : "tts-test-btn";
+    setButtonHtml(button, className, state.icon, state.label);
+    button.disabled = state.disabled;
+  }
+
+  function finishLocalServicePoll(online, message) {
+    if (localServicePollTimer) {
+      clearTimeout(localServicePollTimer);
+      localServicePollTimer = null;
+    }
+    localServiceStartPending = false;
+    updateLocalServiceControl(online, false);
+    if (message) {
+      setTranslationControlMessage(message, online ? "#81c784" : "#e57373");
+    }
+    if (online) {
+      checkServerStatus();
+      checkTranslationStatus();
+    }
+  }
+
+  function pollLocalServiceStatus(attempt = 0) {
+    GM_xmlhttpRequest({
+      method: "GET",
+      url: API_BASE + "/health",
+      timeout: 2000,
+      onload: (response) => {
+        if (
+          KokoroTTSCore.isKokoroHealthResponse(
+            response.status,
+            response.responseText
+          )
+        ) {
+          finishLocalServicePoll(true, "Local service is running. You can now initialize a local model.");
+          return;
+        }
+        scheduleNextLocalServicePoll(attempt);
+      },
+      onerror: () => scheduleNextLocalServicePoll(attempt),
+      ontimeout: () => scheduleNextLocalServicePoll(attempt),
+    });
+  }
+
+  function scheduleNextLocalServicePoll(attempt) {
+    if (!localServiceStartPending) return;
+    if (attempt >= 19) {
+      finishLocalServicePoll(
+        false,
+        "Local service did not start. Install the localreadtranslate:// protocol handler or start the tray app manually."
+      );
+      return;
+    }
+    if (localServicePollTimer) clearTimeout(localServicePollTimer);
+    localServicePollTimer = setTimeout(() => pollLocalServiceStatus(attempt + 1), 1000);
+  }
+
+  function startLocalService(btnElement) {
+    if (localServiceStartPending || (btnElement && btnElement.disabled)) return;
+    localServiceStartPending = true;
+    updateLocalServiceControl(false, true);
+    setTranslationControlMessage("Requesting the local tray service...", "#f0c040");
+    try {
+      window.location.assign(LOCAL_SERVICE_START_URL);
+    } catch (error) {
+      finishLocalServicePoll(
+        false,
+        error && error.message ? error.message : "Cannot open the local service launcher."
+      );
+      return;
+    }
+    pollLocalServiceStatus();
+  }
+
+  function checkProjectServerOptions(btnElement) {
+    syncSettingsFromPanel();
+    if (btnElement) {
+      setButtonHtml(btnElement, "tts-test-btn loading", "\u23F3", "Finding project server...");
+      btnElement.disabled = true;
+    }
+    setTranslationControlMessage("Refreshing project server models...", "#f0c040");
+
+    GM_xmlhttpRequest({
+      method: "GET",
+      url: `${API_TRANSLATE_HEALTH_URL}?model=${encodeURIComponent(settings.translateModel)}`,
+      timeout: 10000,
+      onload: (response) => {
+        let payload = null;
+        if (response.status === 200) {
+          try {
+            payload = JSON.parse(response.responseText || "{}");
+          } catch {}
+        }
+        if (!payload) {
+          setTranslationControlMessage("Project server check failed. Start the local service and try again.", "#e57373");
+          if (btnElement) {
+            setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Project server check failed");
+            btnElement.disabled = false;
+          }
+          return;
+        }
+
+        syncInstalledTranslationModels(payload);
+        const selection = KokoroTTSCore.chooseProjectServerTranslationModel(
+          payload,
+          settings.translateModel
+        );
+        if (selection.value) {
+          settings.translateModel = selection.value;
+          settings.settingsVersion = DEFAULTS.settingsVersion;
+          const select = document.getElementById("tts-translate-model-select");
+          const input = document.getElementById("tts-translate-model-input");
+          if (select) select.value = selection.value;
+          if (input) input.value = selection.value;
+          saveSettings(settings);
+        }
+        setTranslationControlMessage(
+          selection.message,
+          selection.count ? "#81c784" : "#f0c040"
+        );
+        if (btnElement) {
+          setButtonHtml(
+            btnElement,
+            selection.count ? "tts-test-btn playing" : "tts-test-btn",
+            selection.count ? "\u2705" : "\uD83D\uDD0D",
+            selection.count ? "Using project server" : "Use project server"
+          );
+          btnElement.disabled = false;
+        }
+        if (selection.value) checkTranslationStatus();
+      },
+      onerror: () => {
+        setTranslationControlMessage("Local service is offline. Start it before checking the project server.", "#e57373");
+        if (btnElement) {
+          setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Project server check failed");
+          btnElement.disabled = false;
+        }
+      },
+      ontimeout: () => {
+        setTranslationControlMessage("Project server check timed out.", "#e57373");
+        if (btnElement) {
+          setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Project server timeout");
+          btnElement.disabled = false;
+        }
+      },
+    });
+  }
+
+  async function initializeLocalTranslationModel(btnElement) {
+    syncSettingsFromPanel();
+    const error = KokoroTTSCore.getLocalModelInitializationError(settings.translateModel);
+    if (error) {
+      setTranslationControlMessage(error, "#f0c040");
+      if (btnElement) {
+        setButtonHtml(btnElement, "tts-test-btn error", "\u26A0", "Choose a local model first");
+        btnElement.disabled = false;
+      }
+      return;
+    }
+    await keepTranslationModelLoaded(btnElement);
   }
 
   function checkServerStatus() {
@@ -1758,22 +2042,32 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       url: API_BASE + "/health",
       timeout: 3000,
       onload: (resp) => {
-        if (resp.status === 200) {
+        if (
+          KokoroTTSCore.isKokoroHealthResponse(
+            resp.status,
+            resp.responseText
+          )
+        ) {
+          localServiceStartPending = false;
+          updateLocalServiceControl(true, false);
           dot.className = "tts-status-dot online";
           text.textContent = "Server online";
           text.style.color = "#81c784";
         } else {
+          updateLocalServiceControl(false, localServiceStartPending);
           dot.className = "tts-status-dot offline";
           text.textContent = "Server error";
           text.style.color = "#e57373";
         }
       },
       onerror: () => {
+        updateLocalServiceControl(false, localServiceStartPending);
         dot.className = "tts-status-dot offline";
         text.textContent = "Server offline - run start.bat";
         text.style.color = "#e57373";
       },
       ontimeout: () => {
+        updateLocalServiceControl(false, localServiceStartPending);
         dot.className = "tts-status-dot offline";
         text.textContent = "Server timeout";
         text.style.color = "#e57373";
@@ -1893,13 +2187,30 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           return;
         }
 
+        syncInstalledTranslationModels(payload);
+        const fallbackModel = KokoroTTSCore.chooseTranslationModelFallback(
+          payload,
+          settings.translateModel,
+          DEFAULTS.translateModel
+        );
+        if (fallbackModel && fallbackModel !== settings.translateModel) {
+          settings.translateModel = fallbackModel;
+          settings.settingsVersion = DEFAULTS.settingsVersion;
+          const select = document.getElementById("tts-translate-model-select");
+          const input = document.getElementById("tts-translate-model-input");
+          if (select) select.value = fallbackModel;
+          if (input) input.value = fallbackModel;
+          saveSettings(settings);
+          checkTranslationStatus();
+          return;
+        }
+
         if (!payload.ollama_reachable) {
           updateTranslationModelControls(payload);
           dot.className = "tts-status-dot offline";
           text.textContent = "Ollama offline";
           text.style.color = "#e57373";
         } else if (payload.model_running) {
-          syncInstalledTranslationModels(payload);
           updateTranslationModelControls(payload);
           dot.className = "tts-status-dot online";
           text.textContent = payload.model_pinned
@@ -1907,13 +2218,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
             : `${payload.model} running`;
           text.style.color = "#81c784";
         } else if (payload.model_available) {
-          syncInstalledTranslationModels(payload);
           updateTranslationModelControls(payload);
           dot.className = "tts-status-dot warning";
           text.textContent = `${payload.model} installed, not loaded`;
           text.style.color = "#f0c040";
         } else {
-          syncInstalledTranslationModels(payload);
           updateTranslationModelControls(payload);
           dot.className = "tts-status-dot offline";
           text.textContent = `${payload.model} not installed`;

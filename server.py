@@ -299,6 +299,7 @@ def _math_glossary_prompt(lang: str = "zh", max_symbols: int = 40) -> str:
 pipeline = None
 british_pipeline = None
 inference_lock = asyncio.Lock()
+_tts_model_load_lock = threading.Lock()
 actual_device = None
 
 
@@ -307,6 +308,84 @@ def resolve_device(device_cfg: str) -> str:
     if device_cfg == "auto":
         return "cuda" if torch and torch.cuda.is_available() else "cpu"
     return device_cfg
+
+
+def _tts_model_is_loaded() -> bool:
+    return pipeline is not None and british_pipeline is not None
+
+
+def _load_tts_model() -> None:
+    """Load and warm the local Kokoro pipelines without publishing partial state."""
+    global pipeline, british_pipeline, actual_device
+
+    if torch is None:
+        raise RuntimeError("PyTorch is required to start the TTS model")
+
+    selected_device = resolve_device(DEVICE)
+
+    print()
+    print("=" * 60)
+    print("[LOADING] Kokoro TTS model...")
+    print(f"   Device: {selected_device}")
+    if selected_device == "cuda":
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        print(f"   GPU: {gpu_name} ({gpu_mem:.1f} GB)")
+    print(f"   Default voice: {VOICE}")
+    print("=" * 60)
+    print()
+
+    t0 = time.time()
+    try:
+        from kokoro import KPipeline
+
+        loaded_pipeline = KPipeline(
+            lang_code="a",
+            repo_id="hexgrad/Kokoro-82M",
+            device=selected_device,
+        )
+        loaded_british_pipeline = KPipeline(
+            lang_code="b",
+            repo_id="hexgrad/Kokoro-82M",
+            model=loaded_pipeline.model,
+            device=selected_device,
+        )
+
+        if WARMUP_ENABLED:
+            print("[WARMUP] Running initial inference...")
+            warmup_started = time.time()
+            warmup_pipeline = (
+                loaded_british_pipeline
+                if VOICE_LANG_CODES[VOICE] == "b"
+                else loaded_pipeline
+            )
+            _run_pipeline_inference(warmup_pipeline, "Hello.", VOICE, DEFAULT_SPEED)
+            print(f"[WARMUP] Done in {time.time() - warmup_started:.2f}s")
+    except ImportError:
+        print("[ERROR] Cannot import kokoro. Please install: pip install kokoro>=0.9.4")
+        raise
+    except Exception as error:
+        print(f"[ERROR] Model loading failed: {error}")
+        raise
+
+    actual_device = selected_device
+    pipeline = loaded_pipeline
+    british_pipeline = loaded_british_pipeline
+
+    print()
+    print("=" * 60)
+    print(f"[OK] Model loaded in {time.time() - t0:.1f}s")
+    print("=" * 60)
+    print()
+
+
+def _ensure_tts_model_loaded() -> None:
+    if _tts_model_is_loaded():
+        return
+    with _tts_model_load_lock:
+        if _tts_model_is_loaded():
+            return
+        _load_tts_model()
 
 
 # ════════════════════════════════════════════════════════════════
@@ -342,66 +421,17 @@ def _start_watchdog():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用启动时加载模型，关闭时释放。"""
+    """Prepare the API; load the local TTS model only when TTS is requested."""
     global pipeline, british_pipeline, actual_device
 
     _start_watchdog()
 
     validate_ffmpeg()
 
-    if torch is None:
-        raise RuntimeError("PyTorch is required to start the TTS model")
-    actual_device = resolve_device(DEVICE)
-
     print()
     print("=" * 60)
-    print("[LOADING] Kokoro TTS model...")
-    print(f"   Device: {actual_device}")
-    if actual_device == "cuda":
-        gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-        print(f"   GPU: {gpu_name} ({gpu_mem:.1f} GB)")
-    print(f"   Default voice: {VOICE}")
-    print("=" * 60)
-    print()
-
-    t0 = time.time()
-
-    try:
-        from kokoro import KPipeline
-
-        # Initialize Kokoro pipeline ('a' = American English)
-        pipeline = KPipeline(
-            lang_code="a",
-            repo_id="hexgrad/Kokoro-82M",
-            device=actual_device,
-        )
-        british_pipeline = KPipeline(
-            lang_code="b",
-            repo_id="hexgrad/Kokoro-82M",
-            model=pipeline.model,
-            device=actual_device,
-        )
-
-    except ImportError:
-        print("[ERROR] Cannot import kokoro. Please install: pip install kokoro>=0.9.4")
-        raise
-    except Exception as e:
-        print(f"[ERROR] Model loading failed: {e}")
-        raise
-
-    if WARMUP_ENABLED:
-        print("[WARMUP] Running initial inference...")
-        warmup_started = time.time()
-        _run_inference("Hello.", VOICE, DEFAULT_SPEED)
-        print(f"[WARMUP] Done in {time.time() - warmup_started:.2f}s")
-
-    elapsed = time.time() - t0
-
-    print()
-    print("=" * 60)
-    print(f"[OK] Model loaded in {elapsed:.1f}s")
-    print(f"[READY] Server: http://{HOST}:{PORT}")
+    print(f"[READY] API server: http://{HOST}:{PORT}")
+    print("[TTS] Kokoro model will load on the first TTS request")
     print(f"[TEST]  Page:   http://{HOST}:{PORT}/")
     print(f"[HEALTH] Check: http://{HOST}:{PORT}/health")
     print("=" * 60)
@@ -410,10 +440,14 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        print("[STOP] Releasing model resources...")
-        pipeline = None
-        british_pipeline = None
-        if actual_device == "cuda" and torch:
+        loaded_device = actual_device
+        if _tts_model_is_loaded():
+            print("[STOP] Releasing model resources...")
+        with _tts_model_load_lock:
+            pipeline = None
+            british_pipeline = None
+            actual_device = None
+        if loaded_device == "cuda" and torch:
             torch.cuda.empty_cache()
 
 
@@ -424,7 +458,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.13",
+    version="1.7.14",
     lifespan=lifespan,
 )
 
@@ -698,9 +732,7 @@ def _combine_audio_segments(
     return _apply_fade(full_audio, sample_rate, fade_ms)
 
 
-def _run_inference(text: str, voice: str, speed: float):
-    """同步执行 Kokoro TTS 推理（在线程池中运行）。"""
-    selected_pipeline = _select_pipeline_for_voice(voice)
+def _run_pipeline_inference(selected_pipeline, text: str, voice: str, speed: float):
     if selected_pipeline is None:
         raise RuntimeError("模型尚未就绪")
 
@@ -712,6 +744,16 @@ def _run_inference(text: str, voice: str, speed: float):
             audio_segments.append(audio.numpy() if hasattr(audio, 'numpy') else audio)
 
     return _combine_audio_segments(audio_segments), SAMPLE_RATE
+
+
+def _run_inference(text: str, voice: str, speed: float):
+    """同步执行 Kokoro TTS 推理（在线程池中运行）。"""
+    return _run_pipeline_inference(
+        _select_pipeline_for_voice(voice),
+        text,
+        voice,
+        speed,
+    )
 
 
 def _select_pipeline_for_voice(voice: str):
@@ -937,6 +979,12 @@ def _normalize_translation_context(
     return limited or None
 
 
+def _open_ollama_request(request, timeout: float):
+    """Open an Ollama request without leaking local prompts through HTTP proxies."""
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+    return opener.open(request, timeout=timeout)
+
+
 def _call_ollama_json(
     path: str,
     timeout: float = 5.0,
@@ -949,7 +997,7 @@ def _call_ollama_json(
         method="GET",
     )
     try:
-        with urllib_request.urlopen(req, timeout=timeout) as resp:
+        with _open_ollama_request(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except urllib_error.HTTPError as error:
         raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
@@ -986,7 +1034,7 @@ def _call_ollama_model_keep_alive(model: str, keep_alive: str | int | float):
     )
 
     try:
-        with urllib_request.urlopen(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
+        with _open_ollama_request(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
     except urllib_error.HTTPError as error:
         raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
@@ -1608,7 +1656,7 @@ def _call_ollama_formula_verbalization_zh_single(
     )
 
     try:
-        with urllib_request.urlopen(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
+        with _open_ollama_request(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
     except urllib_error.HTTPError as error:
         raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
@@ -1712,7 +1760,7 @@ def _call_ollama_translate_raw(
     )
 
     try:
-        with urllib_request.urlopen(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
+        with _open_ollama_request(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
     except urllib_error.HTTPError as error:
         raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
@@ -1864,7 +1912,7 @@ def _call_ollama_text_generation(
     )
 
     try:
-        with urllib_request.urlopen(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
+        with _open_ollama_request(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
     except urllib_error.HTTPError as error:
         raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
@@ -2160,7 +2208,7 @@ def _call_ollama_formula_verbalization(
     )
 
     try:
-        with urllib_request.urlopen(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
+        with _open_ollama_request(req, timeout=OLLAMA_TRANSLATE_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
     except urllib_error.HTTPError as error:
         raise RuntimeError(f"Ollama returned HTTP {error.code}") from error
@@ -2660,6 +2708,7 @@ async def tts_endpoint(
         if http_request and await http_request.is_disconnected():
             print("[TTS] Client disconnected before acquiring lock, aborting.")
             raise HTTPException(status_code=499, detail="Client Closed Request")
+        await asyncio.to_thread(_ensure_tts_model_loaded)
         try:
             await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -2730,9 +2779,6 @@ async def tts_stream_endpoint(
 
     voice = request.voice or VOICE
     speed = request.speed if request.speed is not None else DEFAULT_SPEED
-    selected_pipeline = _select_pipeline_for_voice(voice)
-    if selected_pipeline is None:
-        raise HTTPException(status_code=500, detail="语音生成失败")
 
     lock_acquired = False
     session = None
@@ -2740,6 +2786,10 @@ async def tts_stream_endpoint(
         if await http_request.is_disconnected():
             print("[TTS] Client disconnected before acquiring lock, aborting.")
             raise HTTPException(status_code=499, detail="Client Closed Request")
+        await asyncio.to_thread(_ensure_tts_model_loaded)
+        selected_pipeline = _select_pipeline_for_voice(voice)
+        if selected_pipeline is None:
+            raise RuntimeError("模型尚未就绪")
         try:
             await asyncio.wait_for(inference_lock.acquire(), timeout=1.0)
             lock_acquired = True
@@ -2804,17 +2854,20 @@ async def tts_stream_endpoint(
 @app.get("/health")
 async def health_check():
     """健康检查端点。"""
+    tts_model_loaded = _tts_model_is_loaded()
     return {
         "status": "ok",
         "service": "kokoro-tts",
         "version": app.version,
         "pid": os.getpid(),
-        "ready": pipeline is not None,
+        "ready": True,
+        "api_ready": True,
+        "tts_model_loaded": tts_model_loaded,
         "model": "Kokoro-82M",
-        "device": actual_device,
+        "device": actual_device if tts_model_loaded else None,
         "gpu": (
             torch.cuda.get_device_name(0)
-            if torch and actual_device == "cuda"
+            if tts_model_loaded and torch and actual_device == "cuda"
             else "N/A"
         ),
         "default_voice": VOICE,
