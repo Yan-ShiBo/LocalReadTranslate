@@ -1,6 +1,8 @@
 # Remote Ollama Service Design
 
-**Status:** Implemented and verified on 2026-07-18. This document describes the current contract; the original task-by-task implementation plan is archived separately.
+**Status:** Historical `1.13.0` release contract, implemented and verified on 2026-07-18. Tray, credential, tunnel and routing boundaries remain current; the userscript workflow in this file is archived.
+
+> **Iteration 5 supersession:** The three-action userscript flow and flattened health interpretation below describe released version `1.13.0` only. They were superseded on 2026-07-23 by source-first userscript `1.15.1` and server `1.7.15`; the current contract and verification status live in [`2026-07-23-backend-driven-userscript-settings-design.md`](2026-07-23-backend-driven-userscript-settings-design.md). Historical sections are retained to explain the old release, not as current usage instructions.
 
 ## Goal
 
@@ -30,8 +32,8 @@ Local FastAPI mediator
         |-- local model reference ------> local Ollama
         `-- remote:<source>:<model> ----> tray-provided tunnel or Direct API
 
-localreadtranslate://start
-        `-------------------------------> Windows tray app
+localreadtranslate://start | ollama | remote
+        `-------------------------------> Windows tray app fixed actions
 ```
 
 The userscript never sees an SSH password, key path, remote host, or remote Ollama base URL. Local mode keeps selected text and permitted context on the machine. When a remote model is selected, the local mediator sends the selected text and permitted context to that configured project server.
@@ -40,12 +42,14 @@ The tray owns the remote connection and process lifecycle because it already own
 
 Kokoro is lazy-loaded on the first TTS request. Starting the API or translating through a remote model does not initialize Torch/Kokoro or allocate local TTS GPU memory. `/health` reports API readiness separately from `tts_model_loaded`.
 
-## Windows Start Protocol
+## Windows Fixed-action Protocol
 
-The only supported URL is:
+The current handler accepts exactly three URLs:
 
 ```text
 localreadtranslate://start
+localreadtranslate://ollama
+localreadtranslate://remote
 ```
 
 `windows_protocol.py` registers the handler under `HKCU\Software\Classes\localreadtranslate`, so registration is per-user and does not require administrator privileges. The command stores quoted absolute paths to the environment's `pythonw.exe` and this checkout's `tray_app.py`; moving the environment or project requires re-registration:
@@ -56,9 +60,9 @@ conda run -n kokoro-tts python windows_protocol.py register
 
 The matching `windows_protocol.py unregister` command removes only this exact current-user protocol tree.
 
-The protocol parser rejects query strings, fragments, extra paths, and any action other than `start`. A web page can still prompt the browser to open a registered external application, so the browser's confirmation dialog remains an important user-consent boundary.
+The protocol parser rejects query strings, fragments, extra paths, and any action other than `start`, `ollama`, or `remote`. A web page can still prompt the browser to open a registered external application, so the browser's confirmation dialog remains an important user-consent boundary.
 
-The tray enforces a single instance with a Windows named mutex. A first protocol launch starts the tray and its server. If the tray is already running, the second invocation signals a named auto-reset event; the existing tray instance starts the server without creating another tray process.
+The tray enforces a single instance with a Windows named mutex. A first protocol launch starts the tray and dispatches the requested fixed action. If the tray is already running, the second invocation signals the corresponding named auto-reset event without creating another tray process: start/wake the mediator, start local Ollama if loopback health is down, or open the tray-owned Remote Service dialog.
 
 The protocol carries no host, credentials, model name, shell fragment, or arbitrary command.
 

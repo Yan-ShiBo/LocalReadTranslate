@@ -156,7 +156,7 @@ assert server.torch is None
             ), patch.object(
                 server,
                 "_call_ollama_translate_raw",
-                return_value="remote translation result",
+                return_value="远程翻译结果",
             ):
                 async with server.lifespan(server.app):
                     response = await server.translate_endpoint(
@@ -167,7 +167,7 @@ assert server.torch is None
                     )
 
             validate.assert_called_once_with()
-            self.assertEqual(response.translated_text, "remote translation result")
+            self.assertEqual(response.translated_text, "远程翻译结果")
 
         asyncio.run(exercise())
 
@@ -239,6 +239,36 @@ assert server.torch is None
         server._apply_ollama_thinking_mode(payload, "qwen3-embedding:4b")
 
         self.assertNotIn("think", payload)
+
+    def test_translation_payload_logging_cannot_break_unicode_page_context(self):
+        def fake_urlopen(request, timeout):
+            return FakeUrlopenResponse({"response": "流式模式"})
+
+        encoding_error = UnicodeEncodeError(
+            "gbk",
+            "🎙️",
+            0,
+            1,
+            "illegal multibyte sequence",
+        )
+        with patch.object(
+            server,
+            "print",
+            create=True,
+            side_effect=encoding_error,
+        ), patch.object(
+            server,
+            "_open_ollama_request",
+            side_effect=fake_urlopen,
+        ):
+            result = server._call_ollama_translate_raw(
+                "Stream mode",
+                "qwen3:14b",
+                "Simplified Chinese",
+                "🎙️ Kokoro TTS test page [SELECTED_TEXT]",
+            )
+
+        self.assertEqual(result, "流式模式")
 
 
 class ApiTests(unittest.TestCase):
@@ -498,6 +528,60 @@ class ApiTests(unittest.TestCase):
             None,
         )
 
+    def test_translate_retries_when_chinese_target_stays_english(self):
+        with patch.object(
+            server,
+            "_call_ollama_translate_raw",
+            create=True,
+            side_effect=["Categorical-SAC", "分类-SAC"],
+        ) as call:
+            response = self.client.post(
+                "/translate",
+                json={
+                    "text": "Categorical-SAC",
+                    "context": (
+                        "Categorical-SAC 负责生成候选结构，残差奖励模型与 "
+                        "PAC 线性规划用于候选评价和筛选。"
+                    ),
+                    "model": "qwen3:14b",
+                    "target_language": "Simplified Chinese",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["translated_text"], "分类-SAC")
+        self.assertEqual(call.call_count, 2)
+        first_call, retry_call = call.call_args_list
+        self.assertEqual(first_call.args[0], "Categorical-SAC")
+        self.assertEqual(first_call.args[1], "qwen3:14b")
+        self.assertEqual(first_call.args[2], "Simplified Chinese")
+        self.assertIn("[SELECTED_TEXT]", first_call.args[3])
+        self.assertEqual(retry_call.args[0], "Categorical-SAC")
+        self.assertEqual(retry_call.args[1], "qwen3:14b")
+        self.assertIn("Simplified Chinese", retry_call.args[2])
+        self.assertNotEqual(retry_call.args[2], first_call.args[2])
+        self.assertEqual(retry_call.args[3], first_call.args[3])
+
+    def test_translate_fails_when_chinese_retry_stays_english(self):
+        with patch.object(
+            server,
+            "_call_ollama_translate_raw",
+            create=True,
+            side_effect=["Categorical-SAC", "Categorical-SAC"],
+        ) as call:
+            response = self.client.post(
+                "/translate",
+                json={
+                    "text": "Categorical-SAC",
+                    "model": "qwen3:14b",
+                    "target_language": "Simplified Chinese",
+                },
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"], "Translation source failed")
+        self.assertEqual(call.call_count, 2)
+
     def test_translate_rejects_blank_text(self):
         response = self.client.post("/translate", json={"text": "   "})
 
@@ -508,7 +592,7 @@ class ApiTests(unittest.TestCase):
             server,
             "_call_ollama_translate_raw",
             create=True,
-            return_value="formula description",
+            return_value="公式说明",
         ) as call:
             response = self.client.post(
                 "/translate",
@@ -725,7 +809,7 @@ class ApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 502)
-        self.assertEqual(response.json()["detail"], "Local Ollama translation failed")
+        self.assertEqual(response.json()["detail"], "Translation source failed")
         self.assertNotIn("secret model path", response.text)
 
     def test_translate_restores_formula_for_frontend_rendering_without_description(self):
@@ -1292,6 +1376,19 @@ class ApiTests(unittest.TestCase):
             server.OLLAMA_KEEP_ALIVE_PIN_VALUE,
         )
 
+    def test_explicit_unload_keep_alive_is_not_overridden_by_pin(self):
+        captured = {}
+        server.PINNED_OLLAMA_MODELS.add("qwen3:14b")
+
+        def fake_urlopen(request, timeout):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeUrlopenResponse({"done_reason": "unload"})
+
+        with patch.object(server, "_open_ollama_request", side_effect=fake_urlopen):
+            server._call_ollama_model_keep_alive("qwen3:14b", 0)
+
+        self.assertEqual(captured["payload"]["keep_alive"], 0)
+
     def test_translate_health_reports_model_state(self):
         def fake_ollama_json(path):
             if path == "/api/tags":
@@ -1375,6 +1472,154 @@ class ApiTests(unittest.TestCase):
             payload["available_model_options"],
         )
 
+    def test_translate_health_reports_each_source_and_filters_non_generation_models(self):
+        original_sources = server.OLLAMA_SOURCES
+        server.OLLAMA_SOURCES = {
+            "local": server.OllamaSource(
+                "local",
+                "Local Ollama",
+                "http://127.0.0.1:11434",
+                False,
+            ),
+            "lab-server": server.OllamaSource(
+                "lab-server",
+                "Lab Server",
+                "http://127.0.0.1:49152",
+                True,
+            ),
+        }
+        server.PINNED_OLLAMA_MODELS.add("remote:lab-server:qwen3:30b")
+
+        def fake_ollama_json(path, timeout=5.0, base_url=None):
+            if base_url is None:
+                raise RuntimeError("local endpoint secret")
+            if base_url == "http://127.0.0.1:49152" and path == "/api/tags":
+                return {
+                    "models": [
+                        {"name": "qwen3:30b", "capabilities": ["completion"]},
+                        {
+                            "name": "qwen3-embedding:8b",
+                            "capabilities": ["embedding"],
+                        },
+                        {"name": "bge-reranker-v2", "capabilities": ["embedding"]},
+                        {
+                            "name": "special-embedding-name",
+                            "capabilities": ["completion"],
+                        },
+                    ]
+                }
+            if base_url == "http://127.0.0.1:49152" and path == "/api/ps":
+                return {"models": [{"name": "qwen3:30b"}]}
+            raise AssertionError((path, base_url))
+
+        try:
+            with patch.object(
+                server,
+                "_call_ollama_json",
+                create=True,
+                side_effect=fake_ollama_json,
+            ):
+                response = self.client.get("/translate/health")
+        finally:
+            server.OLLAMA_SOURCES = original_sources
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "error")
+        self.assertFalse(payload["ollama_reachable"])
+        self.assertEqual(payload["available_models"], [])
+
+        sources = {source["id"]: source for source in payload["sources"]}
+        self.assertEqual(set(sources), {"local", "lab-server"})
+        self.assertEqual(
+            set(sources["local"]),
+            {"id", "name", "kind", "configured", "reachable", "error_code", "models"},
+        )
+        self.assertEqual(sources["local"]["kind"], "local")
+        self.assertTrue(sources["local"]["configured"])
+        self.assertFalse(sources["local"]["reachable"])
+        self.assertEqual(sources["local"]["error_code"], "unreachable")
+        self.assertEqual(sources["local"]["models"], [])
+
+        remote = sources["lab-server"]
+        self.assertEqual(remote["kind"], "remote")
+        self.assertTrue(remote["reachable"])
+        remote_models = {model["name"]: model for model in remote["models"]}
+        self.assertTrue(remote_models["qwen3:30b"]["running"])
+        self.assertTrue(remote_models["qwen3:30b"]["pinned"])
+        self.assertTrue(remote_models["qwen3:30b"]["usable_for_translation"])
+        self.assertFalse(
+            remote_models["qwen3-embedding:8b"]["usable_for_translation"]
+        )
+        self.assertFalse(
+            remote_models["bge-reranker-v2"]["usable_for_translation"]
+        )
+        self.assertTrue(
+            remote_models["special-embedding-name"]["usable_for_translation"]
+        )
+        self.assertEqual(
+            [option["value"] for option in payload["available_model_options"]],
+            [
+                "remote:lab-server:qwen3:30b",
+                "remote:lab-server:special-embedding-name",
+            ],
+        )
+        self.assertNotIn("49152", response.text)
+        self.assertNotIn("local endpoint secret", response.text)
+
+    def test_translate_health_keeps_local_compatibility_models_for_remote_selection(self):
+        original_sources = server.OLLAMA_SOURCES
+        server.OLLAMA_SOURCES = {
+            "local": server.OllamaSource(
+                "local",
+                "Local Ollama",
+                "http://127.0.0.1:11434",
+                False,
+            ),
+            "lab-server": server.OllamaSource(
+                "lab-server",
+                "Lab Server",
+                "http://127.0.0.1:49152",
+                True,
+            ),
+        }
+
+        def fake_ollama_json(path, timeout=5.0, base_url=None):
+            if base_url is None and path == "/api/tags":
+                return {
+                    "models": [
+                        {"name": "translategemma:4b"},
+                        {"name": "qwen3-embedding:4b"},
+                    ]
+                }
+            if base_url is None and path == "/api/ps":
+                return {"models": []}
+            if base_url == "http://127.0.0.1:49152" and path == "/api/tags":
+                return {"models": [{"name": "qwen3:14b"}]}
+            if base_url == "http://127.0.0.1:49152" and path == "/api/ps":
+                return {"models": [{"name": "qwen3:14b"}]}
+            raise AssertionError((path, base_url))
+
+        try:
+            with patch.object(
+                server,
+                "_call_ollama_json",
+                create=True,
+                side_effect=fake_ollama_json,
+            ):
+                response = self.client.get(
+                    "/translate/health?model=remote:lab-server:qwen3:14b"
+                )
+        finally:
+            server.OLLAMA_SOURCES = original_sources
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["available_models"], ["translategemma:4b"])
+        self.assertEqual(payload["running_models"], ["qwen3:14b"])
+        self.assertTrue(payload["ollama_reachable"])
+        self.assertEqual(payload["source"], "lab-server")
+
     def test_translate_health_reports_pinned_model(self):
         server.PINNED_OLLAMA_MODELS.add("translategemma:4b")
 
@@ -1427,6 +1672,25 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(payload["model_pinned"])
         self.assertIn("qwen3:14b", server.PINNED_OLLAMA_MODELS)
         keepalive.assert_called_once_with("qwen3:14b", server.OLLAMA_KEEP_ALIVE_PIN_VALUE)
+
+    def test_translate_model_keepalive_uses_source_neutral_failure(self):
+        with patch.object(
+            server,
+            "_call_ollama_model_keep_alive",
+            create=True,
+            side_effect=RuntimeError("remote connection detail"),
+        ):
+            response = self.client.post(
+                "/translate/model/keepalive",
+                json={"model": "qwen3:14b"},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json()["detail"],
+            "Translation model keep-alive failed",
+        )
+        self.assertNotIn("remote connection detail", response.text)
 
     def test_translate_model_keepalive_checks_remote_running_state(self):
         original_sources = server.OLLAMA_SOURCES
@@ -1484,17 +1748,28 @@ class ApiTests(unittest.TestCase):
 
     def test_translate_model_unload_unpins_model(self):
         server.PINNED_OLLAMA_MODELS.add("qwen3:14b")
+        ps_calls = 0
+
+        def fake_unload(model, keep_alive):
+            self.assertNotIn(model, server.PINNED_OLLAMA_MODELS)
+            return {"done_reason": "unload"}
 
         def fake_ollama_json(path):
+            nonlocal ps_calls
             if path == "/api/ps":
-                return {"models": []}
+                ps_calls += 1
+                return {
+                    "models": [{"name": "qwen3:14b"}]
+                    if ps_calls == 1
+                    else []
+                }
             raise AssertionError(path)
 
         with patch.object(
             server,
             "_call_ollama_model_keep_alive",
             create=True,
-            return_value={"done_reason": "unload"},
+            side_effect=fake_unload,
         ) as unload, patch.object(
             server,
             "_call_ollama_json",
@@ -1515,6 +1790,88 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(payload["model_pinned"])
         self.assertNotIn("qwen3:14b", server.PINNED_OLLAMA_MODELS)
         unload.assert_called_once_with("qwen3:14b", 0)
+
+    def test_translate_model_unload_reports_when_model_is_still_running(self):
+        server.PINNED_OLLAMA_MODELS.add("qwen3:14b")
+
+        with patch.object(
+            server,
+            "_call_ollama_model_keep_alive",
+            create=True,
+            return_value={"done_reason": "unload"},
+        ), patch.object(
+            server,
+            "_ollama_model_is_running",
+            create=True,
+            return_value=True,
+        ), patch.object(
+            server,
+            "_wait_for_ollama_model_state",
+            create=True,
+            return_value=True,
+        ):
+            response = self.client.post(
+                "/translate/model/unload",
+                json={"model": "qwen3:14b"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "still_running")
+        self.assertTrue(payload["model_running"])
+        self.assertFalse(payload["model_pinned"])
+
+    def test_translate_model_unload_clears_stale_pin_without_loading_model(self):
+        server.PINNED_OLLAMA_MODELS.add("qwen3:14b")
+
+        with patch.object(
+            server,
+            "_ollama_model_is_running",
+            create=True,
+            return_value=False,
+        ), patch.object(
+            server,
+            "_call_ollama_model_keep_alive",
+            create=True,
+        ) as unload:
+            response = self.client.post(
+                "/translate/model/unload",
+                json={"model": "qwen3:14b"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "unloaded")
+        self.assertFalse(payload["model_running"])
+        self.assertFalse(payload["model_pinned"])
+        self.assertNotIn("qwen3:14b", server.PINNED_OLLAMA_MODELS)
+        unload.assert_not_called()
+
+    def test_translate_model_unload_restores_pin_when_request_fails(self):
+        server.PINNED_OLLAMA_MODELS.add("qwen3:14b")
+
+        with patch.object(
+            server,
+            "_ollama_model_is_running",
+            create=True,
+            return_value=True,
+        ), patch.object(
+            server,
+            "_call_ollama_model_keep_alive",
+            create=True,
+            side_effect=RuntimeError("remote failure"),
+        ):
+            response = self.client.post(
+                "/translate/model/unload",
+                json={"model": "qwen3:14b"},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json()["detail"],
+            "Translation model unload failed",
+        )
+        self.assertIn("qwen3:14b", server.PINNED_OLLAMA_MODELS)
 
     def test_translate_health_handles_ollama_offline(self):
         with patch.object(

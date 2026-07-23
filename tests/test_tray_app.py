@@ -180,10 +180,15 @@ class TrayProtocolLaunchTests(unittest.TestCase):
         register.assert_not_called()
         thread.assert_not_called()
 
-    def test_normal_tray_start_registers_protocol_and_opens_start_event(self):
+    def test_normal_tray_start_registers_protocol_and_opens_fixed_action_events(self):
         pythonw = Path(r"C:\Conda Env\pythonw.exe")
-        event = Mock()
-        event.create.return_value = event
+        events = []
+        def make_event(name):
+            event = Mock(name=name)
+            event.create.return_value = event
+            event.name = name
+            events.append(event)
+            return event
         created_threads = []
 
         class FakeThread:
@@ -209,7 +214,7 @@ class TrayProtocolLaunchTests(unittest.TestCase):
         ) as register, patch.object(
             tray_app,
             "WindowsNamedAutoResetEvent",
-            return_value=event,
+            side_effect=make_event,
         ) as event_class, patch.object(
             tray_app.threading,
             "Thread",
@@ -221,9 +226,17 @@ class TrayProtocolLaunchTests(unittest.TestCase):
             )
 
         register.assert_called_once_with(pythonw, tray_app.SCRIPT_DIR / "tray_app.py")
-        event_class.assert_called_once_with(tray_app.START_SERVER_EVENT_NAME)
-        event.create.assert_called_once_with()
-        self.assertGreaterEqual(len(created_threads), 2)
+        self.assertEqual(
+            [call.args[0] for call in event_class.call_args_list],
+            [
+                tray_app.START_SERVER_EVENT_NAME,
+                tray_app.START_OLLAMA_EVENT_NAME,
+                tray_app.OPEN_REMOTE_EVENT_NAME,
+            ],
+        )
+        for event in events:
+            event.create.assert_called_once_with()
+        self.assertGreaterEqual(len(created_threads), 4)
 
     def test_primary_tray_starts_server_when_protocol_event_is_signaled(self):
         with patch.object(
@@ -244,6 +257,34 @@ class TrayProtocolLaunchTests(unittest.TestCase):
         app._start_server_event.wait.assert_called_once_with(timeout_ms=500)
         app.start_server.assert_called_once_with()
 
+    def test_primary_tray_starts_ollama_when_protocol_event_is_signaled(self):
+        with patch.object(tray_app, "find_conda_python", return_value=Path(sys.executable)):
+            app = tray_app.TrayApp(
+                start_background_tasks=False,
+                enable_windows_protocol=False,
+            )
+        app.start_local_ollama = Mock(side_effect=app._protocol_listener_stop.set)
+        app._start_ollama_event = Mock()
+        app._start_ollama_event.wait.return_value = True
+
+        app._listen_for_start_ollama_requests()
+
+        app.start_local_ollama.assert_called_once_with()
+
+    def test_primary_tray_opens_remote_dialog_when_protocol_event_is_signaled(self):
+        with patch.object(tray_app, "find_conda_python", return_value=Path(sys.executable)):
+            app = tray_app.TrayApp(
+                start_background_tasks=False,
+                enable_windows_protocol=False,
+            )
+        app.open_remote_service_settings = Mock(side_effect=app._protocol_listener_stop.set)
+        app._open_remote_event = Mock()
+        app._open_remote_event.wait.return_value = True
+
+        app._listen_for_remote_service_requests()
+
+        app.open_remote_service_settings.assert_called_once_with()
+
     def test_quit_releases_protocol_listener_resources(self):
         with patch.object(
             tray_app,
@@ -255,6 +296,8 @@ class TrayProtocolLaunchTests(unittest.TestCase):
                 enable_windows_protocol=False,
             )
         app._start_server_event = Mock()
+        app._start_ollama_event = Mock()
+        app._open_remote_event = Mock()
         app._stop_remote_ollama_tunnel = Mock()
         app.stop_server = Mock()
 
@@ -263,6 +306,8 @@ class TrayProtocolLaunchTests(unittest.TestCase):
 
         self.assertTrue(app._protocol_listener_stop.is_set())
         app._start_server_event.close.assert_called_once_with()
+        app._start_ollama_event.close.assert_called_once_with()
+        app._open_remote_event.close.assert_called_once_with()
 
     def test_second_protocol_launch_signals_primary_tray_and_exits(self):
         mutex = Mock()
@@ -283,6 +328,69 @@ class TrayProtocolLaunchTests(unittest.TestCase):
         signal_existing.assert_called_once_with(tray_app.START_SERVER_EVENT_NAME)
         tray_class.assert_not_called()
         mutex.close.assert_not_called()
+
+    def test_second_protocol_launch_routes_each_fixed_action_to_its_event(self):
+        for url, event_name in (
+            ("localreadtranslate://ollama", tray_app.START_OLLAMA_EVENT_NAME),
+            ("localreadtranslate://remote", tray_app.OPEN_REMOTE_EVENT_NAME),
+        ):
+            with self.subTest(url=url):
+                mutex = Mock()
+                mutex.acquire.return_value = False
+                with patch.object(
+                    tray_app, "WindowsNamedMutex", return_value=mutex
+                ), patch.object(
+                    tray_app.WindowsNamedAutoResetEvent,
+                    "signal_existing",
+                    return_value=True,
+                ) as signal_existing, patch.object(tray_app, "TrayApp") as tray_class:
+                    result = tray_app.main([url])
+
+                self.assertEqual(result, 0)
+                signal_existing.assert_called_once_with(event_name)
+                tray_class.assert_not_called()
+
+
+class TrayLocalOllamaTests(unittest.TestCase):
+    def make_app(self):
+        with patch.object(tray_app, "find_conda_python", return_value=Path(sys.executable)):
+            return tray_app.TrayApp(
+                start_background_tasks=False,
+                enable_windows_protocol=False,
+            )
+
+    def test_start_local_ollama_is_idempotent_when_native_health_is_reachable(self):
+        app = self.make_app()
+        with patch.object(app, "local_ollama_is_reachable", return_value=True), patch.object(
+            tray_app.subprocess, "Popen"
+        ) as popen:
+            self.assertTrue(app.start_local_ollama())
+        popen.assert_not_called()
+
+    def test_start_local_ollama_launches_installed_serve_hidden(self):
+        app = self.make_app()
+        executable = Path(r"C:\Users\Example\AppData\Local\Programs\Ollama\ollama.exe")
+        process = Mock()
+        with patch.object(
+            app,
+            "local_ollama_is_reachable",
+            side_effect=[False, True],
+        ), patch.object(
+            app,
+            "find_ollama_executable",
+            return_value=executable,
+        ), patch.object(
+            tray_app.subprocess,
+            "Popen",
+            return_value=process,
+        ) as popen, patch.object(tray_app.time, "sleep"):
+            self.assertTrue(app.start_local_ollama())
+
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0], [str(executable), "serve"])
+        self.assertIs(kwargs["stdout"], tray_app.subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], tray_app.subprocess.DEVNULL)
+        self.assertEqual(kwargs["creationflags"], getattr(tray_app.subprocess, "CREATE_NO_WINDOW", 0))
 
 
 class TrayRemoteOllamaTests(unittest.TestCase):

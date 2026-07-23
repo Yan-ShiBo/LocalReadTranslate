@@ -115,6 +115,17 @@ class OllamaModelRef:
     source: OllamaSource
 
 
+@dataclass(frozen=True)
+class OllamaSourceState:
+    source: OllamaSource
+    reachable: bool
+    available_models: list[str]
+    eligible_models: list[str]
+    running_models: list[str]
+    models: list[dict]
+    error_code: Optional[str] = None
+
+
 def _local_ollama_source() -> OllamaSource:
     return OllamaSource("local", "Local Ollama", OLLAMA_BASE_URL, False)
 
@@ -178,17 +189,110 @@ def _resolve_ollama_model_ref(value: Optional[str]) -> OllamaModelRef:
     return OllamaModelRef(selected, selected, source)
 
 
-def _collect_ollama_model_options() -> list[dict[str, str]]:
-    options: list[dict[str, str]] = []
-    for source in OLLAMA_SOURCES.values():
-        try:
-            if source.id == "local":
-                payload = _call_ollama_json("/api/tags")
-            else:
-                payload = _call_ollama_json("/api/tags", base_url=source.base_url)
-        except Exception:
+def _call_ollama_source_json(source: OllamaSource, path: str):
+    if source.id == "local":
+        return _call_ollama_json(path)
+    return _call_ollama_json(path, base_url=source.base_url)
+
+
+def _ollama_model_items(payload) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    return [item for item in payload.get("models", []) if isinstance(item, dict)]
+
+
+def _ollama_model_usable_for_translation(item: dict) -> bool:
+    raw_capabilities = item.get("capabilities")
+    capabilities = {
+        str(capability).strip().lower()
+        for capability in raw_capabilities
+        if str(capability).strip()
+    } if isinstance(raw_capabilities, (list, tuple, set)) else set()
+    if capabilities & {"completion", "generate", "generation", "chat"}:
+        return True
+    if capabilities & {"embedding", "embeddings", "rerank", "reranking"}:
+        return False
+
+    name = str(item.get("name") or item.get("model") or "").strip().lower()
+    tokens = {token for token in re.split(r"[-_.:/]+", name) if token}
+    if tokens & {"embed", "embedding", "embeddings", "rerank", "reranker", "reranking"}:
+        return False
+    return not name.startswith(("bge-", "bge_", "all-minilm", "nomic-embed"))
+
+
+def _inspect_ollama_source(source: OllamaSource) -> OllamaSourceState:
+    try:
+        tag_payload = _call_ollama_source_json(source, "/api/tags")
+    except Exception:
+        return OllamaSourceState(
+            source=source,
+            reachable=False,
+            available_models=[],
+            eligible_models=[],
+            running_models=[],
+            models=[],
+            error_code="unreachable",
+        )
+
+    error_code = None
+    try:
+        running_payload = _call_ollama_source_json(source, "/api/ps")
+        running_models = _ollama_model_names(running_payload)
+    except Exception:
+        running_models = []
+        error_code = "running_state_unavailable"
+
+    available_models: list[str] = []
+    eligible_models: list[str] = []
+    model_states: list[dict] = []
+    running_set = set(running_models)
+    for item in _ollama_model_items(tag_payload):
+        name = item.get("name") or item.get("model")
+        if not isinstance(name, str) or not name or name in available_models:
             continue
-        for model in _ollama_model_names(payload):
+        usable = _ollama_model_usable_for_translation(item)
+        value = _model_value_for_source(source, name)
+        available_models.append(name)
+        if usable:
+            eligible_models.append(name)
+        model_states.append(
+            {
+                "value": value,
+                "name": name,
+                "running": name in running_set,
+                "pinned": value in PINNED_OLLAMA_MODELS,
+                "usable_for_translation": usable,
+            }
+        )
+
+    return OllamaSourceState(
+        source=source,
+        reachable=True,
+        available_models=available_models,
+        eligible_models=eligible_models,
+        running_models=running_models,
+        models=model_states,
+        error_code=error_code,
+    )
+
+
+def _collect_ollama_source_states() -> dict[str, OllamaSourceState]:
+    return {
+        source.id: _inspect_ollama_source(source)
+        for source in OLLAMA_SOURCES.values()
+    }
+
+
+def _collect_ollama_model_options(
+    states: Optional[dict[str, OllamaSourceState]] = None,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    source_states = states or _collect_ollama_source_states()
+    for source in OLLAMA_SOURCES.values():
+        state = source_states.get(source.id)
+        if state is None or not state.reachable:
+            continue
+        for model in state.eligible_models:
             value = _model_value_for_source(source, model)
             options.append(
                 {
@@ -458,7 +562,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.14",
+    version="1.7.15",
     lifespan=lifespan,
 )
 
@@ -676,6 +780,24 @@ class OllamaModelOption(BaseModel):
     model: str
 
 
+class OllamaSourceModelStatus(BaseModel):
+    value: str
+    name: str
+    running: bool
+    pinned: bool
+    usable_for_translation: bool
+
+
+class OllamaSourceStatus(BaseModel):
+    id: str
+    name: str
+    kind: str
+    configured: bool
+    reachable: bool
+    error_code: Optional[str] = None
+    models: list[OllamaSourceModelStatus] = Field(default_factory=list)
+
+
 class TranslateHealthResponse(BaseModel):
     status: str
     ollama_reachable: bool
@@ -688,6 +810,7 @@ class TranslateHealthResponse(BaseModel):
     source: str = "local"
     source_name: str = "Local Ollama"
     available_model_options: list[OllamaModelOption] = Field(default_factory=list)
+    sources: list[OllamaSourceStatus] = Field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -867,6 +990,8 @@ def _apply_ollama_thinking_mode(payload: dict, model: Optional[str]) -> None:
 
 
 def _apply_ollama_keep_alive(payload: dict, model: Optional[str]) -> None:
+    if "keep_alive" in payload:
+        return
     selected_model = _resolve_ollama_model_ref(model).value if model else ""
     if selected_model and selected_model in PINNED_OLLAMA_MODELS:
         payload["keep_alive"] = OLLAMA_KEEP_ALIVE_PIN_VALUE
@@ -1707,6 +1832,19 @@ def _restore_formulas_with_verbalizations(
     return result
 
 
+def _log_json_payload(prefix: str, payload: dict) -> None:
+    """Log a request payload without letting console encoding break the request."""
+    try:
+        print(prefix, json.dumps(payload, ensure_ascii=False))
+    except UnicodeEncodeError:
+        try:
+            print(prefix, json.dumps(payload, ensure_ascii=True))
+        except UnicodeEncodeError:
+            # Logging is diagnostic only. Translation must still reach Ollama even
+            # when the host console cannot represent the page context.
+            pass
+
+
 def _call_ollama_translate_raw(
     protected_text: str,
     model: str,
@@ -1750,7 +1888,7 @@ def _call_ollama_translate_raw(
         },
     }
     _prepare_ollama_generate_payload(payload, ref.value)
-    print("[OLLAMA TRANSLATE PAYLOAD]", json.dumps(payload, ensure_ascii=False))
+    _log_json_payload("[OLLAMA TRANSLATE PAYLOAD]", payload)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib_request.Request(
         _ollama_generate_url(ref),
@@ -1783,6 +1921,77 @@ def _call_ollama_translate_raw(
 
 def _contains_cjk(text: str) -> bool:
     return bool(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", text or ""))
+
+
+def _target_requires_cjk(target_language: str) -> bool:
+    value = (target_language or "").strip().lower()
+    return "chinese" in value or any(
+        marker in value
+        for marker in ("中文", "汉语", "漢語", "简体", "簡體", "繁体", "繁體")
+    )
+
+
+def _source_has_translatable_language(text: str) -> bool:
+    value = re.sub(r"__MATH_\d+__", " ", text or "")
+    value = re.sub(r"\b(?:https?://|www\.)\S+", " ", value, flags=re.IGNORECASE)
+    return bool(re.search(r"[A-Za-z\u3400-\u9fff\uf900-\ufaff]", value))
+
+
+def _translation_needs_target_retry(
+    source_text: str,
+    translated_text: str,
+    target_language: str,
+) -> bool:
+    return (
+        _target_requires_cjk(target_language)
+        and _source_has_translatable_language(source_text)
+        and not _contains_cjk(translated_text)
+    )
+
+
+def _strict_chinese_target(target_language: str) -> str:
+    return (
+        f"{target_language}. Mandatory output requirement: the final answer must "
+        "contain Chinese characters. Translate technical terms into Chinese; when "
+        "an acronym or proper name must remain, add a concise Chinese explanation. "
+        "Never return the selected source text unchanged"
+    )
+
+
+async def _translate_with_target_guard(
+    protected_text: str,
+    model: str,
+    target_language: str,
+    context: Optional[str],
+) -> str:
+    translated = await asyncio.to_thread(
+        _call_ollama_translate_raw,
+        protected_text,
+        model,
+        target_language,
+        context,
+    )
+    if not _translation_needs_target_retry(
+        protected_text,
+        translated,
+        target_language,
+    ):
+        return translated
+
+    translated = await asyncio.to_thread(
+        _call_ollama_translate_raw,
+        protected_text,
+        model,
+        _strict_chinese_target(target_language),
+        context,
+    )
+    if _translation_needs_target_retry(
+        protected_text,
+        translated,
+        target_language,
+    ):
+        raise RuntimeError("Ollama translation did not satisfy the target language")
+    return translated
 
 
 def _remove_remaining_cjk_for_tts(text: str) -> str:
@@ -2429,28 +2638,36 @@ class TTSStreamSession:
 
 @app.get("/translate/health", response_model=TranslateHealthResponse)
 async def translate_health(model: Optional[str] = None):
-    """Report whether Ollama is reachable and the selected model is loaded."""
+    """Report selected-model compatibility fields and every configured source."""
     selected_model = (model or OLLAMA_TRANSLATE_MODEL).strip() or OLLAMA_TRANSLATE_MODEL
+    states = _collect_ollama_source_states()
+    available_model_options = _collect_ollama_model_options(states)
+    local_state = states.get("local")
+    local_compatible_models = (
+        list(local_state.eligible_models)
+        if local_state is not None and local_state.reachable
+        else []
+    )
+    source_payloads = [
+        {
+            "id": state.source.id,
+            "name": state.source.name,
+            "kind": "remote" if state.source.remote else "local",
+            "configured": True,
+            "reachable": state.reachable,
+            "error_code": state.error_code,
+            "models": state.models,
+        }
+        for state in states.values()
+    ]
+
     try:
         ref = _resolve_ollama_model_ref(selected_model)
-        base_url = None if ref.source.id == "local" else ref.source.base_url
-        if base_url:
-            available_models = _ollama_model_names(
-                _call_ollama_json("/api/tags", base_url=base_url)
-            )
-        else:
-            available_models = _ollama_model_names(_call_ollama_json("/api/tags"))
-        try:
-            if base_url:
-                running_models = _ollama_model_names(
-                    _call_ollama_json("/api/ps", base_url=base_url)
-                )
-            else:
-                running_models = _ollama_model_names(_call_ollama_json("/api/ps"))
-        except RuntimeError:
-            running_models = []
-        model_available = ref.model in available_models
-        model_running = ref.model in running_models
+        selected_state = states.get(ref.source.id)
+        if selected_state is None or not selected_state.reachable:
+            raise RuntimeError("Selected Ollama source is unreachable")
+        model_available = ref.model in selected_state.available_models
+        model_running = ref.model in selected_state.running_models
         status = "running" if model_running else "available" if model_available else "missing"
         return TranslateHealthResponse(
             status=status,
@@ -2459,11 +2676,12 @@ async def translate_health(model: Optional[str] = None):
             model_available=model_available,
             model_running=model_running,
             model_pinned=ref.value in PINNED_OLLAMA_MODELS,
-            available_models=available_models,
-            running_models=running_models,
+            available_models=local_compatible_models,
+            running_models=list(selected_state.running_models),
             source=ref.source.id,
             source_name=ref.source.name,
-            available_model_options=_collect_ollama_model_options(),
+            available_model_options=available_model_options,
+            sources=source_payloads,
         )
     except Exception as error:
         print(f"[ERROR] Ollama health check failed: {error}")
@@ -2485,18 +2703,19 @@ async def translate_health(model: Optional[str] = None):
             model_available=False,
             model_running=False,
             model_pinned=pinned,
-            available_models=[],
+            available_models=local_compatible_models,
             running_models=[],
             source=source_id,
             source_name=source_name,
-            available_model_options=_collect_ollama_model_options(),
+            available_model_options=available_model_options,
+            sources=source_payloads,
             error="Cannot connect to Ollama",
         )
 
 
 @app.post("/translate/model/keepalive", response_model=OllamaModelKeepAliveResponse)
 async def translate_model_keepalive(request: OllamaModelKeepAliveRequest):
-    """Preload a local Ollama model and keep it resident until explicitly unloaded."""
+    """Preload the selected Ollama model and keep it resident until unloaded."""
     t0 = time.perf_counter()
     model = _resolve_ollama_model_ref(request.model).value
     try:
@@ -2522,24 +2741,42 @@ async def translate_model_keepalive(request: OllamaModelKeepAliveRequest):
         )
     except RuntimeError as error:
         print(f"[ERROR] Ollama keep-alive failed: {error}")
-        raise HTTPException(status_code=502, detail="Local Ollama keep-alive failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Translation model keep-alive failed",
+        )
 
 
 @app.post("/translate/model/unload", response_model=OllamaModelKeepAliveResponse)
 async def translate_model_unload(request: OllamaModelUnloadRequest):
-    """Unload a local Ollama model and remove its keep-alive pin."""
+    """Unload the selected Ollama model and remove its keep-alive pin."""
     t0 = time.perf_counter()
     model = _resolve_ollama_model_ref(request.model).value
+    was_pinned = model in PINNED_OLLAMA_MODELS
+    PINNED_OLLAMA_MODELS.discard(model)
     try:
+        model_running_before = await asyncio.to_thread(
+            _ollama_model_is_running,
+            model,
+        )
+        if not model_running_before:
+            return OllamaModelKeepAliveResponse(
+                status="unloaded",
+                model=model,
+                keep_alive=0,
+                model_running=False,
+                model_pinned=False,
+                elapsed=round(time.perf_counter() - t0, 3),
+                done_reason="already_unloaded",
+            )
         result = await asyncio.to_thread(_call_ollama_model_keep_alive, model, 0)
-        PINNED_OLLAMA_MODELS.discard(model)
         model_running = await asyncio.to_thread(
             _wait_for_ollama_model_state,
             model,
             running=False,
         )
         return OllamaModelKeepAliveResponse(
-            status="unloaded",
+            status="still_running" if model_running else "unloaded",
             model=model,
             keep_alive=0,
             model_running=model_running,
@@ -2548,13 +2785,18 @@ async def translate_model_unload(request: OllamaModelUnloadRequest):
             done_reason=result.get("done_reason") if isinstance(result, dict) else None,
         )
     except RuntimeError as error:
+        if was_pinned:
+            PINNED_OLLAMA_MODELS.add(model)
         print(f"[ERROR] Ollama unload failed: {error}")
-        raise HTTPException(status_code=502, detail="Local Ollama unload failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Translation model unload failed",
+        )
 
 
 @app.post("/translate", response_model=TranslateResponse)
 async def translate_endpoint(request: TranslateRequest):
-    """Translate text through the local Ollama API."""
+    """Translate text through the explicitly selected Ollama source."""
     text = _normalize_llm_source_text(request.text.strip())
     if not text:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -2568,26 +2810,20 @@ async def translate_endpoint(request: TranslateRequest):
         # 1. 提取并保护公式，用 __MATH_N__ 占位符替代
         protected_text, formulas = _protect_formulas(text)
         
+        translated_raw = await _translate_with_target_guard(
+            protected_text,
+            model,
+            target_language,
+            context,
+        )
+
         if formulas:
             # 翻译只处理正文；公式通过占位符保护，最后恢复为前端可渲染的公式。
-            translated_raw = await asyncio.to_thread(
-                _call_ollama_translate_raw,
-                protected_text,
-                model,
-                target_language,
-                context,
-            )
             # 2. 还原公式，并将 [[MATH: ...]] 等统一渲染为前端可渲染的公式。
             translated_text = _restore_formulas_for_display(translated_raw, formulas)
         else:
             # 无公式，常规翻译
-            translated_text = await asyncio.to_thread(
-                _call_ollama_translate_raw,
-                protected_text,
-                model,
-                target_language,
-                context,
-            )
+            translated_text = translated_raw
 
         translated_text = _normalize_translated_math_wrappers(translated_text)
             
@@ -2598,7 +2834,7 @@ async def translate_endpoint(request: TranslateRequest):
         )
     except Exception as error:
         print(f"[ERROR] Translation failed: {error}")
-        raise HTTPException(status_code=502, detail="Local Ollama translation failed")
+        raise HTTPException(status_code=502, detail="Translation source failed")
 
     return TranslateResponse(
         text=text,
@@ -2646,7 +2882,7 @@ async def read_prepare_endpoint(request: ReadPrepareRequest):
 
 @app.post("/formula/verbalize", response_model=FormulaVerbalizeResponse)
 async def formula_verbalize_endpoint(request: FormulaVerbalizeRequest):
-    """Convert formulas into concise spoken English through local Ollama."""
+    """Convert formulas into concise spoken English through the selected source."""
     model = request.model or OLLAMA_FORMULA_MODEL
     context = _limit_model_context(request.context, model, "formula")
     try:

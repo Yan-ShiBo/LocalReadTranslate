@@ -1,11 +1,11 @@
 # 本地划词听译助手 - Local Selection Read & Translate
 
-> Select text in Chrome, then read it aloud with local [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) or translate it through local Ollama by default. You can also opt into a project-server Ollama source that you configure yourself.
+> Select text in Chrome, read it aloud with local [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), or translate it with a model that the local mediator has actually discovered from local or tray-configured Ollama sources.
 
 [![CI](https://github.com/Yan-ShiBo/LocalReadTranslate/actions/workflows/ci.yml/badge.svg)](https://github.com/Yan-ShiBo/LocalReadTranslate/actions/workflows/ci.yml)
 
 <p align="center">
-  <strong>Local read-aloud · Local-first translation · User-controlled remote option</strong>
+  <strong>Local read-aloud · Discovered translation models · Tray-managed remote access</strong>
 </p>
 
 ---
@@ -17,11 +17,12 @@
 - **Small audio payloads** — `/tts` can return OGG/Opus with `Accept: audio/ogg` or `?format=ogg`; WAV remains the default for compatibility
 - **17 voices** — American male/female + British female, easily switchable
 - **System tray app** — Runs silently in the background, right-click to control, with optional login auto-start
-- **Browser settings panel** — Change and persist voice, speed, translation model and target language from a floating gear icon
-- **Local-first translation** — Use local Ollama by default, or explicitly select a model exposed by the tray-managed project server
+- **Backend-driven source choice** — While the mediator is online, Local Ollama and Project Server remain explicit choices; the selected source shows either its one truthful recovery action or only its discovered generation models
+- **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
 - **Copy selection as LaTeX** — Copy selected prose without translation while converting detected MathJax/MathML/KaTeX formulas to LaTeX
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
-- **Manual Ollama residency** — Keep the selected translation model loaded while reading heavily, then unload it from the browser settings panel to free VRAM
+- **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
+- **Target-language guard** — Chinese targets that return all-English output are retried once with a strict same-model instruction; a second non-compliant result is reported as failure
 - **Context-aware selected translation** — Nearby text can be sent as reference context for terminology and pronoun disambiguation, but only the selected text is translated
 - **Model-aware context budgets** — 4B models ignore reference context for translation and formula read-aloud stability, while 9B/14B/larger models receive progressively longer context
 - **No-think Qwen3 requests** — Qwen3/QwQ/DeepSeek-R1 style reasoning models are called with Ollama `think: false` for lower latency in translation and read preparation
@@ -44,9 +45,10 @@
 │ Chrome + Tampermonkey│  ──────────────────────►  │ Local FastAPI broker  │
 │                      │      127.0.0.1:5000      │                       │
 │ Read / Translate     │  ◄──────────────────────  │ /tts → lazy Kokoro   │
-│ Settings actions     │                            │ /translate → Ollama │
+│ Backend status UI    │                            │ /translate → Ollama │
 └──────────────────────┘                            └──────────┬────────────┘
-           │ localreadtranslate://start          │
+           │ localreadtranslate://              │
+           │ start / ollama / remote             │
            ▼                                     ├─► Local Ollama
 ┌──────────────────────┐                 SSH/API    └─► Configured remote Ollama
 │ Windows tray app     │
@@ -89,7 +91,7 @@ pip install -r requirements.txt
 ### 3. Start the Server
 
 **Option A: System tray app** (recommended)
-- Double-click `Kokoro TTS.bat` — starts the tray app without relying on Windows `.pyw` file associations. On Windows, the tray app also creates or repairs the current-user `localreadtranslate://start` URL handler.
+- Double-click `Kokoro TTS.bat` — starts the tray app without relying on Windows `.pyw` file associations. On Windows, the tray app also creates or repairs the current-user `localreadtranslate://` URL handler used by the fixed `start`, `ollama`, and `remote` actions.
 
 **Option B: Terminal mode**
 - Double-click `start.bat` — shows a console window with logs
@@ -118,9 +120,9 @@ ollama pull translategemma:4b
 ollama pull qwen3:14b
 ```
 
-The default Ollama model is `translategemma:4b` for translation, read preparation and formula verbalization. Override it with `OLLAMA_TRANSLATE_MODEL`, `OLLAMA_READ_MODEL` or `OLLAMA_FORMULA_MODEL`, or change the translation model in the browser settings panel. The settings panel separates TTS and Translation controls, persists settings through Tampermonkey storage, shows whether the selected Ollama model is installed/running, includes a translation test button, and can keep the selected model loaded or unload it manually. Context passed to Ollama is capped by model size: 4B models ignore reference context for translation and read-time Chinese-to-English conversion, 9B models get moderate context, and 14B or larger models get longer context. Qwen3/QwQ/DeepSeek-R1 style reasoning models are sent to Ollama with top-level `think: false`, so `qwen3:14b` keeps its larger context budget without spending tokens on hidden reasoning.
+The server-side fallback model is `translategemma:4b` for translation, read preparation and formula verbalization; override it with `OLLAMA_TRANSLATE_MODEL`, `OLLAMA_READ_MODEL` or `OLLAMA_FORMULA_MODEL`. The userscript does not display that fallback as an installed model. Its selector is populated only from `/translate/health` models that belong to the explicitly selected, reachable source and are eligible for text generation; obvious embedding/reranking models are excluded. A valid model is remembered independently for each source. If it disappears, discovery may choose another real model from that same source, but never silently switches the translation source. Context passed to Ollama is capped by model size: 4B models ignore reference context for translation and read-time Chinese-to-English conversion, 9B models get moderate context, and 14B or larger models get longer context. Qwen3/QwQ/DeepSeek-R1 style reasoning models are sent to Ollama with top-level `think: false`.
 
-Use **Keep loaded** in the Translation settings when you plan to translate or read many selections with the same Ollama model. This preloads the model with `keep_alive: -1m` and keeps sending that setting for the pinned model, avoiding repeated first-token delays. Use **Unload** when you are done to release VRAM.
+Use **Keep loaded** in the Translation settings when you plan to translate or read many selections with the same Ollama model. This preloads the model with `keep_alive: -1m` and keeps sending that setting for the pinned model, avoiding repeated first-token delays. Use **Unload** when a model is running. If a pin remains after the model has already left `/api/ps`, Advanced shows **Remove keep-alive** and clears only the mediator pin without loading the model again.
 
 ### Remote Ollama over LAN
 
@@ -129,7 +131,7 @@ Right-click the Kokoro TTS tray icon and choose `Remote Service`. The bundled pr
 - `ssh`: uses your SSH agent, default keys, or matching `~/.ssh/config` entry first; an optional key file can be supplied explicitly, and a password is only used as fallback. The app loads system/OpenSSH host keys and rejects an unknown host, then forwards the remote Ollama endpoint through a local tunnel.
 - `api`: connects directly to an Ollama API base URL such as `http://10.12.96.203:11434` without creating a tunnel.
 
-After connecting, the browser model selector shows models as `Server Name / model`. The userscript never switches a local selection to a remote model automatically: click **Use project server** or choose a remote entry yourself. Ollama requests bypass ambient HTTP proxy settings so loopback and LAN prompts are not sent through an unrelated proxy.
+The Translation panel always keeps a **Project Server** source row while the mediator is online. Select it and use **Connect** only when it is disconnected; this fixed action opens the tray-owned `Remote Service` dialog without exposing credentials to the page. After the tray connects, the row changes to **Connected**, the redundant action disappears, and only that server's eligible models are shown. A valid model is remembered per source, and translation failures never silently switch sources. Ollama requests bypass ambient HTTP proxy settings so loopback and LAN prompts are not sent through an unrelated proxy.
 
 The browser script never receives the SSH password or key path. The tray app stores the remote profile in the ignored `tray_settings.json` file. This file is not encrypted: if you enter a fallback password, it is stored as plaintext on this computer. Prefer an SSH agent, OpenSSH config or a key file, and protect the local account and file permissions.
 
@@ -154,10 +156,15 @@ Editing the repository file does not update a copy already installed in Tampermo
 1. Open any webpage
 2. **Select text** → floating `Read`, `Translate`, and `Copy` buttons appear
 3. Click `Read` for local English TTS with background formula verbalization, `Translate` with the selected local or remote Ollama model, or `Copy` to copy the selection while preserving formulas as LaTeX
-4. Open the gear panel for explicit service actions:
-   - **Use project server** refreshes remote options, keeps an already available remote choice or selects the first available remote model, saves it, and checks that model's remote health. It does not establish SSH credentials or a tunnel; configure and connect `Remote Service` in the tray app first.
-   - **Initialize local model** calls Ollama keep-alive for the selected local translation model. Select a local model first; this action does not load Kokoro.
-   - **Start local service** opens `localreadtranslate://start`. After the browser's external-app confirmation, it starts a new tray instance or wakes the existing tray to start FastAPI, then polls `/health` for about 20 seconds. It does not initialize either model by itself.
+4. Open the gear panel to choose the route first and then the model:
+   - while the mediator is online, **Local Ollama** and **Project Server** remain visible as separate source rows, even when one of them is offline;
+   - select **Local Ollama** to see only discovered local generation models; if it is offline, the row shows **Start**, which opens the fixed `localreadtranslate://ollama` action and waits for local Ollama;
+   - select **Project Server** to see only that server's discovered generation models; if it is disconnected, the row shows **Connect**, which opens the tray-owned Remote Service dialog; an already connected server never asks you to connect again;
+   - a reachable selected source with no eligible generation model remains visibly connected and asks for a generation model instead of inventing options;
+   - **Start local service** appears only while the mediator itself is offline and opens `localreadtranslate://start`; model, translation-test, Advanced and Read aloud controls stay hidden in that state;
+   - a failed translation-health request becomes an explicit **Unavailable** state rather than leaving a contradictory **Checking** badge;
+   - target language and applicable model residency actions are under **Advanced**; voice/speed controls are under **Read aloud**;
+   - remote credentials and connection lifecycle remain in the tray app's `Remote Service` dialog, never in the webpage.
 
 > ⌨️ Shortcut: `Ctrl+Shift+S` to read selected text directly.
 
@@ -167,7 +174,7 @@ If the floating gear does not appear on a site such as Gemini, first check Tampe
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.13.0`.
+The current repository metadata version is `1.15.1` (FastAPI `1.7.15`).
 
 For each release:
 
@@ -198,7 +205,7 @@ browser script and built-in test page are generated from this catalog.
 | `server.py` | FastAPI server with Kokoro TTS inference |
 | `audio_encoding.py` | Bundled FFmpeg helpers for OGG/Opus and WebM/Opus |
 | `tray_app.py` | System tray application (background mode) |
-| `windows_protocol.py` | Per-user `localreadtranslate://start` registration and validation |
+| `windows_protocol.py` | Per-user `localreadtranslate://` registration and exact validation for the fixed `start`, `ollama`, and `remote` actions |
 | `windows_startup.py` | Windows Startup shortcut management for tray auto-start |
 | `Kokoro TTS.bat` | Recommended tray launcher; does not require `.pyw` file association |
 | `Kokoro TTS.pyw` | No-console launcher for tray app |
@@ -210,7 +217,8 @@ browser script and built-in test page are generated from this catalog.
 | `requirements-test.txt` | Lightweight CI/test dependencies (no Torch/Kokoro) |
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
-| `docs/iteration-4-2026-07-18.md` | Current service-control and remote-translation release record |
+| `docs/iteration-5-2026-07-23.md` | Current backend-driven translation/settings release record |
+| `docs/iteration-4-2026-07-18.md` | Historical service-control and remote-translation release record |
 | `.github/workflows/ci.yml` | Windows CI |
 
 ## 🔌 API
@@ -270,15 +278,15 @@ Fallback endpoint returning concise spoken English descriptions for formulas tha
 
 ### `GET /translate/health?model=translategemma:4b`
 
-Checks the selected Ollama source without starting a translation. A plain model name selects local Ollama; `remote:<source-id>:<model>` selects a tray-configured remote source. The response reports source metadata, available model options, installation/running state and whether this service pinned the model.
+Checks translation sources without starting a translation. A plain model name selects local Ollama; `remote:<source-id>:<model>` selects a tray-configured remote source. Compatibility fields still describe the selected model, while `sources[]` independently reports each configured source's safe ID/name/kind, reachability and models with `running`, `pinned` and `usable_for_translation`. It never exposes remote URLs, hosts, ports or credentials. `available_model_options` is the flattened selector list and excludes non-generation models.
 
 ### `POST /translate/model/keepalive`
 
-Preloads the selected local or remote Ollama model and keeps it resident. The explicit **Initialize local model** action accepts only a local selection, while the general **Keep loaded** action follows the currently selected source.
+Preloads the selected local or remote Ollama model and keeps it resident. The contextual **Load & keep / Keep loaded** action follows the currently selected source.
 
 ### `POST /translate/model/unload`
 
-Unloads the selected local or remote Ollama model and removes its source-aware keep-alive pin.
+Removes the source-aware pin and checks the selected local or remote source first. If the model is already absent from `/api/ps`, the endpoint returns `unloaded` without sending a generation request; otherwise it sends explicit `keep_alive: 0` and reports `unloaded` only after absence is confirmed. A model that remains present is reported as `still_running` with `model_running: true`.
 
 ### `GET /health` — API and TTS status
 
@@ -299,13 +307,13 @@ conda run -n kokoro-tts python windows_protocol.py register
 
 Chrome may ask whether it can open an external application; allow it only when you intentionally clicked the button. If the project folder moved, register again so the absolute handler paths point at the new location. You can always start manually with `Kokoro TTS.bat`.
 
-### The project-server button finds no models
+### The Project Server row has no models
 
-The browser cannot log in to SSH or read credentials. Open the tray menu, configure and connect **Remote Service**, wait for the local API restart, then click **Use project server** again. For Direct API mode, confirm `/api/tags` is reachable directly from this computer without an HTTP proxy.
+Select **Project Server** in the Translation panel. If it is disconnected, click **Connect** to open the tray-owned **Remote Service** dialog, configure it there, and connect. Once reachable, the row changes to **Connected** and its generation models appear without another connection step. If it has only embedding/reranking models, the selector remains empty. For Direct API mode, confirm `/api/tags` is reachable directly from this computer without an HTTP proxy.
 
-### Local model initialization fails
+### A local model does not appear
 
-Select a non-`remote:` model, make sure local Ollama is running and pull the model first. **Initialize local model** controls the translation model only; Kokoro is loaded by the first **Read** request.
+Select **Local Ollama** in the Translation panel. If it is offline, click **Start**; the tray starts the installed `ollama serve` process and the page waits for discovery. Pull a generation model if the connected row is still empty. The panel never invents defaults or mixes server models into the local selector. Once discovered, use **Advanced → Load & keep** if residency is useful. Kokoro is independent and loads only on the first **Read** request.
 
 ## ✅ Tests
 
@@ -321,7 +329,7 @@ git diff --check
 ```
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
-The current release record is in [`docs/iteration-4-2026-07-18.md`](docs/iteration-4-2026-07-18.md); the original expert review remains in `docs/expert-review-2026-06-15.md` as history.
+The current release record is in [`docs/iteration-5-2026-07-23.md`](docs/iteration-5-2026-07-23.md); iteration 4 and the original expert review remain as history.
 
 ## License
 

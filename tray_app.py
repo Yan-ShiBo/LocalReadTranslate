@@ -15,6 +15,7 @@ import json
 import os
 import signal
 import select
+import shutil
 import socket
 import socketserver
 import subprocess
@@ -32,7 +33,7 @@ from tts_catalog import (
     SPEEDS,
     VOICE_GROUPS,
 )
-from windows_protocol import ensure_start_protocol_registered, is_start_protocol_url
+from windows_protocol import ensure_start_protocol_registered, parse_protocol_action
 from windows_runtime import WindowsNamedAutoResetEvent, WindowsNamedMutex
 from windows_startup import (
     StartupShortcutError,
@@ -55,6 +56,13 @@ LOG_FILE = APP_DATA_DIR / "server.log"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
 START_SERVER_EVENT_NAME = r"Local\LocalReadTranslate.StartServer"
+START_OLLAMA_EVENT_NAME = r"Local\LocalReadTranslate.StartOllama"
+OPEN_REMOTE_EVENT_NAME = r"Local\LocalReadTranslate.OpenRemote"
+PROTOCOL_EVENT_NAMES = {
+    "start": START_SERVER_EVENT_NAME,
+    "ollama": START_OLLAMA_EVENT_NAME,
+    "remote": OPEN_REMOTE_EVENT_NAME,
+}
 
 VOICES = {
     group["label_en"]: [
@@ -415,6 +423,7 @@ class TrayApp:
         *,
         start_background_tasks=True,
         enable_windows_protocol=True,
+        initial_protocol_action=None,
     ):
         self.server_process = None
         self.owns_server = False
@@ -427,9 +436,14 @@ class TrayApp:
         self.remote_tunnel = None
         self.remote_tunnel_local_port = None
         self._enable_windows_protocol = bool(enable_windows_protocol)
+        self._initial_protocol_action = initial_protocol_action
         self._start_server_event = None
+        self._start_ollama_event = None
+        self._open_remote_event = None
         self._protocol_listener_stop = threading.Event()
         self._protocol_listener_thread = None
+        self._protocol_listener_threads = []
+        self._local_ollama_process = None
         # 缓存开机自启状态，避免右键托盘菜单渲染时同步拉起 PowerShell 子进程导致系统假死
         self.auto_start_cached = bool(self.settings.get("auto_start", False))
         if self._enable_windows_protocol:
@@ -455,26 +469,119 @@ class TrayApp:
 
         if not start_listener:
             return
-        try:
-            event = WindowsNamedAutoResetEvent(START_SERVER_EVENT_NAME).create()
-        except Exception:
-            return
-        self._start_server_event = event
-        listener = threading.Thread(
-            target=self._listen_for_start_server_requests,
-            daemon=True,
+        event_specs = (
+            (
+                "_start_server_event",
+                START_SERVER_EVENT_NAME,
+                self._listen_for_start_server_requests,
+            ),
+            (
+                "_start_ollama_event",
+                START_OLLAMA_EVENT_NAME,
+                self._listen_for_start_ollama_requests,
+            ),
+            (
+                "_open_remote_event",
+                OPEN_REMOTE_EVENT_NAME,
+                self._listen_for_remote_service_requests,
+            ),
         )
-        self._protocol_listener_thread = listener
-        listener.start()
+        for attribute, event_name, listener_target in event_specs:
+            try:
+                event = WindowsNamedAutoResetEvent(event_name).create()
+            except Exception:
+                continue
+            setattr(self, attribute, event)
+            listener = threading.Thread(target=listener_target, daemon=True)
+            self._protocol_listener_threads.append(listener)
+            if attribute == "_start_server_event":
+                self._protocol_listener_thread = listener
+            listener.start()
 
-    def _listen_for_start_server_requests(self):
+    def _listen_for_protocol_requests(self, event, callback):
+        if event is None:
+            return
         while not self._protocol_listener_stop.is_set():
             try:
-                requested = self._start_server_event.wait(timeout_ms=500)
+                requested = event.wait(timeout_ms=500)
             except Exception:
                 return
             if requested and not self._protocol_listener_stop.is_set():
-                self.start_server()
+                callback()
+
+    def _listen_for_start_server_requests(self):
+        self._listen_for_protocol_requests(self._start_server_event, self.start_server)
+
+    def _listen_for_start_ollama_requests(self):
+        self._listen_for_protocol_requests(
+            self._start_ollama_event,
+            self.start_local_ollama,
+        )
+
+    def _listen_for_remote_service_requests(self):
+        self._listen_for_protocol_requests(
+            self._open_remote_event,
+            self.open_remote_service_settings,
+        )
+
+    def local_ollama_is_reachable(self):
+        """Return whether the native loopback Ollama API is healthy."""
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open("http://127.0.0.1:11434/api/tags", timeout=1) as response:
+                payload = json.load(response)
+            return response.status == 200 and isinstance(payload.get("models"), list)
+        except (OSError, ValueError, AttributeError, urllib.error.URLError):
+            return False
+
+    def find_ollama_executable(self):
+        """Find an installed Ollama CLI without accepting a browser-provided path."""
+        discovered = shutil.which("ollama")
+        if discovered:
+            return Path(discovered)
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidate = Path(local_app_data) / "Programs" / "Ollama" / "ollama.exe"
+            if candidate.is_file():
+                return candidate
+        candidate = Path.home() / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe"
+        return candidate if candidate.is_file() else None
+
+    def start_local_ollama(self, _=None):
+        """Start native Ollama once and verify its loopback API becomes reachable."""
+        if self.local_ollama_is_reachable():
+            return True
+        executable = self.find_ollama_executable()
+        if executable is None:
+            self.show_error(
+                "Local Ollama",
+                "Ollama is not installed or could not be found.",
+            )
+            return False
+        try:
+            self._local_ollama_process = subprocess.Popen(
+                [str(executable), "serve"],
+                cwd=str(executable.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as error:
+            self.show_error("Local Ollama", f"Unable to start Ollama: {error}")
+            return False
+
+        for _attempt in range(20):
+            time.sleep(0.5)
+            if self.local_ollama_is_reachable():
+                return True
+            if self._local_ollama_process.poll() is not None:
+                break
+        self.show_error(
+            "Local Ollama",
+            "Ollama was started but its local API did not become ready.",
+        )
+        return False
 
     def get_health(self, port=DEFAULT_PORT):
         try:
@@ -964,15 +1071,29 @@ class TrayApp:
         watchdog = self._schedule_force_exit()
         try:
             self._protocol_listener_stop.set()
-            if self._start_server_event is not None:
+            protocol_events = (
+                self._start_server_event,
+                self._start_ollama_event,
+                self._open_remote_event,
+            )
+            for event in protocol_events:
+                if event is None:
+                    continue
                 try:
-                    self._start_server_event.set()
-                    if (
-                        self._protocol_listener_thread is not None
-                        and self._protocol_listener_thread is not threading.current_thread()
-                    ):
-                        self._protocol_listener_thread.join(timeout=1)
-                    self._start_server_event.close()
+                    event.set()
+                except Exception:
+                    pass
+            for listener in self._protocol_listener_threads:
+                if listener is not threading.current_thread():
+                    try:
+                        listener.join(timeout=1)
+                    except Exception:
+                        pass
+            for event in protocol_events:
+                if event is None:
+                    continue
+                try:
+                    event.close()
                 except Exception:
                     pass
             try:
@@ -1067,6 +1188,14 @@ class TrayApp:
 
         # Auto-start server
         threading.Thread(target=self.start_server, daemon=True).start()
+        if self._initial_protocol_action in {"ollama", "remote"}:
+            action = self._initial_protocol_action
+            target = (
+                self.start_local_ollama
+                if action == "ollama"
+                else self.open_remote_service_settings
+            )
+            threading.Thread(target=target, daemon=True).start()
 
         icon.run()
 
@@ -1077,11 +1206,16 @@ class TrayApp:
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    start_requested = any(is_start_protocol_url(value) for value in args)
+    protocol_action = next(
+        (action for value in args if (action := parse_protocol_action(value))),
+        None,
+    )
     instance_mutex = WindowsNamedMutex(r"Local\KokoroTTS.Tray")
     if not instance_mutex.acquire():
-        if start_requested:
-            WindowsNamedAutoResetEvent.signal_existing(START_SERVER_EVENT_NAME)
+        if protocol_action:
+            WindowsNamedAutoResetEvent.signal_existing(
+                PROTOCOL_EVENT_NAMES[protocol_action]
+            )
             return 0
         import ctypes
 
@@ -1093,7 +1227,7 @@ def main(argv=None):
         )
         return 0
     try:
-        app = TrayApp()
+        app = TrayApp(initial_protocol_action=protocol_action)
         app.run()
     finally:
         instance_mutex.close()

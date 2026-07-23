@@ -3,12 +3,16 @@ from io import StringIO
 from pathlib import Path
 
 from windows_protocol import (
+    OLLAMA_PROTOCOL_URL,
     PROTOCOL_REGISTRY_PATH,
+    REMOTE_PROTOCOL_URL,
+    START_PROTOCOL_URL,
     ProtocolRegistrationError,
     build_start_protocol_command,
     ensure_start_protocol_registered,
     is_start_protocol_url,
     main as protocol_main,
+    parse_protocol_action,
     unregister_start_protocol,
 )
 
@@ -119,10 +123,21 @@ class WindowsProtocolCommandTests(unittest.TestCase):
                 platform_name="nt",
             )
 
-    def test_only_start_url_is_recognized_as_a_start_request(self):
+    def test_fixed_protocol_actions_are_parsed_without_payloads(self):
         self.assertTrue(is_start_protocol_url("localreadtranslate://start"))
         self.assertTrue(is_start_protocol_url("LOCALREADTRANSLATE://START/"))
-        self.assertFalse(is_start_protocol_url("localreadtranslate://settings"))
+        self.assertEqual(parse_protocol_action(START_PROTOCOL_URL), "start")
+        self.assertEqual(parse_protocol_action(OLLAMA_PROTOCOL_URL), "ollama")
+        self.assertEqual(parse_protocol_action(REMOTE_PROTOCOL_URL), "remote")
+        self.assertEqual(parse_protocol_action("LOCALREADTRANSLATE://REMOTE/"), "remote")
+
+    def test_protocol_parser_rejects_unknown_or_parameterized_actions(self):
+        self.assertIsNone(parse_protocol_action("localreadtranslate://settings"))
+        self.assertIsNone(parse_protocol_action("localreadtranslate://ollama/extra"))
+        self.assertIsNone(parse_protocol_action("localreadtranslate://remote?host=secret"))
+        self.assertIsNone(parse_protocol_action("localreadtranslate://remote#dialog"))
+        self.assertIsNone(parse_protocol_action("https://start"))
+        self.assertFalse(is_start_protocol_url("localreadtranslate://remote"))
         self.assertFalse(is_start_protocol_url("https://start"))
 
     def test_register_cli_defaults_to_current_pythonw_and_sibling_tray_script(self):

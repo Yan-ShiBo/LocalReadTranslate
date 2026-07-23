@@ -1,4 +1,4 @@
-"""Per-user Windows URL protocol support for starting LocalReadTranslate."""
+"""Per-user Windows URL protocol support for fixed LocalReadTranslate actions."""
 
 import argparse
 import os
@@ -9,6 +9,9 @@ from urllib.parse import urlsplit
 
 PROTOCOL_SCHEME = "localreadtranslate"
 START_PROTOCOL_URL = f"{PROTOCOL_SCHEME}://start"
+OLLAMA_PROTOCOL_URL = f"{PROTOCOL_SCHEME}://ollama"
+REMOTE_PROTOCOL_URL = f"{PROTOCOL_SCHEME}://remote"
+PROTOCOL_ACTIONS = frozenset({"start", "ollama", "remote"})
 PROTOCOL_REGISTRY_PATH = rf"Software\Classes\{PROTOCOL_SCHEME}"
 
 
@@ -21,19 +24,27 @@ def build_start_protocol_command(pythonw: Path, tray_script: Path) -> str:
     return f'"{Path(pythonw)}" "{Path(tray_script)}" "%1"'
 
 
-def is_start_protocol_url(value: str) -> bool:
-    """Return whether *value* is the supported one-click start URL."""
+def parse_protocol_action(value: str) -> str | None:
+    """Return a supported payload-free action, or ``None`` for any other URL."""
     try:
         parsed = urlsplit(str(value or "").strip())
     except ValueError:
-        return False
-    return (
+        return None
+    action = parsed.netloc.lower()
+    if (
         parsed.scheme.lower() == PROTOCOL_SCHEME
-        and parsed.netloc.lower() == "start"
+        and action in PROTOCOL_ACTIONS
         and parsed.path in {"", "/"}
         and not parsed.query
         and not parsed.fragment
-    )
+    ):
+        return action
+    return None
+
+
+def is_start_protocol_url(value: str) -> bool:
+    """Return whether *value* is the supported one-click mediator start URL."""
+    return parse_protocol_action(value) == "start"
 
 
 def _set_string_value(registry, key, name: str, value: str) -> bool:

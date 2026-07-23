@@ -427,73 +427,67 @@ test("bare LaTeX formulas use rules or LLM fallback", () => {
   assert.match(complex.text, /__LOCAL_READ_FORMULA_0__/);
 });
 
-test("model option merge includes remote health metadata", () => {
-  const { mergeTranslationModelOptions } = require("../tts-userscript.js");
-  const merged = mergeTranslationModelOptions(
-    [{ value: "translategemma:4b", label: "translategemma:4b - default" }],
-    {
-      available_models: ["translategemma:4b"],
-      available_model_options: [
-        {
-          value: "remote:lab-server:qwen3:14b",
-          label: "Lab Server / qwen3:14b",
-          source: "lab-server",
-          source_name: "Lab Server",
-          model: "qwen3:14b",
-        },
-      ],
-    },
-    "remote:lab-server:qwen3:14b"
-  );
+test("translation model options come only from backend discovery", () => {
+  const { getTranslationModelOptions } = require("../tts-userscript.js");
+  const options = getTranslationModelOptions({
+    available_models: ["legacy-local-model:4b"],
+    available_model_options: [
+      {
+        value: "remote:lab-server:qwen3:14b",
+        label: "Lab Server / qwen3:14b",
+        source: "lab-server",
+        source_name: "Lab Server",
+        model: "qwen3:14b",
+      },
+      {
+        value: "remote:lab-server:qwen3:14b",
+        label: "duplicate",
+      },
+    ],
+  });
 
-  assert.deepEqual(merged, [
-    { value: "translategemma:4b", label: "translategemma:4b - default" },
-    { value: "remote:lab-server:qwen3:14b", label: "Lab Server / qwen3:14b" },
+  assert.deepEqual(options, [
+    {
+      value: "remote:lab-server:qwen3:14b",
+      label: "Lab Server / qwen3:14b",
+      source: "lab-server",
+      sourceName: "Lab Server",
+      model: "qwen3:14b",
+    },
   ]);
 });
 
-test("translation model fallback never opts into a remote model silently", () => {
-  const { chooseTranslationModelFallback } = require("../tts-userscript.js");
-
-  const selected = chooseTranslationModelFallback(
-    {
-      available_model_options: [
-        {
-          value: "remote:project-server:qwen3:14b",
-          label: "Project Server / qwen3:14b",
-          source: "project-server",
-          model: "qwen3:14b",
-        },
-      ],
-    },
-    "translategemma:4b",
-    "translategemma:4b"
+test("normal translation settings contain no static or custom model catalog", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
   );
 
-  assert.equal(selected, "translategemma:4b");
+  assert.doesNotMatch(source, /const\s+TRANSLATION_MODELS\b/);
+  assert.doesNotMatch(source, /tts-translate-model-input/);
+  assert.doesNotMatch(source, /appendLabeledControl\([^\n]*"Custom model"/);
 });
 
-test("translation model fallback preserves an available remote selection", () => {
-  const { chooseTranslationModelFallback } = require("../tts-userscript.js");
+test("translation model discovery preserves an available remote selection", () => {
+  const { chooseTranslationModel } = require("../tts-userscript.js");
   const remoteModel = "remote:project-server:qwen3:14b";
 
-  const selected = chooseTranslationModelFallback(
+  const selected = chooseTranslationModel(
     {
       available_model_options: [
         { value: remoteModel, label: "Project Server / qwen3:14b" },
       ],
     },
-    remoteModel,
-    "translategemma:4b"
+    remoteModel
   );
 
   assert.equal(selected, remoteModel);
 });
 
-test("translation model fallback preserves an unavailable explicit local selection", () => {
-  const { chooseTranslationModelFallback } = require("../tts-userscript.js");
+test("translation model discovery replaces a missing model from the same source first", () => {
+  const { chooseTranslationModel } = require("../tts-userscript.js");
 
-  const selected = chooseTranslationModelFallback(
+  const selected = chooseTranslationModel(
     {
       available_model_options: [
         {
@@ -508,83 +502,135 @@ test("translation model fallback preserves an unavailable explicit local selecti
         },
       ],
     },
-    "translategemma:4b",
-    "translategemma:4b"
+    "missing-local-model:4b"
   );
 
-  assert.equal(selected, "translategemma:4b");
+  assert.equal(selected, "qwen3:4b");
 });
 
-test("project server action explicitly selects the first remote model", () => {
-  const {
-    chooseProjectServerTranslationModel,
-    getRemoteTranslationModelOptions,
-  } = require("../tts-userscript.js");
+test("translation model discovery prefers the persisted remote source", () => {
+  const { chooseTranslationModel } = require("../tts-userscript.js");
+  const selected = chooseTranslationModel(
+    {
+      available_model_options: [
+        { value: "qwen3:4b", label: "Local Ollama / qwen3:4b", source: "local" },
+        {
+          value: "remote:project-server:qwen3:14b",
+          label: "Project Server / qwen3:14b",
+          source: "project-server",
+        },
+      ],
+    },
+    "remote:project-server:missing:30b"
+  );
+
+  assert.equal(selected, "remote:project-server:qwen3:14b");
+});
+
+test("translation model discovery uses the first reachable source or stays empty", () => {
+  const { chooseTranslationModel } = require("../tts-userscript.js");
+  const remoteModel = "remote:project-server:qwen3:14b";
+
+  assert.equal(
+    chooseTranslationModel(
+      { available_model_options: [{ value: remoteModel, label: "Project Server / qwen3:14b" }] },
+      "missing-local-model:4b"
+    ),
+    remoteModel
+  );
+  assert.equal(chooseTranslationModel({}, "translategemma:4b"), "");
+});
+
+test("translation model discovery stays inside the explicitly selected source", () => {
+  const { chooseTranslationModel, getTranslationModelOptions } = require("../tts-userscript.js");
   const payload = {
     available_model_options: [
       { value: "qwen3:4b", label: "Local Ollama / qwen3:4b", source: "local" },
       {
-        value: "remote:project-server:qwen3:14b",
-        label: "Project Server / qwen3:14b",
+        value: "remote:project-server:qwen3:30b",
+        label: "Project Server / qwen3:30b",
         source: "project-server",
       },
     ],
   };
 
-  assert.deepEqual(getRemoteTranslationModelOptions(payload), [
-    {
-      value: "remote:project-server:qwen3:14b",
-      label: "Project Server / qwen3:14b",
-    },
-  ]);
-  assert.deepEqual(chooseProjectServerTranslationModel(payload, "qwen3:4b"), {
-    count: 1,
-    value: "remote:project-server:qwen3:14b",
-    label: "Project Server / qwen3:14b",
-    message: "Using Project Server / qwen3:14b. Checking remote model status...",
-  });
-});
-
-test("project server action preserves an available remote selection", () => {
-  const { chooseProjectServerTranslationModel } = require("../tts-userscript.js");
-  const current = "remote:project-server:qwen3:8b";
-  const payload = {
-    available_model_options: [
-      {
-        value: "remote:project-server:qwen3:14b",
-        label: "Project Server / qwen3:14b",
-      },
-      { value: current, label: "Project Server / qwen3:8b" },
-    ],
-  };
-
-  assert.deepEqual(chooseProjectServerTranslationModel(payload, current), {
-    count: 2,
-    value: current,
-    label: "Project Server / qwen3:8b",
-    message: "Using Project Server / qwen3:8b. Checking remote model status...",
-  });
-});
-
-test("project server action explains when tray remote service is not connected", () => {
-  const { chooseProjectServerTranslationModel } = require("../tts-userscript.js");
-
-  assert.deepEqual(chooseProjectServerTranslationModel({}, "translategemma:4b"), {
-    count: 0,
-    value: "",
-    label: "",
-    message: "No project server models found. Configure and connect Remote Service in the local tray app, then try again.",
-  });
-});
-
-test("local model initialization rejects an explicitly selected remote model", () => {
-  const { getLocalModelInitializationError } = require("../tts-userscript.js");
-
-  assert.equal(
-    getLocalModelInitializationError("remote:project-server:qwen3:14b"),
-    "Choose a local model before initializing. Remote models are started by the project server."
+  assert.deepEqual(
+    getTranslationModelOptions(payload, "local").map((item) => item.value),
+    ["qwen3:4b"]
   );
-  assert.equal(getLocalModelInitializationError("translategemma:4b"), "");
+  assert.equal(
+    chooseTranslationModel(payload, "remote:project-server:qwen3:30b", "local"),
+    "qwen3:4b"
+  );
+  assert.equal(
+    chooseTranslationModel(payload, "qwen3:4b", "missing-remote"),
+    ""
+  );
+});
+
+test("translation request builder requires a discovered model and normalizes target", () => {
+  const { buildTranslationRequest } = require("../tts-userscript.js");
+
+  assert.deepEqual(
+    buildTranslationRequest({
+      text: "Hello\nworld",
+      context: "Context\nline",
+      model: " remote:project-server:qwen3:14b ",
+      targetLanguage: "",
+    }),
+    {
+      text: "Hello world",
+      context: "Context line",
+      model: "remote:project-server:qwen3:14b",
+      target_language: "Simplified Chinese",
+    }
+  );
+  assert.throws(
+    () => buildTranslationRequest({ text: "Hello", model: "" }),
+    /No translation model is available/
+  );
+  assert.throws(
+    () => buildTranslationRequest({
+      text: "Hello",
+      model: "remote:project-server:qwen3:14b",
+      source: "local",
+    }),
+    /does not belong to the selected source/
+  );
+});
+
+test("translation preferences migrate the legacy model into its owning source", () => {
+  const { normalizeTranslationPreferences } = require("../tts-userscript.js");
+  const legacyRemote = "remote:project-server:qwen3:30b";
+
+  assert.deepEqual(normalizeTranslationPreferences({ translateModel: legacyRemote }), {
+    translationSource: "project-server",
+    translationModels: { "project-server": legacyRemote },
+    translateModel: legacyRemote,
+  });
+  assert.deepEqual(normalizeTranslationPreferences({}), {
+    translationSource: "local",
+    translationModels: {},
+    translateModel: "",
+  });
+  assert.deepEqual(
+    normalizeTranslationPreferences({
+      translationSource: "local",
+      translationModels: {
+        local: "qwen3:4b",
+        "project-server": legacyRemote,
+      },
+      translateModel: legacyRemote,
+    }),
+    {
+      translationSource: "local",
+      translationModels: {
+        local: "qwen3:4b",
+        "project-server": legacyRemote,
+      },
+      translateModel: "qwen3:4b",
+    }
+  );
 });
 
 test("local service control distinguishes offline, starting, and running states", () => {
@@ -648,22 +694,337 @@ test("local service health accepts only the Kokoro API readiness contract", () =
   );
 });
 
-test("settings expose explicit project, local initialization, and protocol launch controls", () => {
+test("settings view shows only local service launch while mediator is offline", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: false,
+    starting: false,
+    selectedModel: "remote:project-server:qwen3:30b",
+  });
+
+  assert.equal(view.mode, "offline");
+  assert.equal(view.statusLabel, "Offline");
+  assert.equal(view.message, "Local service is not running.");
+  assert.equal(view.showStartService, true);
+  assert.equal(view.showModelSelect, false);
+  assert.equal(view.showTestTranslation, false);
+  assert.equal(view.showAdvanced, false);
+  assert.equal(view.showTranslationOutput, false);
+  assert.equal(view.showReadAloud, false);
+});
+
+test("settings view keeps local available as a startable source while remote is connected", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const model = "remote:project-server:qwen3:30b";
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    selectedSource: "local",
+    selectedModel: "",
+    payload: {
+      available_model_options: [
+        {
+          value: model,
+          label: "Project Server / qwen3:30b",
+          source: "project-server",
+          source_name: "Project Server",
+          model: "qwen3:30b",
+        },
+      ],
+      sources: [
+        {
+          id: "local",
+          name: "Local Ollama",
+          kind: "local",
+          reachable: false,
+          models: [],
+        },
+        {
+          id: "project-server",
+          name: "Project Server",
+          kind: "remote",
+          reachable: true,
+          models: [
+            {
+              value: model,
+              name: "qwen3:30b",
+              running: false,
+              pinned: false,
+              usable_for_translation: true,
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(view.mode, "source-offline");
+  assert.equal(view.activeSource, "local");
+  assert.equal(view.sourceRows.length, 2);
+  assert.deepEqual(
+    view.sourceRows.map(({ id, selected, reachable, statusLabel, action }) => ({
+      id, selected, reachable, statusLabel, action,
+    })),
+    [
+      {
+        id: "local",
+        selected: true,
+        reachable: false,
+        statusLabel: "Offline",
+        action: { visible: true, type: "start-ollama", label: "Start" },
+      },
+      {
+        id: "project-server",
+        selected: false,
+        reachable: true,
+        statusLabel: "Connected",
+        action: { visible: false, type: "connect-server", label: "Connect" },
+      },
+    ]
+  );
+  assert.deepEqual(view.modelOptions, []);
+  assert.equal(view.selectedModel, "");
+  assert.equal(view.showStartOllama, true);
+  assert.equal(view.showConnectServer, false);
+  assert.equal(view.showStartService, false);
+  assert.equal(view.showModelSelect, false);
+  assert.equal(view.showTestTranslation, false);
+  assert.equal(view.showAdvanced, false);
+  assert.equal(view.showTranslationOutput, false);
+  assert.equal(view.showReadAloud, true);
+  assert.equal(view.showSourceMessage, true);
+  assert.deepEqual(view.keepAction, { visible: false, label: "Load & keep" });
+  assert.deepEqual(view.unloadAction, { visible: false, label: "Unload" });
+});
+
+test("settings view shows only connected server models when server is selected", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const remoteModel = "remote:project-server:qwen3:30b";
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    selectedSource: "project-server",
+    selectedModel: remoteModel,
+    payload: {
+      available_model_options: [
+        { value: "qwen3:4b", label: "Local Ollama / qwen3:4b", source: "local" },
+        {
+          value: remoteModel,
+          label: "Project Server / qwen3:30b",
+          source: "project-server",
+          source_name: "Project Server",
+          model: "qwen3:30b",
+        },
+      ],
+      sources: [
+        { id: "local", name: "Local Ollama", kind: "local", reachable: true, models: [] },
+        {
+          id: "project-server",
+          name: "Project Server",
+          kind: "remote",
+          reachable: true,
+          models: [{ value: remoteModel, name: "qwen3:30b", running: false, pinned: false }],
+        },
+      ],
+    },
+  });
+
+  assert.equal(view.mode, "ready");
+  assert.equal(view.activeSource, "project-server");
+  assert.deepEqual(view.modelOptions.map((item) => item.value), [remoteModel]);
+  assert.equal(view.selectedModel, remoteModel);
+  assert.equal(view.showStartOllama, false);
+  assert.equal(view.showConnectServer, false);
+  assert.equal(view.sourceLabel, "Project Server · connected");
+  assert.equal(view.showSourceMessage, false);
+});
+
+test("settings view exposes unload but not redundant keep for a pinned model", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const model = "remote:project-server:qwen3:30b";
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    selectedModel: model,
+    payload: {
+      available_model_options: [{ value: model, label: "Project Server / qwen3:30b" }],
+      sources: [{
+        id: "project-server",
+        name: "Project Server",
+        reachable: true,
+        models: [{ value: model, name: "qwen3:30b", running: true, pinned: true }],
+      }],
+    },
+  });
+
+  assert.deepEqual(view.keepAction, { visible: false, label: "Kept loaded" });
+  assert.deepEqual(view.unloadAction, { visible: true, label: "Unload" });
+});
+
+test("settings view can remove a stale pin without claiming the model is loaded", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const model = "remote:project-server:qwen3:30b";
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    selectedModel: model,
+    payload: {
+      available_model_options: [{ value: model, label: "Project Server / qwen3:30b" }],
+      sources: [{
+        id: "project-server",
+        name: "Project Server",
+        reachable: true,
+        models: [{ value: model, name: "qwen3:30b", running: false, pinned: true }],
+      }],
+    },
+  });
+
+  assert.deepEqual(view.keepAction, { visible: false, label: "Kept loaded" });
+  assert.deepEqual(view.unloadAction, {
+    visible: true,
+    label: "Remove keep-alive",
+  });
+  assert.match(view.message, /available/);
+  assert.doesNotMatch(view.message, /loaded/);
+});
+
+test("settings view reports an online mediator with no fabricated model", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    selectedSource: "local",
+    selectedModel: "translategemma:4b",
+    payload: {
+      available_model_options: [],
+      sources: [
+        { id: "local", name: "Local Ollama", reachable: false, models: [] },
+      ],
+    },
+  });
+
+  assert.equal(view.mode, "source-offline");
+  assert.match(view.message, /Local Ollama is not running/);
+  assert.equal(view.showStartOllama, true);
+  assert.equal(view.showStartService, false);
+  assert.equal(view.showModelSelect, false);
+  assert.equal(view.showTestTranslation, false);
+  assert.equal(view.selectedModel, "");
+  assert.equal(view.showTranslationOutput, false);
+  assert.equal(view.showReadAloud, true);
+});
+
+test("settings view keeps a reachable source connected when it has no eligible model", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    selectedSource: "project-server",
+    selectedModel: "",
+    payload: {
+      available_model_options: [],
+      sources: [
+        {
+          id: "project-server",
+          name: "Project Server",
+          kind: "remote",
+          reachable: true,
+          models: [
+            {
+              value: "remote:project-server:qwen3-embedding:8b",
+              name: "qwen3-embedding:8b",
+              usable_for_translation: false,
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.equal(view.mode, "no-model");
+  assert.equal(view.sourceLabel, "Project Server · connected");
+  assert.match(view.message, /No eligible text-generation model/);
+  assert.doesNotMatch(view.message, /connect Remote Service/i);
+});
+
+test("settings view offers tray connection only for a selected disconnected server", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    selectedSource: "project-server",
+    payload: {
+      available_model_options: [],
+      sources: [{ id: "local", name: "Local Ollama", kind: "local", reachable: false, models: [] }],
+    },
+  });
+
+  assert.equal(view.mode, "source-offline");
+  assert.equal(view.activeSource, "project-server");
+  assert.equal(view.sourceRows[1].statusLabel, "Not connected");
+  assert.equal(view.showStartOllama, false);
+  assert.equal(view.showConnectServer, true);
+  assert.match(view.message, /Project Server is not connected/);
+});
+
+test("settings view reports translation health failure without staying in checking", () => {
+  const { deriveTranslationSettingsView } = require("../tts-userscript.js");
+  const view = deriveTranslationSettingsView({
+    mediatorOnline: true,
+    healthError: "Translation status unavailable.",
+  });
+
+  assert.equal(view.mode, "unavailable");
+  assert.equal(view.statusLabel, "Unavailable");
+  assert.equal(view.message, "Translation status unavailable.");
+  assert.equal(view.showStartService, false);
+  assert.equal(view.showModelSelect, false);
+  assert.equal(view.showTestTranslation, false);
+  assert.equal(view.showReadAloud, true);
+});
+
+test("target language normalization migrates invalid legacy values", () => {
+  const { normalizeTargetLanguage, SUPPORTED_TARGET_LANGUAGES } = require("../tts-userscript.js");
+
+  assert.equal(normalizeTargetLanguage("Traditional Chinese"), "Traditional Chinese");
+  assert.equal(normalizeTargetLanguage(""), "Simplified Chinese");
+  assert.equal(normalizeTargetLanguage("made-up target"), "Simplified Chinese");
+  assert.deepEqual(SUPPORTED_TARGET_LANGUAGES, [
+    "Simplified Chinese",
+    "Traditional Chinese",
+    "English",
+    "Japanese",
+    "Korean",
+  ]);
+});
+
+test("settings expose fixed source actions without exposing connection details", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "..", "tts-userscript.js"),
     "utf8"
   );
 
-  assert.match(source, /"tts-project-server-btn"/);
-  assert.match(source, /"tts-init-local-model-btn"/);
+  assert.doesNotMatch(source, /"tts-init-local-model-btn"/);
   assert.match(source, /"tts-start-local-service-btn"/);
+  assert.match(source, /"tts-source-local"/);
+  assert.match(source, /"tts-source-project-server"/);
+  assert.match(source, /"tts-start-local-ollama-btn"/);
+  assert.match(source, /"tts-connect-server-btn"/);
   assert.match(source, /const LOCAL_SERVICE_START_URL = "localreadtranslate:\/\/start"/);
+  assert.match(source, /const LOCAL_OLLAMA_START_URL = "localreadtranslate:\/\/ollama"/);
+  assert.match(source, /const REMOTE_SERVICE_OPEN_URL = "localreadtranslate:\/\/remote"/);
   assert.match(source, /window\.location\.assign\(LOCAL_SERVICE_START_URL\)/);
   assert.match(source, /function pollLocalServiceStatus\(/);
-  assert.match(source, /settings\.translateModel = selection\.value/);
+  assert.match(source, /if \(!e\.isTrusted\) return;/);
+  assert.match(source, /<details>|document\.createElement\("details"\)/);
   assert.equal(
     (source.match(/KokoroTTSCore\.isKokoroHealthResponse/g) || []).length,
     2
   );
   assert.doesNotMatch(source, /ssh_password|private_key|identity_file|auth_password/i);
+});
+
+test("settings messages do not reference removed local-model actions", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+
+  assert.doesNotMatch(source, /initialize a local model/i);
+  assert.doesNotMatch(source, /run start\.bat/i);
+  assert.match(source, /Local service is running\. Translation sources are being refreshed\./);
+  assert.match(source, /Local service is offline\. Start it from this panel or the tray app\./);
 });

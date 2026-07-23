@@ -16,14 +16,16 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 选中网页上的文本后，可以直接：
 
 - `Read`：英文含公式时先读正文，同时后台处理公式；播放到公式处如果还没处理好再等待，然后继续交给 Kokoro TTS 朗读
-- `Translate`：默认调用本机 Ollama，也可以明确选择由 Windows 托盘程序配置的项目服务器模型
+- `Translate`：先选择本地 Ollama 或项目服务器，再使用本地中介为该来源实际发现的生成模型；不显示静态、跨来源或 embedding/reranking 选项
 - `Copy`：不翻译，只复制选中原文；MathJax/MathML/KaTeX 公式会尽量扩展到完整公式框并复制为 LaTeX
 - UI 使用原生 DOM API 构建，不使用 `innerHTML` 等 HTML 字符串注入，以兼容 Gemini 等启用 Trusted Types 的页面
-- 在设置面板里切换并保存声音、语速、翻译模型和目标语言
-- 使用 **Use project server** 选择可用的项目服务器模型，使用 **Initialize local model** 初始化所选本机 Ollama 模型
-- 本地 API 尚未运行时，使用 **Start local service** 打开固定的 `localreadtranslate://start` 操作，再等待服务就绪
-- 分别查看本地 API、按需加载的 TTS 与本机/项目服务器 Ollama 模型状态
-- 在 Translation 设置栏手动常驻或卸载当前 Ollama 模型；频繁使用时减少首次加载等待，不用时释放显存
+- 设置面板以两行紧凑状态轨始终提供 **Local Ollama** 和 **Project Server** 两个来源入口；当前来源的模型列表不会混入另一来源
+- 本地 Ollama 离线时选择本地来源会显示 **Start**，通过固定 `localreadtranslate://ollama` 操作请求托盘启动已安装的 `ollama serve`
+- 项目服务器未连接时选择服务器来源会显示 **Connect**，通过固定 `localreadtranslate://remote` 操作打开托盘的 `Remote Service` 窗口；已连接时不再重复要求连接
+- 本地 API 尚未运行时只显示 **Start local service**；模型、翻译测试、Advanced 和 Read aloud 都隐藏，按钮打开固定的 `localreadtranslate://start` 操作并等待服务就绪
+- 已连接来源没有可翻译生成模型时仍显示“已连接”，只提示安装生成模型，不要求重复连接；健康检查失败则显示明确的 **Unavailable**
+- 目标语言和当前可执行的模型常驻/卸载操作收进 **Advanced**；声音与语速收进 **Read aloud**
+- 模型已退出但仍有 pin 时显示 **Remove keep-alive**，只清 pin、不重新加载；卸载只有在运行列表确认模型消失时才报告成功，仍驻留会显示 `still_running`
 - 英文会尽量原样保留，中文会翻成英文；英文含公式的朗读会优先开始正文，公式在后台变成英文口语描述
 - MathJax/MathML/LaTeX 会优先提取语义公式；翻译结果会把公式渲染为带上下标的易读公式，而不是显示原始 LaTeX 代码
 - 翻译请求可附带附近正文作为参考上下文，只用于术语和指代消歧；真正翻译和输出的只有选中内容；选择远程模型时该上下文也会发送到对应服务器
@@ -38,7 +40,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.13.0`。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.1`（FastAPI `1.7.15`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
 
 1. 按项目 README 完成环境安装，并至少启动本地 FastAPI 服务。
 2. `Read` 需要 Kokoro TTS 环境；Kokoro 会在第一次朗读时按需加载，不会因仅启动 API 或仅使用远程翻译而占用本地 GPU。
@@ -50,7 +52,7 @@ ollama pull translategemma:4b
 ollama pull qwen3:14b
 ```
 
-4. 如果只使用项目服务器翻译，本机可以不安装 Ollama；但必须从托盘菜单 `Remote Service` 保存并连接服务器，然后在网页设置中点击 **Use project server**。
+4. 如果只使用项目服务器翻译，本机可以不安装 Ollama；在网页 Translation 中选择 **Project Server**，未连接时点击 **Connect** 打开托盘窗口，保存并连接后只显示服务器实际存在的生成模型。
 
 托盘程序会为当前 Windows 用户注册 `localreadtranslate://start`。如果 **Start local service** 无法唤起托盘程序，在项目目录执行：
 
@@ -58,9 +60,9 @@ ollama pull qwen3:14b
 conda run -n kokoro-tts python windows_protocol.py register
 ```
 
-注册记录使用绝对路径；移动项目后需要重新执行。注册在 `HKCU` 下，不需要管理员权限。网页发起协议操作时，浏览器可能要求确认打开外部应用；协议只支持固定的 `start` 操作，不携带远程凭据或模型参数。
+注册记录使用绝对路径；移动项目后需要重新执行。注册在 `HKCU` 下，不需要管理员权限。网页发起协议操作时，浏览器可能要求确认打开外部应用；协议只支持无参数的 `start`、`ollama`、`remote` 三个固定操作，不携带远程凭据或模型参数。
 
-翻译、朗读稿准备和复杂公式口语化默认使用 `translategemma:4b`。可在服务端通过 `OLLAMA_TRANSLATE_MODEL`、`OLLAMA_READ_MODEL`、`OLLAMA_FORMULA_MODEL` 覆盖，也可在脚本设置里切换模型。设置栏里的 **Keep loaded** 会在当前模型所属来源上常驻模型，**Unload** 会从同一来源卸载模型释放显存。4B 模型的翻译和公式朗读不参考上下文，公式朗读也会优先采用保守字面规则；14B 模型会保留更多上下文。使用 `qwen3:14b`、QwQ、DeepSeek-R1 等推理模型时，服务端会自动向 Ollama 传入 `think: false`。
+后端省略模型参数时，翻译、朗读稿准备和复杂公式口语化可回退到 `translategemma:4b`；网页不会把这个回退值伪装成已安装模型。可通过 `OLLAMA_TRANSLATE_MODEL`、`OLLAMA_READ_MODEL`、`OLLAMA_FORMULA_MODEL` 覆盖后端回退。Advanced 里的 **Load & keep / Keep loaded** 会在当前来源常驻模型；运行中显示 **Unload**，只有 stale pin 时显示 **Remove keep-alive**。清除 stale pin 不发送生成请求，因此不会为了卸载而重新加载模型。4B 模型的翻译和公式朗读不参考上下文；14B 模型会保留更多上下文。使用 `qwen3:14b`、QwQ、DeepSeek-R1 等推理模型时，服务端会自动向 Ollama 传入 `think: false`。
 数学符号读法可在项目的 `config/math_glossary.json` 中调整，当前覆盖箭头、上下标、集合、逻辑、求和、积分、偏导等常见论文符号。
 
 ## 隐私说明
@@ -94,13 +96,13 @@ http://127.0.0.1:5000/health
 如果打不开，先运行推荐的托盘启动器 `Kokoro TTS.bat`，或用上面的 `windows_protocol.py register` 命令修复协议。`start.bat` 只启动裸 FastAPI，不负责远程 SSH 隧道或协议唤起；需要项目服务器时必须使用托盘程序。
 新版 `start.bat` 和 `Kokoro TTS.bat` 会直接定位 `kokoro-tts` 环境里的 Python，不需要先执行 `conda init`；`Kokoro TTS.pyw` 只在 Windows 已有关联 `.pyw` 到 Python 时适合双击。
 
-### **Use project server** 提示没有可用模型
+### 项目服务器没有出现在模型列表
 
-从托盘菜单打开 `Remote Service`，保存并连接服务器，确认检查成功后再回网页点击该按钮。远程主机和凭据不能在油猴脚本里配置。
+在 Translation 中选择 **Project Server**；未连接时点击 **Connect** 打开托盘的 `Remote Service` 窗口，保存并连接。来源行变为 **Connected** 后只显示服务器生成模型；远程主机和凭据不能在油猴脚本里配置。如果远端只有 embedding/reranking 模型，普通翻译列表会保持为空。
 
-### **Initialize local model** 提示不能初始化远端模型
+### 本机模型没有出现在列表
 
-这个按钮只用于本机 Ollama。先在模型列表选择一个本机模型并确保 Ollama 正在运行；远端模型请先在托盘中连接，再使用 **Use project server**、**Keep loaded** 或普通翻译请求。
+在 Translation 中选择 **Local Ollama**；离线时点击 **Start** 请求托盘启动本地 Ollama。在线但列表为空时，先拉取生成模型。网页不会显示不可达 daemon 的静态默认项，也不会混入服务器模型；发现模型后可在 Advanced 中使用 **Load & keep**。Kokoro 与 Ollama 独立，只会在第一次 `Read` 时加载。
 
 ### 翻译健康检测失败
 

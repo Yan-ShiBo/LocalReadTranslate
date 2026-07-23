@@ -3,10 +3,10 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.13.0
-// @description  默认在本地朗读和翻译选中文本，也可选择使用用户配置的项目服务器。
-// @description:zh-CN 默认在本地朗读和翻译选中文本，也可选择使用用户配置的项目服务器。
-// @description:en Read and translate selected text locally by default, with an option to use a user-configured project server.
+// @version      1.15.1
+// @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
+// @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
+// @description:en Read or translate selected text using models discovered through the local mediator.
 // @author       Yan-ShiBo
 // @license      MIT
 // @match        *://*/*
@@ -34,6 +34,14 @@ const KokoroTTSCore = (() => {
   const WAV_MIME = "audio/wav";
   const CJK_PATTERN = /[\u3400-\u9FFF\uF900-\uFAFF]/;
   const FORMULA_PLACEHOLDER_PREFIX = "__LOCAL_READ_FORMULA_";
+  const DEFAULT_TARGET_LANGUAGE = "Simplified Chinese";
+  const SUPPORTED_TARGET_LANGUAGES = Object.freeze([
+    "Simplified Chinese",
+    "Traditional Chinese",
+    "English",
+    "Japanese",
+    "Korean",
+  ]);
 
   function createRequestGate() {
     let generation = 0;
@@ -111,87 +119,142 @@ const KokoroTTSCore = (() => {
     return supportsWebMOpus(mediaSourceApi) ? "stream" : "ogg";
   }
 
-  function mergeTranslationModelOptions(baseOptions, payload, selectedValue) {
-    const merged = [];
+  function translationModelSource(value, explicitSource = "") {
+    const source = String(explicitSource || "").trim();
+    if (source) return source;
+    const model = String(value || "").trim();
+    if (!model.startsWith("remote:")) return model ? "local" : "";
+    const parts = model.split(":", 3);
+    return parts.length === 3 ? parts[1] : "";
+  }
+
+  function translationModelName(value, explicitModel = "") {
+    const model = String(explicitModel || "").trim();
+    if (model) return model;
+    const selected = String(value || "").trim();
+    if (!selected.startsWith("remote:")) return selected;
+    const first = selected.indexOf(":");
+    const second = selected.indexOf(":", first + 1);
+    return second >= 0 ? selected.slice(second + 1) : selected;
+  }
+
+  function getTranslationModelOptions(payload, sourceId = "") {
+    const options = [];
     const seen = new Set();
-
-    function add(value, label) {
-      const cleanValue = String(value || "").trim();
-      if (!cleanValue || seen.has(cleanValue)) return;
-      seen.add(cleanValue);
-      merged.push({ value: cleanValue, label: String(label || cleanValue) });
-    }
-
-    for (const option of Array.isArray(baseOptions) ? baseOptions : []) {
-      add(option.value, option.label);
-    }
-
-    const remoteOptions =
+    const requestedSource = String(sourceId || "").trim();
+    const discovered =
       payload && Array.isArray(payload.available_model_options)
         ? payload.available_model_options
         : [];
-    for (const option of remoteOptions) {
-      add(option.value, option.label);
-    }
-
-    const installedModels =
-      payload && Array.isArray(payload.available_models)
-        ? payload.available_models
-        : [];
-    for (const model of installedModels) {
-      add(model, `Installed: ${model}`);
-    }
-
-    if (selectedValue) {
-      add(selectedValue, `Custom: ${selectedValue}`);
-    }
-
-    return merged;
-  }
-
-  function chooseTranslationModelFallback(_payload, selectedValue, defaultValue) {
-    const selected = String(selectedValue || "").trim();
-    const fallbackDefault = String(defaultValue || "").trim();
-    return selected || fallbackDefault;
-  }
-
-  function getRemoteTranslationModelOptions(payload) {
-    const options =
-      payload && Array.isArray(payload.available_model_options)
-        ? payload.available_model_options
-        : [];
-    return options
-      .map((option) => ({
-        value: String(option && option.value || "").trim(),
-        label: String(option && option.label || option && option.value || "").trim(),
-      }))
-      .filter((option) => option.value.startsWith("remote:"));
-  }
-
-  function chooseProjectServerTranslationModel(payload, selectedValue) {
-    const options = getRemoteTranslationModelOptions(payload);
-    if (!options.length) {
-      return {
-        count: 0,
-        value: "",
-        label: "",
-        message: "No project server models found. Configure and connect Remote Service in the local tray app, then try again.",
+    for (const option of discovered) {
+      const value = String(option && option.value || "").trim();
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      const normalized = {
+        value,
+        label: String(option && option.label || value).trim() || value,
+        source: translationModelSource(value, option && option.source),
+        sourceName: String(option && option.source_name || "").trim(),
+        model: translationModelName(value, option && option.model),
       };
+      if (!requestedSource || normalized.source === requestedSource) {
+        options.push(normalized);
+      }
     }
+    return options;
+  }
+
+  function chooseTranslationModel(payload, selectedValue, selectedSource = "") {
+    const requestedSource = String(selectedSource || "").trim();
+    const options = getTranslationModelOptions(payload, requestedSource);
     const selected = String(selectedValue || "").trim();
-    const option = options.find((item) => item.value === selected) || options[0];
+    if (!options.length) return "";
+    if (options.some((option) => option.value === selected)) return selected;
+    if (requestedSource) return options[0].value;
+    const inferredSource = translationModelSource(selected);
+    const sameSource = options.find((option) => option.source === inferredSource);
+    return (sameSource || options[0]).value;
+  }
+
+  function normalizeTranslationPreferences(saved = {}) {
+    const candidate = saved && typeof saved === "object" ? saved : {};
+    const legacyModel = typeof candidate.translateModel === "string"
+      ? candidate.translateModel.trim()
+      : "";
+    const legacySource = translationModelSource(legacyModel);
+    const requestedSource = typeof candidate.translationSource === "string"
+      ? candidate.translationSource.trim()
+      : "";
+    const validSource = (value) => /^[a-z0-9][a-z0-9._-]*$/i.test(value);
+    const translationSource = validSource(requestedSource)
+      ? requestedSource
+      : validSource(legacySource)
+        ? legacySource
+        : "local";
+    const translationModels = {};
+    const storedModels = candidate.translationModels;
+    if (storedModels && typeof storedModels === "object" && !Array.isArray(storedModels)) {
+      for (const [source, rawModel] of Object.entries(storedModels)) {
+        const model = typeof rawModel === "string" ? rawModel.trim() : "";
+        if (
+          validSource(source) &&
+          model &&
+          translationModelSource(model) === source
+        ) {
+          translationModels[source] = model;
+        }
+      }
+    }
+    if (legacyModel && validSource(legacySource) && !translationModels[legacySource]) {
+      translationModels[legacySource] = legacyModel;
+    }
     return {
-      count: options.length,
-      value: option.value,
-      label: option.label,
-      message: `Using ${option.label}. Checking remote model status...`,
+      translationSource,
+      translationModels,
+      translateModel: translationModels[translationSource] || "",
     };
   }
 
-  function getLocalModelInitializationError(model) {
-    return String(model || "").trim().startsWith("remote:")
-      ? "Choose a local model before initializing. Remote models are started by the project server."
-      : "";
+  function mergeTranslationModelOptions(_baseOptions, payload, _selectedValue) {
+    return getTranslationModelOptions(payload).map(({ value, label }) => ({ value, label }));
+  }
+
+  function chooseTranslationModelFallback(payload, selectedValue, _defaultValue) {
+    return chooseTranslationModel(payload, selectedValue);
+  }
+
+  function normalizeTargetLanguage(value) {
+    const target = String(value || "").trim();
+    return SUPPORTED_TARGET_LANGUAGES.includes(target)
+      ? target
+      : DEFAULT_TARGET_LANGUAGE;
+  }
+
+  function buildTranslationRequest({
+    text,
+    context = "",
+    model,
+    source = "",
+    targetLanguage = DEFAULT_TARGET_LANGUAGE,
+  } = {}) {
+    const selectedModel = String(model || "").trim();
+    if (!selectedModel) {
+      throw new Error("No translation model is available.");
+    }
+    const selectedSource = String(source || "").trim();
+    if (selectedSource && translationModelSource(selectedModel) !== selectedSource) {
+      throw new Error("The selected model does not belong to the selected source.");
+    }
+    const sourceText = normalizeLlmSourceText(text);
+    const contextText = normalizeLlmSourceText(context);
+    const target = normalizeTargetLanguage(targetLanguage);
+    const request = {
+      text: sourceText,
+      model: selectedModel,
+      target_language: target,
+    };
+    if (contextText) request.context = contextText;
+    return request;
   }
 
   function getLocalServiceControlState({ online = false, starting = false } = {}) {
@@ -202,6 +265,255 @@ const KokoroTTSCore = (() => {
       return { label: "Starting local service...", icon: "\u23F3", disabled: true };
     }
     return { label: "Start local service", icon: "\u25B6", disabled: false };
+  }
+
+  function deriveTranslationSettingsView({
+    mediatorOnline = false,
+    starting = false,
+    healthError = "",
+    payload = null,
+    selectedSource = "",
+    selectedModel = "",
+  } = {}) {
+    const hiddenSourceState = {
+      activeSource: "",
+      sourceRows: [],
+      modelOptions: [],
+      showSourceRows: false,
+      showSourceMessage: false,
+      showStartOllama: false,
+      showConnectServer: false,
+    };
+    if (!mediatorOnline) {
+      return {
+        ...hiddenSourceState,
+        mode: "offline",
+        statusLabel: "Offline",
+        sourceLabel: "",
+        message: "Local service is not running.",
+        showSourceMessage: true,
+        selectedModel: "",
+        showStartService: true,
+        showModelSelect: false,
+        showTestTranslation: false,
+        showAdvanced: false,
+        showTranslationOutput: false,
+        showReadAloud: false,
+        keepAction: { visible: false, label: "Load & keep" },
+        unloadAction: { visible: false, label: "Unload" },
+        startAction: getLocalServiceControlState({ online: false, starting }),
+      };
+    }
+
+    if (healthError) {
+      return {
+        ...hiddenSourceState,
+        mode: "unavailable",
+        statusLabel: "Unavailable",
+        sourceLabel: "",
+        message: String(healthError),
+        showSourceMessage: true,
+        selectedModel: "",
+        showStartService: false,
+        showModelSelect: false,
+        showTestTranslation: false,
+        showAdvanced: false,
+        showTranslationOutput: false,
+        showReadAloud: true,
+        keepAction: { visible: false, label: "Load & keep" },
+        unloadAction: { visible: false, label: "Unload" },
+        startAction: getLocalServiceControlState({ online: true, starting }),
+      };
+    }
+
+    if (!payload || typeof payload !== "object") {
+      return {
+        ...hiddenSourceState,
+        mode: "checking",
+        statusLabel: "Checking",
+        sourceLabel: "",
+        message: "Checking translation sources...",
+        showSourceMessage: true,
+        selectedModel: "",
+        showStartService: false,
+        showModelSelect: false,
+        showTestTranslation: false,
+        showAdvanced: false,
+        showTranslationOutput: false,
+        showReadAloud: true,
+        keepAction: { visible: false, label: "Load & keep" },
+        unloadAction: { visible: false, label: "Unload" },
+        startAction: getLocalServiceControlState({ online: true, starting }),
+      };
+    }
+
+    const sourceMap = new Map();
+    const discoveredSources = Array.isArray(payload.sources) ? payload.sources : [];
+    for (const item of discoveredSources) {
+      const id = String(item && item.id || "").trim();
+      if (!id || sourceMap.has(id)) continue;
+      sourceMap.set(id, {
+        id,
+        name: String(item.name || id).trim() || id,
+        kind: item.kind === "remote" || id !== "local" ? "remote" : "local",
+        configured: item.configured !== false,
+        reachable: Boolean(item.reachable),
+        models: Array.isArray(item.models) ? item.models : [],
+      });
+    }
+    if (!sourceMap.has("local")) {
+      sourceMap.set("local", {
+        id: "local",
+        name: "Local Ollama",
+        kind: "local",
+        configured: true,
+        reachable: false,
+        models: [],
+      });
+    }
+    const hasRemote = Array.from(sourceMap.values()).some((item) => item.kind === "remote");
+    if (!hasRemote) {
+      sourceMap.set("project-server", {
+        id: "project-server",
+        name: "Project Server",
+        kind: "remote",
+        configured: false,
+        reachable: false,
+        models: [],
+      });
+    }
+    const sources = Array.from(sourceMap.values()).sort((left, right) => {
+      if (left.id === "local") return -1;
+      if (right.id === "local") return 1;
+      return 0;
+    });
+    const requestedSource = String(
+      selectedSource || translationModelSource(selectedModel) || "local"
+    ).trim();
+    const activeSourceState = sourceMap.get(requestedSource) || sourceMap.get("local") || sources[0];
+    const activeSource = activeSourceState.id;
+    const sourceRows = sources.map((source) => {
+      const selected = source.id === activeSource;
+      const actionType = source.kind === "local" ? "start-ollama" : "connect-server";
+      const actionLabel = source.kind === "local" ? "Start" : "Connect";
+      return {
+        id: source.id,
+        name: source.name,
+        kind: source.kind,
+        selected,
+        configured: source.configured,
+        reachable: source.reachable,
+        statusLabel: source.reachable
+          ? source.kind === "local" ? "Running" : "Connected"
+          : source.kind === "local" ? "Offline" : source.configured ? "Unavailable" : "Not connected",
+        action: {
+          visible: selected && !source.reachable,
+          type: actionType,
+          label: actionLabel,
+        },
+      };
+    });
+    const sourceView = {
+      activeSource,
+      sourceRows,
+      showSourceRows: true,
+      showStartOllama: activeSourceState.kind === "local" && !activeSourceState.reachable,
+      showConnectServer: activeSourceState.kind === "remote" && !activeSourceState.reachable,
+    };
+    if (!activeSourceState.reachable) {
+      const remoteMessage = activeSourceState.configured
+        ? `${activeSourceState.name} is unavailable. Open Remote Service to reconnect.`
+        : `${activeSourceState.name} is not connected.`;
+      return {
+        ...sourceView,
+        modelOptions: [],
+        mode: "source-offline",
+        statusLabel: activeSourceState.kind === "local" ? "Local offline" : "Connect server",
+        sourceLabel: `${activeSourceState.name} · ${activeSourceState.kind === "local" ? "offline" : "not connected"}`,
+        message: activeSourceState.kind === "local"
+          ? "Local Ollama is not running."
+          : remoteMessage,
+        showSourceMessage: true,
+        selectedModel: "",
+        showStartService: false,
+        showModelSelect: false,
+        showTestTranslation: false,
+        showAdvanced: false,
+        showTranslationOutput: false,
+        showReadAloud: true,
+        keepAction: { visible: false, label: "Load & keep" },
+        unloadAction: { visible: false, label: "Unload" },
+        startAction: getLocalServiceControlState({ online: true, starting }),
+      };
+    }
+
+    const options = getTranslationModelOptions(payload, activeSource);
+    const selected = chooseTranslationModel(payload, selectedModel, activeSource);
+    if (!options.length || !selected) {
+      return {
+        ...sourceView,
+        modelOptions: options,
+        mode: "no-model",
+        statusLabel: "No model",
+        sourceLabel: `${activeSourceState.name} · connected`,
+        message: `No eligible text-generation model is available on ${activeSourceState.name}. Install a generation model there, then refresh.`,
+        showSourceMessage: true,
+        selectedModel: "",
+        showStartService: false,
+        showModelSelect: false,
+        showTestTranslation: false,
+        showAdvanced: false,
+        showTranslationOutput: false,
+        showReadAloud: true,
+        keepAction: { visible: false, label: "Load & keep" },
+        unloadAction: { visible: false, label: "Unload" },
+        startAction: getLocalServiceControlState({ online: true, starting }),
+      };
+    }
+
+    const selectedOption = options.find((option) => option.value === selected) || options[0];
+    const sourceId = activeSource;
+    const source = activeSourceState;
+    const models = source.models;
+    const modelState = models.find((item) => item && item.value === selected) || null;
+    const isLegacySelected = payload.model === selected;
+    const running = modelState
+      ? Boolean(modelState.running)
+      : Boolean(isLegacySelected && payload.model_running);
+    const pinned = modelState
+      ? Boolean(modelState.pinned)
+      : Boolean(isLegacySelected && payload.model_pinned);
+    const sourceName = String(
+      source && source.name || selectedOption.sourceName || sourceId || "Translation source"
+    ).trim();
+
+    return {
+      ...sourceView,
+      modelOptions: options,
+      mode: "ready",
+      statusLabel: "Ready",
+      sourceLabel: `${sourceName} · connected`,
+      message: running
+        ? `${selectedOption.model} is loaded.`
+        : `${selectedOption.model} is available.`,
+      showSourceMessage: Boolean(running || pinned),
+      selectedModel: selected,
+      showStartService: false,
+      showModelSelect: true,
+      showTestTranslation: true,
+      showAdvanced: true,
+      showTranslationOutput: true,
+      showReadAloud: true,
+      keepAction: {
+        visible: !pinned,
+        label: pinned ? "Kept loaded" : running ? "Keep loaded" : "Load & keep",
+      },
+      unloadAction: {
+        visible: running || pinned,
+        label: running ? "Unload" : pinned ? "Remove keep-alive" : "Unload",
+      },
+      startAction: getLocalServiceControlState({ online: true, starting }),
+    };
   }
 
   function isKokoroHealthResponse(status, payloadOrText) {
@@ -906,28 +1218,32 @@ const KokoroTTSCore = (() => {
   }
 
   return {
+    SUPPORTED_TARGET_LANGUAGES,
     WEBM_OPUS_MIME,
     applyFormulaVerbalizations,
-    chooseProjectServerTranslationModel,
+    buildTranslationRequest,
+    chooseTranslationModel,
     choosePlaybackMode,
     cjkRatio,
     createAppendQueue,
     createRequestGate,
+    deriveTranslationSettingsView,
     formatPlaybackProgress,
     formulaToReadableHtml,
-    getLocalModelInitializationError,
     getLocalServiceControlState,
-    getRemoteTranslationModelOptions,
+    getTranslationModelOptions,
     isUnsupportedMediaError,
     isKokoroHealthResponse,
     latexToReadableFormula,
     mergeTranslationModelOptions,
     chooseTranslationModelFallback,
+    normalizeTranslationPreferences,
     normalizeAudioBuffer,
     normalizeAudioBlob,
     normalizeCopyTextWithLatex,
     normalizeDisplayMathWrappers,
     normalizeLlmSourceText,
+    normalizeTargetLanguage,
     prepareProgressiveReadPlan,
     prepareTextForRead,
     prepareTextForReadPlan,
@@ -968,6 +1284,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   const API_READ_PREPARE_URL = API_BASE + "/read/prepare";
   const API_FORMULA_VERBALIZE_URL = API_BASE + "/formula/verbalize";
   const LOCAL_SERVICE_START_URL = "localreadtranslate://start";
+  const LOCAL_OLLAMA_START_URL = "localreadtranslate://ollama";
+  const REMOTE_SERVICE_OPEN_URL = "localreadtranslate://remote";
   const SHORTCUT = { ctrl: true, shift: true, key: "S" }; // Ctrl+Shift+S
 
   /* CATALOG:START */
@@ -976,10 +1294,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   // Default settings (overridden by GM storage)
   const DEFAULTS = {
-    settingsVersion: 2,
+    settingsVersion: 4,
     voice: TTS_CATALOG.default_voice,
     speed: TTS_CATALOG.default_speed,
-    translateModel: "translategemma:4b",
+    translationSource: "local",
+    translationModels: {},
+    translateModel: "",
     targetLanguage: "Simplified Chinese",
   };
 
@@ -996,14 +1316,6 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     label: `${value}x${value === DEFAULTS.speed ? " (default)" : ""}`,
   }));
 
-  const TRANSLATION_MODELS = [
-    { value: "translategemma:4b", label: "translategemma:4b - default" },
-    { value: "qwen3:14b", label: "qwen3:14b - accurate" },
-    { value: "qwen3:4b", label: "qwen3:4b - lightweight" },
-    { value: "glm4:9b", label: "glm4:9b" },
-    { value: "zhou-xingmei:latest", label: "zhou-xingmei:latest" },
-  ];
-
   // ════════════════════════════════════════════════════════
   //  State
   // ════════════════════════════════════════════════════════
@@ -1018,6 +1330,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   let settingsVisible = false;
   let localServicePollTimer = null;
   let localServiceStartPending = false;
+  let translationDiscoveryReady = false;
+  let mediatorOnline = false;
+  let translationHealthPayload = null;
+  let translationHealthError = "";
+  const translationSourceActionPending = new Set();
+  const translationSourcePollTimers = new Map();
 
   // Load saved settings
   function loadSettings() {
@@ -1027,22 +1345,14 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         group.voices.some((voice) => voice.id === saved.voice)
       );
       const speedExists = SPEEDS.some((speed) => speed.value === saved.speed);
-      const savedVersion = Number(saved.settingsVersion) || 0;
-      let translateModel =
-        typeof saved.translateModel === "string" && saved.translateModel.trim()
-          ? saved.translateModel.trim()
-          : DEFAULTS.translateModel;
-      if (savedVersion < 2 && translateModel === "qwen3:14b") {
-        translateModel = DEFAULTS.translateModel;
-      }
-      const targetLanguage =
-        typeof saved.targetLanguage === "string" && saved.targetLanguage.trim()
-          ? saved.targetLanguage.trim()
-          : DEFAULTS.targetLanguage;
+      const translationPreferences = KokoroTTSCore.normalizeTranslationPreferences(saved);
+      const targetLanguage = KokoroTTSCore.normalizeTargetLanguage(
+        saved.targetLanguage
+      );
       return {
         voice: voiceExists ? saved.voice : DEFAULTS.voice,
         speed: speedExists ? saved.speed : DEFAULTS.speed,
-        translateModel,
+        ...translationPreferences,
         targetLanguage,
         settingsVersion: DEFAULTS.settingsVersion,
       };
@@ -1069,8 +1379,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     const voiceSelect = panel.querySelector("#tts-voice-select");
     const speedSelect = panel.querySelector("#tts-speed-select");
     const modelSelect = panel.querySelector("#tts-translate-model-select");
-    const modelInput = panel.querySelector("#tts-translate-model-input");
-    const targetInput = panel.querySelector("#tts-target-language-input");
+    const targetSelect = panel.querySelector("#tts-target-language-select");
 
     if (voiceSelect) {
       settings.voice = voiceSelect.value || DEFAULTS.voice;
@@ -1079,29 +1388,47 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       const speed = parseFloat(speedSelect.value);
       settings.speed = Number.isFinite(speed) ? speed : DEFAULTS.speed;
     }
-    if (modelInput) {
-      settings.translateModel = modelInput.value.trim() || DEFAULTS.translateModel;
-      modelInput.value = settings.translateModel;
-    } else if (modelSelect) {
-      settings.translateModel = modelSelect.value.trim() || DEFAULTS.translateModel;
+    if (modelSelect && !modelSelect.disabled && modelSelect.value.trim()) {
+      settings.translateModel = modelSelect.value.trim();
+      settings.translationModels[settings.translationSource] = settings.translateModel;
     }
-    if (targetInput) {
-      settings.targetLanguage = targetInput.value.trim() || DEFAULTS.targetLanguage;
-      targetInput.value = settings.targetLanguage;
+    if (targetSelect) {
+      settings.targetLanguage = KokoroTTSCore.normalizeTargetLanguage(
+        targetSelect.value
+      );
+      targetSelect.value = settings.targetLanguage;
     }
     settings.settingsVersion = DEFAULTS.settingsVersion;
 
-    if (modelSelect) {
-      let option = Array.from(modelSelect.options).find(
-        (item) => item.value === settings.translateModel
-      );
-      if (!option) {
-        option = new Option(`Custom: ${settings.translateModel}`, settings.translateModel);
-        modelSelect.appendChild(option);
-      }
+    if (modelSelect && Array.from(modelSelect.options).some(
+      (item) => item.value === settings.translateModel
+    )) {
       modelSelect.value = settings.translateModel;
     }
 
+    saveSettings(settings);
+  }
+
+  function setActiveTranslationSource(sourceId) {
+    const nextSource = String(sourceId || "").trim();
+    if (!nextSource || nextSource === settings.translationSource) return false;
+    settings.translationSource = nextSource;
+    settings.translateModel = settings.translationModels[nextSource] || "";
+    settings.settingsVersion = DEFAULTS.settingsVersion;
+    translationDiscoveryReady = false;
+    saveSettings(settings);
+    return true;
+  }
+
+  function rememberTranslationModel(model) {
+    const selectedModel = String(model || "").trim();
+    settings.translateModel = selectedModel;
+    if (selectedModel) {
+      settings.translationModels[settings.translationSource] = selectedModel;
+    } else {
+      delete settings.translationModels[settings.translationSource];
+    }
+    settings.settingsVersion = DEFAULTS.settingsVersion;
     saveSettings(settings);
   }
 
@@ -1145,6 +1472,44 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     return button;
   }
 
+  function createTranslationSourceRow({ rowId, choiceId, statusId, actionId, name, kind }) {
+    const row = document.createElement("div");
+    row.id = rowId;
+    row.className = "tts-source-option";
+    row.dataset.kind = kind;
+
+    const choice = document.createElement("button");
+    choice.id = choiceId;
+    choice.className = "tts-source-choice";
+    choice.type = "button";
+    choice.dataset.sourceId = kind === "local" ? "local" : "project-server";
+    choice.setAttribute("aria-pressed", "false");
+
+    const marker = document.createElement("span");
+    marker.className = "tts-source-marker";
+    marker.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("span");
+    copy.className = "tts-source-copy";
+    const sourceName = document.createElement("span");
+    sourceName.className = "tts-source-name";
+    sourceName.textContent = name;
+    const status = document.createElement("span");
+    status.id = statusId;
+    status.className = "tts-source-status";
+    status.textContent = "Checking";
+    copy.appendChild(sourceName);
+    copy.appendChild(status);
+    choice.appendChild(marker);
+    choice.appendChild(copy);
+
+    const action = createSettingsButton(actionId, kind === "local" ? "Start" : "Connect");
+    action.className = "tts-source-action";
+    action.hidden = true;
+    row.appendChild(choice);
+    row.appendChild(action);
+    return row;
+  }
+
   function createVoiceSelect() {
     const select = document.createElement("select");
     select.id = "tts-voice-select";
@@ -1175,28 +1540,20 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   function createTranslateModelSelect() {
     const select = document.createElement("select");
     select.id = "tts-translate-model-select";
-    let hasSavedTranslateModel = false;
-    for (const model of TRANSLATION_MODELS) {
-      const option = new Option(model.label, model.value);
-      option.selected = model.value === settings.translateModel;
-      if (option.selected) hasSavedTranslateModel = true;
-      select.appendChild(option);
-    }
-    if (!hasSavedTranslateModel) {
-      const option = new Option(`Custom: ${settings.translateModel}`, settings.translateModel);
-      option.selected = true;
-      select.appendChild(option);
-    }
+    select.disabled = true;
+    select.appendChild(new Option("Checking available models...", ""));
     return select;
   }
 
-  function createTextInput(id, value) {
-    const input = document.createElement("input");
-    input.type = "text";
-    input.id = id;
-    input.value = value;
-    input.spellcheck = false;
-    return input;
+  function createTargetLanguageSelect() {
+    const select = document.createElement("select");
+    select.id = "tts-target-language-select";
+    for (const language of KokoroTTSCore.SUPPORTED_TARGET_LANGUAGES) {
+      const option = new Option(language, language);
+      option.selected = language === settings.targetLanguage;
+      select.appendChild(option);
+    }
+    return select;
   }
 
   // ════════════════════════════════════════════════════════
@@ -1686,6 +2043,316 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     .tts-settings-panel .tts-status-dot.offline { background: #f5576c; }
     .tts-settings-panel .tts-status-dot.checking { background: #f0c040; }
     .tts-settings-panel .tts-status-dot.warning { background: #f0c040; }
+
+    /* ── Backend-driven compact settings ── */
+    .tts-settings-gear {
+      background: #8292ff;
+      box-shadow: 0 6px 18px rgba(16, 18, 27, 0.34);
+      transition: opacity 0.16s ease, transform 0.16s ease;
+    }
+
+    .tts-settings-gear:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 22px rgba(16, 18, 27, 0.42);
+    }
+
+    .tts-settings-gear.active { background: #7182f2; }
+
+    .tts-settings-panel {
+      width: 390px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 104px);
+      overflow-y: auto;
+      box-sizing: border-box;
+      padding: 16px;
+      border: 1px solid #2b3043;
+      border-radius: 14px;
+      background: #10121b;
+      color: #eef1fa;
+      font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      box-shadow: 0 18px 48px rgba(5, 7, 14, 0.46);
+    }
+
+    .tts-settings-panel[hidden],
+    .tts-settings-panel [hidden] { display: none !important; }
+
+    .tts-settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .tts-settings-panel .tts-settings-header h3 {
+      margin: 0;
+      color: #eef1fa;
+      background: none;
+      -webkit-background-clip: initial;
+      -webkit-text-fill-color: currentColor;
+      font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .tts-settings-state {
+      flex: 0 0 auto;
+      padding: 4px 8px;
+      border: 1px solid #353b52;
+      border-radius: 999px;
+      color: #9aa3b8;
+      background: #191c2a;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .tts-settings-state.ready {
+      border-color: rgba(85, 201, 143, 0.38);
+      color: #7edbad;
+    }
+
+    .tts-settings-state.offline,
+    .tts-settings-state.source-offline { color: #ff9cac; }
+    .tts-settings-state.unavailable { color: #ff9cac; }
+    .tts-settings-state.no-model,
+    .tts-settings-state.checking { color: #eacb7c; }
+
+    .tts-settings-section {
+      padding: 14px;
+      border: 1px solid #292e41;
+      border-radius: 12px;
+      background: #151824;
+    }
+
+    .tts-settings-section h4 {
+      margin: 0 0 10px;
+      color: #eef1fa;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .tts-source-picker {
+      display: grid;
+      gap: 7px;
+    }
+
+    .tts-source-option {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: stretch;
+      gap: 7px;
+    }
+
+    .tts-source-choice,
+    .tts-source-action {
+      box-sizing: border-box;
+      min-height: 46px;
+      border: 1px solid #2f354a;
+      border-radius: 9px;
+      background: #191c2a;
+      color: #eef1fa;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .tts-source-choice {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      padding: 8px 10px;
+      text-align: left;
+    }
+
+    .tts-source-choice:hover,
+    .tts-source-action:hover { border-color: #4a557c; }
+
+    .tts-source-option.selected .tts-source-choice {
+      border-color: rgba(130, 146, 255, 0.72);
+      background: rgba(130, 146, 255, 0.11);
+      box-shadow: inset 2px 0 #8292ff;
+    }
+
+    .tts-source-marker {
+      width: 8px;
+      height: 8px;
+      border: 2px solid #697188;
+      border-radius: 50%;
+    }
+
+    .tts-source-option.selected .tts-source-marker {
+      border-color: #aab4ff;
+      background: #8292ff;
+    }
+
+    .tts-source-copy {
+      display: grid;
+      min-width: 0;
+      gap: 2px;
+    }
+
+    .tts-source-name {
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tts-source-status {
+      color: #9aa3b8;
+      font-size: 10px;
+    }
+
+    .tts-source-option.reachable .tts-source-status { color: #7edbad; }
+
+    .tts-source-action {
+      min-width: 70px;
+      padding: 8px 10px;
+      border-color: rgba(130, 146, 255, 0.5);
+      color: #bdc7ff;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .tts-source-action:disabled { cursor: wait; opacity: 0.7; }
+
+    .tts-source-rail {
+      position: relative;
+      margin-top: 9px;
+      padding: 9px 10px 9px 15px;
+      border-left: 2px solid #8292ff;
+      border-radius: 0 8px 8px 0;
+      background: #191c2a;
+    }
+
+    .tts-source-rail .tts-settings-status {
+      min-height: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #eef1fa;
+      font-size: 12px;
+    }
+
+    .tts-source-message {
+      margin: 0;
+      color: #9aa3b8;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .tts-settings-field { margin-top: 12px; }
+
+    .tts-settings-panel label {
+      margin: 0 0 5px;
+      color: #9aa3b8;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .tts-settings-panel select {
+      box-sizing: border-box;
+      min-height: 36px;
+      padding: 8px 10px;
+      border: 1px solid #343a50;
+      border-radius: 8px;
+      background: #191c2a;
+      color: #eef1fa;
+      font-size: 12px;
+    }
+
+    #tts-translate-model-select {
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .tts-settings-panel select:focus-visible,
+    .tts-settings-panel button:focus-visible,
+    .tts-settings-panel summary:focus-visible {
+      outline: 2px solid #8292ff;
+      outline-offset: 2px;
+    }
+
+    .tts-primary-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .tts-settings-panel .tts-test-btn {
+      min-height: 36px;
+      margin-top: 0;
+      border-color: rgba(130, 146, 255, 0.38);
+      background: rgba(130, 146, 255, 0.12);
+      color: #bdc7ff;
+      transition: background-color 0.16s ease, border-color 0.16s ease;
+    }
+
+    .tts-settings-panel .tts-test-btn:hover:not(:disabled) {
+      border-color: rgba(130, 146, 255, 0.62);
+      background: rgba(130, 146, 255, 0.2);
+    }
+
+    .tts-settings-panel .tts-test-output {
+      min-height: 0;
+      margin-top: 10px;
+      border-color: #292e41;
+      background: #10121b;
+      color: #cbd2e4;
+    }
+
+    .tts-settings-details {
+      margin-top: 10px;
+      border: 1px solid #292e41;
+      border-radius: 10px;
+      background: #151824;
+    }
+
+    .tts-settings-details summary {
+      padding: 11px 12px;
+      color: #cbd2e4;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .tts-settings-details[open] summary { border-bottom: 1px solid #292e41; }
+
+    .tts-settings-details-body { padding: 12px; }
+
+    .tts-settings-details-body .tts-settings-status {
+      min-height: 0;
+      margin-bottom: 10px;
+      border-color: #292e41;
+      background: #191c2a;
+    }
+
+    .tts-settings-panel .tts-model-actions {
+      grid-template-columns: 1fr;
+      margin-top: 10px;
+    }
+
+    @media (max-width: 440px) {
+      .tts-settings-panel {
+        right: 12px;
+        bottom: 64px;
+        width: calc(100vw - 24px);
+        max-width: none;
+      }
+      .tts-settings-gear { right: 12px; bottom: 12px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tts-settings-panel { animation: none; }
+      .tts-settings-gear,
+      .tts-settings-panel .tts-test-btn { transition: none; }
+    }
   `);
 
   // ════════════════════════════════════════════════════════
@@ -1696,73 +2363,110 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     const panel = document.createElement("div");
     panel.className = "tts-settings-panel";
 
+    const header = document.createElement("div");
+    header.className = "tts-settings-header";
     const title = document.createElement("h3");
     title.textContent = "Local Read & Translate";
-    panel.appendChild(title);
+    const stateBadge = document.createElement("span");
+    stateBadge.id = "tts-settings-state";
+    stateBadge.className = "tts-settings-state checking";
+    stateBadge.textContent = "Checking";
+    header.appendChild(title);
+    header.appendChild(stateBadge);
+    panel.appendChild(header);
 
-    const grid = document.createElement("div");
-    grid.className = "tts-settings-grid";
-
-    const ttsColumn = document.createElement("div");
-    ttsColumn.className = "tts-settings-column";
-    const ttsTitle = document.createElement("h4");
-    ttsTitle.textContent = "TTS";
-    ttsColumn.appendChild(ttsTitle);
-    ttsColumn.appendChild(createStatusRow("tts-status-dot", "tts-status-text", "Checking..."));
-    appendLabeledControl(ttsColumn, "Voice", createVoiceSelect());
-    appendLabeledControl(ttsColumn, "Speed", createSpeedSelect());
-    ttsColumn.appendChild(
-      createSettingsButton("tts-test-btn", 'Test: "Hello, nice to meet you!"')
-    );
-
-    const translationColumn = document.createElement("div");
-    translationColumn.className = "tts-settings-column";
+    const translationSection = document.createElement("section");
+    translationSection.className = "tts-settings-section";
     const translationTitle = document.createElement("h4");
     translationTitle.textContent = "Translation";
-    translationColumn.appendChild(translationTitle);
-    translationColumn.appendChild(
-      createStatusRow("tts-translate-status-dot", "tts-translate-status-text", "Checking model...")
-    );
-    appendLabeledControl(translationColumn, "Translate model", createTranslateModelSelect());
-    appendLabeledControl(
-      translationColumn,
-      "Custom model",
-      createTextInput("tts-translate-model-input", settings.translateModel)
-    );
-    appendLabeledControl(
-      translationColumn,
-      "Target language",
-      createTextInput("tts-target-language-input", settings.targetLanguage)
-    );
+    translationSection.appendChild(translationTitle);
+
+    const sourcePicker = document.createElement("div");
+    sourcePicker.id = "tts-translation-sources";
+    sourcePicker.className = "tts-source-picker";
+    sourcePicker.setAttribute("aria-label", "Translation source");
+    sourcePicker.appendChild(createTranslationSourceRow({
+      rowId: "tts-source-local",
+      choiceId: "tts-source-local-choice",
+      statusId: "tts-source-local-status",
+      actionId: "tts-start-local-ollama-btn",
+      name: "Local Ollama",
+      kind: "local",
+    }));
+    sourcePicker.appendChild(createTranslationSourceRow({
+      rowId: "tts-source-project-server",
+      choiceId: "tts-source-project-server-choice",
+      statusId: "tts-source-project-server-status",
+      actionId: "tts-connect-server-btn",
+      name: "Project Server",
+      kind: "remote",
+    }));
+    translationSection.appendChild(sourcePicker);
+
+    const statusRail = document.createElement("div");
+    statusRail.className = "tts-source-rail";
+    const sourceMessage = document.createElement("div");
+    sourceMessage.id = "tts-source-message";
+    sourceMessage.className = "tts-source-message";
+    sourceMessage.textContent = "Checking translation sources...";
+    statusRail.appendChild(sourceMessage);
+    translationSection.appendChild(statusRail);
+
+    const modelField = document.createElement("div");
+    modelField.id = "tts-model-field";
+    modelField.className = "tts-settings-field";
+    appendLabeledControl(modelField, "Model", createTranslateModelSelect());
+    translationSection.appendChild(modelField);
 
     const serviceActions = document.createElement("div");
-    serviceActions.className = "tts-model-actions";
-    serviceActions.appendChild(
-      createSettingsButton("tts-project-server-btn", "Use project server")
-    );
-    serviceActions.appendChild(
-      createSettingsButton("tts-init-local-model-btn", "Initialize local model")
-    );
+    serviceActions.className = "tts-primary-actions";
     serviceActions.appendChild(
       createSettingsButton("tts-start-local-service-btn", "Start local service")
     );
-    translationColumn.appendChild(serviceActions);
+    serviceActions.appendChild(
+      createSettingsButton("tts-translate-test-btn", "Test translation")
+    );
+    translationSection.appendChild(serviceActions);
+
+    const output = document.createElement("div");
+    output.className = "tts-test-output";
+    output.id = "tts-translate-test-output";
+    output.textContent = "No translation test yet.";
+    translationSection.appendChild(output);
+    panel.appendChild(translationSection);
+
+    const advanced = document.createElement("details");
+    advanced.id = "tts-advanced-settings";
+    advanced.className = "tts-settings-details";
+    const advancedSummary = document.createElement("summary");
+    advancedSummary.textContent = "Advanced";
+    advanced.appendChild(advancedSummary);
+    const advancedBody = document.createElement("div");
+    advancedBody.className = "tts-settings-details-body";
+    appendLabeledControl(advancedBody, "Target language", createTargetLanguageSelect());
 
     const modelActions = document.createElement("div");
     modelActions.className = "tts-model-actions";
     modelActions.appendChild(createSettingsButton("tts-model-keepalive-btn", "Keep loaded"));
     modelActions.appendChild(createSettingsButton("tts-model-unload-btn", "Unload"));
-    translationColumn.appendChild(modelActions);
-    translationColumn.appendChild(createSettingsButton("tts-translate-test-btn", "Test translation"));
-    const output = document.createElement("div");
-    output.className = "tts-test-output";
-    output.id = "tts-translate-test-output";
-    output.textContent = "No translation test yet.";
-    translationColumn.appendChild(output);
+    advancedBody.appendChild(modelActions);
+    advanced.appendChild(advancedBody);
+    panel.appendChild(advanced);
 
-    grid.appendChild(ttsColumn);
-    grid.appendChild(translationColumn);
-    panel.appendChild(grid);
+    const readDetails = document.createElement("details");
+    readDetails.id = "tts-read-settings";
+    readDetails.className = "tts-settings-details";
+    const readSummary = document.createElement("summary");
+    readSummary.textContent = "Read aloud";
+    readDetails.appendChild(readSummary);
+    const readBody = document.createElement("div");
+    readBody.className = "tts-settings-details-body";
+    readBody.appendChild(createStatusRow("tts-status-dot", "tts-status-text", "Checking..."));
+    appendLabeledControl(readBody, "Voice", createVoiceSelect());
+    appendLabeledControl(readBody, "Speed", createSpeedSelect());
+    readBody.appendChild(createSettingsButton("tts-test-btn", "Test voice"));
+    readDetails.appendChild(readBody);
+    panel.appendChild(readDetails);
 
     document.body.appendChild(panel);
     settingsPanel = panel;
@@ -1779,47 +2483,28 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
 
     panel.querySelector("#tts-translate-model-select").addEventListener("change", (e) => {
-      settings.translateModel = e.target.value.trim() || DEFAULTS.translateModel;
-      const input = panel.querySelector("#tts-translate-model-input");
-      if (input) input.value = settings.translateModel;
+      const selectedModel = e.target.value.trim();
+      if (!selectedModel) return;
+      rememberTranslationModel(selectedModel);
+      translationDiscoveryReady = true;
       syncSettingsFromPanel(panel);
       checkTranslationStatus();
     });
 
-    panel.querySelector("#tts-translate-model-input").addEventListener("change", (e) => {
-      settings.translateModel = e.target.value.trim() || DEFAULTS.translateModel;
-      e.target.value = settings.translateModel;
-      const select = panel.querySelector("#tts-translate-model-select");
-      if (select) {
-        let option = Array.from(select.options).find(
-          (item) => item.value === settings.translateModel
-        );
-        if (!option) {
-          option = new Option(`Custom: ${settings.translateModel}`, settings.translateModel);
-          select.appendChild(option);
+    for (const choiceId of ["tts-source-local-choice", "tts-source-project-server-choice"]) {
+      panel.querySelector(`#${choiceId}`).addEventListener("click", (event) => {
+        const sourceId = event.currentTarget.dataset.sourceId;
+        if (setActiveTranslationSource(sourceId)) {
+          syncInstalledTranslationModels(translationHealthPayload || {});
         }
-        select.value = settings.translateModel;
-      }
+        renderTranslationSettingsState();
+        checkTranslationStatus();
+      });
+    }
+
+    panel.querySelector("#tts-target-language-select").addEventListener("change", (e) => {
+      settings.targetLanguage = KokoroTTSCore.normalizeTargetLanguage(e.target.value);
       syncSettingsFromPanel(panel);
-      checkTranslationStatus();
-    });
-
-    panel.querySelector("#tts-translate-model-input").addEventListener("input", (e) => {
-      settings.translateModel = e.target.value.trim() || DEFAULTS.translateModel;
-      settings.settingsVersion = DEFAULTS.settingsVersion;
-      saveSettings(settings);
-    });
-
-    panel.querySelector("#tts-target-language-input").addEventListener("change", (e) => {
-      settings.targetLanguage = e.target.value.trim() || DEFAULTS.targetLanguage;
-      e.target.value = settings.targetLanguage;
-      syncSettingsFromPanel(panel);
-    });
-
-    panel.querySelector("#tts-target-language-input").addEventListener("input", (e) => {
-      settings.targetLanguage = e.target.value.trim() || DEFAULTS.targetLanguage;
-      settings.settingsVersion = DEFAULTS.settingsVersion;
-      saveSettings(settings);
     });
 
     panel.querySelector("#tts-test-btn").addEventListener("click", (e) => {
@@ -1839,18 +2524,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       unloadTranslationModel(e.currentTarget);
     });
 
-    panel.querySelector("#tts-project-server-btn").addEventListener("click", (e) => {
-      checkProjectServerOptions(e.currentTarget);
-    });
-
-    panel.querySelector("#tts-init-local-model-btn").addEventListener("click", (e) => {
-      initializeLocalTranslationModel(e.currentTarget);
-    });
-
     panel.querySelector("#tts-start-local-service-btn").addEventListener("click", (e) => {
       startLocalService(e.currentTarget);
     });
 
+    panel.querySelector("#tts-start-local-ollama-btn").addEventListener("click", () => {
+      launchTranslationSourceAction("local", LOCAL_OLLAMA_START_URL);
+    });
+
+    panel.querySelector("#tts-connect-server-btn").addEventListener("click", () => {
+      const button = panel.querySelector("#tts-source-project-server-choice");
+      launchTranslationSourceAction(
+        button.dataset.sourceId || "project-server",
+        REMOTE_SERVICE_OPEN_URL
+      );
+    });
+
+    renderTranslationSettingsState();
     // Check server status
     checkServerStatus();
     checkTranslationStatus();
@@ -1863,17 +2553,178 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     output.style.color = color;
   }
 
+  function renderTranslationSourceRow(kind, rowView) {
+    const isLocal = kind === "local";
+    const row = document.getElementById(
+      isLocal ? "tts-source-local" : "tts-source-project-server"
+    );
+    const choice = document.getElementById(
+      isLocal ? "tts-source-local-choice" : "tts-source-project-server-choice"
+    );
+    const status = document.getElementById(
+      isLocal ? "tts-source-local-status" : "tts-source-project-server-status"
+    );
+    const action = document.getElementById(
+      isLocal ? "tts-start-local-ollama-btn" : "tts-connect-server-btn"
+    );
+    if (!row || !choice || !status || !action) return;
+    row.hidden = !rowView;
+    if (!rowView) return;
+
+    choice.dataset.sourceId = rowView.id;
+    choice.setAttribute("aria-pressed", rowView.selected ? "true" : "false");
+    const name = choice.querySelector(".tts-source-name");
+    if (name) name.textContent = rowView.name;
+    status.textContent = rowView.statusLabel;
+    row.className = `tts-source-option${rowView.selected ? " selected" : ""}${
+      rowView.reachable ? " reachable" : ""
+    }`;
+
+    const pending = translationSourceActionPending.has(rowView.id);
+    action.hidden = !rowView.action.visible;
+    action.disabled = pending;
+    action.textContent = pending
+      ? isLocal ? "Starting..." : "Opening..."
+      : rowView.action.label;
+  }
+
+  function renderTranslationSettingsState() {
+    if (!settingsPanel) return;
+    const view = KokoroTTSCore.deriveTranslationSettingsView({
+      mediatorOnline,
+      starting: localServiceStartPending,
+      healthError: translationHealthError,
+      payload: translationHealthPayload,
+      selectedSource: settings.translationSource,
+      selectedModel: settings.translateModel,
+    });
+
+    const badge = document.getElementById("tts-settings-state");
+    const sourceRail = settingsPanel.querySelector(".tts-source-rail");
+    const sourceMessage = document.getElementById("tts-source-message");
+    const sourcePicker = document.getElementById("tts-translation-sources");
+    const modelField = document.getElementById("tts-model-field");
+    const startBtn = document.getElementById("tts-start-local-service-btn");
+    const testBtn = document.getElementById("tts-translate-test-btn");
+    const testOutput = document.getElementById("tts-translate-test-output");
+    const advanced = document.getElementById("tts-advanced-settings");
+    const readDetails = document.getElementById("tts-read-settings");
+    const keepBtn = document.getElementById("tts-model-keepalive-btn");
+    const unloadBtn = document.getElementById("tts-model-unload-btn");
+
+    if (badge) {
+      badge.textContent = view.statusLabel;
+      badge.className = `tts-settings-state ${view.mode}`;
+    }
+    if (sourceRail) sourceRail.hidden = !view.showSourceMessage;
+    if (sourceMessage) {
+      sourceMessage.textContent = view.message;
+    }
+    if (sourcePicker) sourcePicker.hidden = !view.showSourceRows;
+    renderTranslationSourceRow(
+      "local",
+      view.sourceRows.find((item) => item.kind === "local") || null
+    );
+    renderTranslationSourceRow(
+      "remote",
+      view.sourceRows.find((item) => item.kind === "remote" && item.selected) ||
+        view.sourceRows.find((item) => item.kind === "remote") ||
+        null
+    );
+    renderTranslationModelOptions(view.modelOptions, view.selectedModel);
+    if (modelField) modelField.hidden = !view.showModelSelect;
+    if (startBtn) {
+      startBtn.hidden = !view.showStartService;
+      startBtn.disabled = view.startAction.disabled;
+      const className = localServiceStartPending ? "tts-test-btn loading" : "tts-test-btn";
+      setButtonHtml(startBtn, className, view.startAction.icon, view.startAction.label);
+    }
+    if (testBtn) {
+      testBtn.hidden = !view.showTestTranslation;
+      testBtn.disabled = !view.showTestTranslation;
+    }
+    if (testOutput) testOutput.hidden = !view.showTranslationOutput;
+    if (advanced) advanced.hidden = !view.showAdvanced;
+    if (readDetails) readDetails.hidden = !view.showReadAloud;
+    if (keepBtn) {
+      keepBtn.hidden = !view.keepAction.visible;
+      keepBtn.disabled = !view.keepAction.visible;
+      setButtonHtml(keepBtn, "tts-test-btn", "\uD83D\uDCCC", view.keepAction.label);
+    }
+    if (unloadBtn) {
+      unloadBtn.hidden = !view.unloadAction.visible;
+      unloadBtn.disabled = !view.unloadAction.visible;
+      setButtonHtml(unloadBtn, "tts-test-btn", "\u23CF", view.unloadAction.label);
+    }
+  }
+
+  function clearTranslationSourcePoll(sourceId) {
+    const timer = translationSourcePollTimers.get(sourceId);
+    if (timer) clearTimeout(timer);
+    translationSourcePollTimers.delete(sourceId);
+  }
+
+  function finishTranslationSourceAction(sourceId, message = "", success = false) {
+    clearTranslationSourcePoll(sourceId);
+    translationSourceActionPending.delete(sourceId);
+    renderTranslationSettingsState();
+    if (message) {
+      setTranslationControlMessage(message, success ? "#81c784" : "#e57373");
+    }
+  }
+
+  function pollTranslationSourceStatus(sourceId, attempt = 0) {
+    if (!translationSourceActionPending.has(sourceId)) return;
+    if (attempt >= 120) {
+      finishTranslationSourceAction(
+        sourceId,
+        sourceId === "local"
+          ? "Local Ollama did not become ready. Check the tray notification."
+          : "The server is still not connected. Complete the Remote Service dialog and try again."
+      );
+      return;
+    }
+    checkTranslationStatus();
+    clearTranslationSourcePoll(sourceId);
+    translationSourcePollTimers.set(
+      sourceId,
+      setTimeout(() => pollTranslationSourceStatus(sourceId, attempt + 1), 1000)
+    );
+  }
+
+  function launchTranslationSourceAction(sourceId, protocolUrl) {
+    const source = String(sourceId || "").trim();
+    if (!source || translationSourceActionPending.has(source)) return;
+    setActiveTranslationSource(source);
+    translationSourceActionPending.add(source);
+    renderTranslationSettingsState();
+    try {
+      window.location.assign(protocolUrl);
+    } catch {
+      finishTranslationSourceAction(
+        source,
+        "The tray action could not be opened. Start the tray app and try again."
+      );
+      return;
+    }
+    pollTranslationSourceStatus(source);
+  }
+
   function updateLocalServiceControl(online, starting = localServiceStartPending) {
     const button = document.getElementById("tts-start-local-service-btn");
-    if (!button) return;
+    mediatorOnline = Boolean(online);
     const state = KokoroTTSCore.getLocalServiceControlState({ online, starting });
-    const className = online
-      ? "tts-test-btn playing"
-      : starting
-        ? "tts-test-btn loading"
-        : "tts-test-btn";
-    setButtonHtml(button, className, state.icon, state.label);
-    button.disabled = state.disabled;
+    if (button) {
+      const className = online
+        ? "tts-test-btn playing"
+        : starting
+          ? "tts-test-btn loading"
+          : "tts-test-btn";
+      setButtonHtml(button, className, state.icon, state.label);
+      button.disabled = state.disabled;
+      button.hidden = online;
+    }
+    renderTranslationSettingsState();
   }
 
   function finishLocalServicePoll(online, message) {
@@ -1904,7 +2755,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
             response.responseText
           )
         ) {
-          finishLocalServicePoll(true, "Local service is running. You can now initialize a local model.");
+          finishLocalServicePoll(
+            true,
+            "Local service is running. Translation sources are being refreshed."
+          );
           return;
         }
         scheduleNextLocalServicePoll(attempt);
@@ -1944,94 +2798,6 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     pollLocalServiceStatus();
   }
 
-  function checkProjectServerOptions(btnElement) {
-    syncSettingsFromPanel();
-    if (btnElement) {
-      setButtonHtml(btnElement, "tts-test-btn loading", "\u23F3", "Finding project server...");
-      btnElement.disabled = true;
-    }
-    setTranslationControlMessage("Refreshing project server models...", "#f0c040");
-
-    GM_xmlhttpRequest({
-      method: "GET",
-      url: `${API_TRANSLATE_HEALTH_URL}?model=${encodeURIComponent(settings.translateModel)}`,
-      timeout: 10000,
-      onload: (response) => {
-        let payload = null;
-        if (response.status === 200) {
-          try {
-            payload = JSON.parse(response.responseText || "{}");
-          } catch {}
-        }
-        if (!payload) {
-          setTranslationControlMessage("Project server check failed. Start the local service and try again.", "#e57373");
-          if (btnElement) {
-            setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Project server check failed");
-            btnElement.disabled = false;
-          }
-          return;
-        }
-
-        syncInstalledTranslationModels(payload);
-        const selection = KokoroTTSCore.chooseProjectServerTranslationModel(
-          payload,
-          settings.translateModel
-        );
-        if (selection.value) {
-          settings.translateModel = selection.value;
-          settings.settingsVersion = DEFAULTS.settingsVersion;
-          const select = document.getElementById("tts-translate-model-select");
-          const input = document.getElementById("tts-translate-model-input");
-          if (select) select.value = selection.value;
-          if (input) input.value = selection.value;
-          saveSettings(settings);
-        }
-        setTranslationControlMessage(
-          selection.message,
-          selection.count ? "#81c784" : "#f0c040"
-        );
-        if (btnElement) {
-          setButtonHtml(
-            btnElement,
-            selection.count ? "tts-test-btn playing" : "tts-test-btn",
-            selection.count ? "\u2705" : "\uD83D\uDD0D",
-            selection.count ? "Using project server" : "Use project server"
-          );
-          btnElement.disabled = false;
-        }
-        if (selection.value) checkTranslationStatus();
-      },
-      onerror: () => {
-        setTranslationControlMessage("Local service is offline. Start it before checking the project server.", "#e57373");
-        if (btnElement) {
-          setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Project server check failed");
-          btnElement.disabled = false;
-        }
-      },
-      ontimeout: () => {
-        setTranslationControlMessage("Project server check timed out.", "#e57373");
-        if (btnElement) {
-          setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Project server timeout");
-          btnElement.disabled = false;
-        }
-      },
-    });
-  }
-
-  async function initializeLocalTranslationModel(btnElement) {
-    syncSettingsFromPanel();
-    const error = KokoroTTSCore.getLocalModelInitializationError(settings.translateModel);
-    if (error) {
-      setTranslationControlMessage(error, "#f0c040");
-      if (btnElement) {
-        setButtonHtml(btnElement, "tts-test-btn error", "\u26A0", "Choose a local model first");
-        btnElement.disabled = false;
-      }
-      return;
-    }
-    await keepTranslationModelLoaded(btnElement);
-  }
-
   function checkServerStatus() {
     const dot = document.getElementById("tts-status-dot");
     const text = document.getElementById("tts-status-text");
@@ -2063,7 +2829,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       onerror: () => {
         updateLocalServiceControl(false, localServiceStartPending);
         dot.className = "tts-status-dot offline";
-        text.textContent = "Server offline - run start.bat";
+        text.textContent = "Local service is offline. Start it from this panel or the tray app.";
         text.style.color = "#e57373";
       },
       ontimeout: () => {
@@ -2075,51 +2841,42 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
-  function syncInstalledTranslationModels(payloadOrModels) {
+  function renderTranslationModelOptions(options, selectedModel) {
     const select = document.getElementById("tts-translate-model-select");
     if (!select) return;
+    const modelOptions = Array.isArray(options) ? options : [];
+    select.textContent = "";
+    if (!modelOptions.length) {
+      select.appendChild(new Option("No model available for this source", ""));
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    for (const option of modelOptions) {
+      const item = new Option(option.model || option.label, option.value);
+      item.selected = option.value === selectedModel;
+      select.appendChild(item);
+    }
+    select.value = selectedModel;
+  }
+
+  function syncInstalledTranslationModels(payloadOrModels) {
+    const select = document.getElementById("tts-translate-model-select");
     const payload = Array.isArray(payloadOrModels)
       ? { available_models: payloadOrModels }
       : payloadOrModels || {};
-    const options = KokoroTTSCore.mergeTranslationModelOptions(
-      TRANSLATION_MODELS,
+    const options = KokoroTTSCore.getTranslationModelOptions(
       payload,
-      settings.translateModel
+      settings.translationSource
     );
-    select.textContent = "";
-    for (const option of options) {
-      const item = new Option(option.label, option.value);
-      item.selected = option.value === settings.translateModel;
-      select.appendChild(item);
-    }
-    select.value = settings.translateModel;
-  }
-
-  function updateTranslationModelControls(payload) {
-    const keepBtn = document.getElementById("tts-model-keepalive-btn");
-    const unloadBtn = document.getElementById("tts-model-unload-btn");
-    if (!keepBtn || !unloadBtn) return;
-
-    const reachable = Boolean(payload && payload.ollama_reachable);
-    const available = Boolean(payload && payload.model_available);
-    const running = Boolean(payload && payload.model_running);
-    const pinned = Boolean(payload && payload.model_pinned);
-    const canLoad = reachable && available;
-
-    keepBtn.disabled = !canLoad;
-    unloadBtn.disabled = !reachable || !running;
-
-    if (pinned) {
-      setButtonHtml(keepBtn, "tts-test-btn playing", "\u2705", "Kept loaded");
-    } else {
-      setButtonHtml(keepBtn, "tts-test-btn", "\uD83D\uDCCC", running ? "Keep loaded" : "Load & keep");
-    }
-
-    if (running) {
-      setButtonHtml(unloadBtn, "tts-test-btn", "\u23CF", "Unload");
-    } else {
-      setButtonHtml(unloadBtn, "tts-test-btn", "\u23CF", "Not loaded");
-    }
+    const selectedModel = KokoroTTSCore.chooseTranslationModel(
+      payload,
+      settings.translateModel,
+      settings.translationSource
+    );
+    if (!select) return selectedModel;
+    renderTranslationModelOptions(options, selectedModel);
+    return selectedModel;
   }
 
   function requestTranslationModelResidency(url, body, timeout = 180000) {
@@ -2150,21 +2907,20 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
             reject(new Error(`Server returned ${response.status}: ${detail}`));
           }
         },
-        onerror: () => reject(new Error("Cannot connect to local TTS server. Run start.bat first.")),
+        onerror: () => reject(new Error(
+          "Cannot connect to the local service. Start it from the settings panel or tray app."
+        )),
         ontimeout: () => reject(new Error("Model residency request timeout.")),
       });
     });
   }
 
   function checkTranslationStatus() {
-    const dot = document.getElementById("tts-translate-status-dot");
-    const text = document.getElementById("tts-translate-status-text");
-    if (!dot || !text) return;
+    if (!settingsPanel) return;
 
-    dot.className = "tts-status-dot checking";
-    text.textContent = "Checking model...";
-    text.style.color = "#f0c040";
-    updateTranslationModelControls(null);
+    translationHealthError = "";
+    translationHealthPayload = null;
+    renderTranslationSettingsState();
 
     GM_xmlhttpRequest({
       method: "GET",
@@ -2172,72 +2928,71 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       timeout: 5000,
       onload: (resp) => {
         if (resp.status !== 200) {
-          dot.className = "tts-status-dot offline";
-          text.textContent = "Translation health check failed";
-          text.style.color = "#e57373";
+          translationHealthError = "Translation health check failed.";
+          translationHealthPayload = null;
+          renderTranslationSettingsState();
           return;
         }
         let payload = null;
         try {
           payload = JSON.parse(resp.responseText || "{}");
         } catch {
-          dot.className = "tts-status-dot offline";
-          text.textContent = "Invalid translation status";
-          text.style.color = "#e57373";
+          translationHealthError = "Invalid translation status.";
+          translationHealthPayload = null;
+          renderTranslationSettingsState();
           return;
         }
 
-        syncInstalledTranslationModels(payload);
-        const fallbackModel = KokoroTTSCore.chooseTranslationModelFallback(
-          payload,
-          settings.translateModel,
-          DEFAULTS.translateModel
-        );
+        const fallbackModel = syncInstalledTranslationModels(payload);
+        translationDiscoveryReady = Boolean(fallbackModel);
+        translationHealthError = "";
+        translationHealthPayload = payload;
+        mediatorOnline = true;
+        const selectedSourceState = Array.isArray(payload.sources)
+          ? payload.sources.find((item) => item && item.id === settings.translationSource)
+          : null;
         if (fallbackModel && fallbackModel !== settings.translateModel) {
-          settings.translateModel = fallbackModel;
-          settings.settingsVersion = DEFAULTS.settingsVersion;
-          const select = document.getElementById("tts-translate-model-select");
-          const input = document.getElementById("tts-translate-model-input");
-          if (select) select.value = fallbackModel;
-          if (input) input.value = fallbackModel;
-          saveSettings(settings);
+          rememberTranslationModel(fallbackModel);
           checkTranslationStatus();
           return;
         }
 
-        if (!payload.ollama_reachable) {
-          updateTranslationModelControls(payload);
-          dot.className = "tts-status-dot offline";
-          text.textContent = "Ollama offline";
-          text.style.color = "#e57373";
-        } else if (payload.model_running) {
-          updateTranslationModelControls(payload);
-          dot.className = "tts-status-dot online";
-          text.textContent = payload.model_pinned
-            ? `${payload.model} kept loaded`
-            : `${payload.model} running`;
-          text.style.color = "#81c784";
-        } else if (payload.model_available) {
-          updateTranslationModelControls(payload);
-          dot.className = "tts-status-dot warning";
-          text.textContent = `${payload.model} installed, not loaded`;
-          text.style.color = "#f0c040";
-        } else {
-          updateTranslationModelControls(payload);
-          dot.className = "tts-status-dot offline";
-          text.textContent = `${payload.model} not installed`;
-          text.style.color = "#e57373";
+        if (!fallbackModel) {
+          if (
+            selectedSourceState &&
+            selectedSourceState.reachable &&
+            settings.translateModel
+          ) {
+            rememberTranslationModel("");
+          }
         }
+        if (
+          selectedSourceState &&
+          selectedSourceState.reachable &&
+          translationSourceActionPending.has(settings.translationSource)
+        ) {
+          const sourceName = String(
+            selectedSourceState.name || settings.translationSource
+          );
+          finishTranslationSourceAction(
+            settings.translationSource,
+            `${sourceName} is ready.`,
+            true
+          );
+        }
+        renderTranslationSettingsState();
       },
       onerror: () => {
-        dot.className = "tts-status-dot offline";
-        text.textContent = "Server offline - run start.bat";
-        text.style.color = "#e57373";
+        translationDiscoveryReady = false;
+        translationHealthError = "Translation status unavailable.";
+        translationHealthPayload = null;
+        renderTranslationSettingsState();
       },
       ontimeout: () => {
-        dot.className = "tts-status-dot offline";
-        text.textContent = "Translation status timeout";
-        text.style.color = "#e57373";
+        translationDiscoveryReady = false;
+        translationHealthError = "Translation status timed out.";
+        translationHealthPayload = null;
+        renderTranslationSettingsState();
       },
     });
   }
@@ -2285,11 +3040,22 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     if (keepBtn) keepBtn.disabled = true;
 
     try {
-      await requestTranslationModelResidency(API_TRANSLATE_UNLOAD_URL, {
+      const result = await requestTranslationModelResidency(API_TRANSLATE_UNLOAD_URL, {
         model: settings.translateModel,
       }, 60000);
       if (btnElement) {
-        setButtonHtml(btnElement, "tts-test-btn", "\u23CF", "Not loaded");
+        setButtonHtml(
+          btnElement,
+          result && result.model_running ? "tts-test-btn error" : "tts-test-btn",
+          result && result.model_running ? "\u26A0" : "\u23CF",
+          result && result.model_running ? "Still running" : "Unloaded"
+        );
+      }
+      if (result && result.model_running) {
+        setTranslationControlMessage(
+          "The model is still running. Its pin was removed; refresh before retrying unload.",
+          "#f0c040"
+        );
       }
       checkTranslationStatus();
     } catch (err) {
@@ -3304,7 +4070,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           if (!requestGate.isCurrent(generation)) return;
           reject(
             new Error(
-              "Cannot connect to TTS server. Run start.bat first."
+              "Cannot connect to the local service. Start it from the settings panel or tray app."
             )
           );
         },
@@ -3354,7 +4120,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           if (!requestGate.isCurrent(generation)) return;
           reject(
             new Error(
-              "Cannot connect to TTS server. Run start.bat first."
+              "Cannot connect to the local service. Start it from the settings panel or tray app."
             )
           );
         },
@@ -3368,10 +4134,79 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
-  async function fetchTranslation(text, context, generation) {
+  function requestTranslationDiscovery(generation) {
     return new Promise((resolve, reject) => {
-      const sourceText = KokoroTTSCore.normalizeLlmSourceText(text);
-      const contextText = KokoroTTSCore.normalizeLlmSourceText(context);
+      const query = settings.translateModel
+        ? `?model=${encodeURIComponent(settings.translateModel)}`
+        : "";
+      const request = GM_xmlhttpRequest({
+        method: "GET",
+        url: `${API_TRANSLATE_HEALTH_URL}${query}`,
+        timeout: 10000,
+        onload: (response) => {
+          if (!translationGate.isCurrent(generation)) return;
+          if (response.status !== 200) {
+            reject(new Error("Translation model discovery failed."));
+            return;
+          }
+          try {
+            resolve(JSON.parse(response.responseText || "{}"));
+          } catch {
+            reject(new Error("Translation model discovery returned invalid data."));
+          }
+        },
+        onerror: () => {
+          if (!translationGate.isCurrent(generation)) return;
+          reject(new Error("Local service is not running."));
+        },
+        ontimeout: () => {
+          if (!translationGate.isCurrent(generation)) return;
+          reject(new Error("Translation model discovery timed out."));
+        },
+        onabort: () => reject(new Error("Translation cancelled.")),
+      });
+      translationGate.attach(generation, request);
+    });
+  }
+
+  async function ensureTranslationModelAvailable(generation) {
+    if (translationDiscoveryReady && settings.translateModel) {
+      return settings.translateModel;
+    }
+
+    const payload = await requestTranslationDiscovery(generation);
+    if (!translationGate.isCurrent(generation)) {
+      throw new Error("Translation cancelled.");
+    }
+    const selectedModel = syncInstalledTranslationModels(payload);
+    translationDiscoveryReady = Boolean(selectedModel);
+    if (!selectedModel) {
+      rememberTranslationModel("");
+      throw new Error(
+        settings.translationSource === "local"
+          ? "No local translation model is available. Start local Ollama and select an installed model."
+          : "No server translation model is available. Connect the server and select an installed model."
+      );
+    }
+    if (selectedModel !== settings.translateModel) {
+      rememberTranslationModel(selectedModel);
+    }
+    return selectedModel;
+  }
+
+  async function fetchTranslation(text, context, generation) {
+    await ensureTranslationModelAvailable(generation);
+    if (!translationGate.isCurrent(generation)) {
+      throw new Error("Translation cancelled.");
+    }
+    const requestPayload = KokoroTTSCore.buildTranslationRequest({
+      text,
+      context,
+      model: settings.translateModel,
+      source: settings.translationSource,
+      targetLanguage: settings.targetLanguage,
+    });
+    return new Promise((resolve, reject) => {
       const request = GM_xmlhttpRequest({
         method: "POST",
         url: API_TRANSLATE_URL,
@@ -3379,12 +4214,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           "Accept": "application/json",
           "Content-Type": "application/json",
         },
-        data: JSON.stringify({
-          text: sourceText,
-          context: contextText || undefined,
-          model: settings.translateModel,
-          target_language: settings.targetLanguage,
-        }),
+        data: JSON.stringify(requestPayload),
         responseType: "json",
         timeout: 120000,
         onload: (response) => {
@@ -3397,6 +4227,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
               reject(error);
             }
           } else {
+            translationDiscoveryReady = false;
             let detail = response.statusText || "Translation failed";
             try {
               const payload = JSON.parse(response.responseText || "{}");
@@ -3407,10 +4238,14 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         },
         onerror: () => {
           if (!translationGate.isCurrent(generation)) return;
-          reject(new Error("Cannot connect to local TTS server. Run start.bat first."));
+          translationDiscoveryReady = false;
+          reject(new Error(
+            "Cannot connect to the local service. Start it from the settings panel or tray app."
+          ));
         },
         ontimeout: () => {
           if (!translationGate.isCurrent(generation)) return;
+          translationDiscoveryReady = false;
           reject(new Error("Translation timeout. Try a shorter selection or a faster model."));
         },
         onabort: () => reject(new Error("Translation cancelled.")),
