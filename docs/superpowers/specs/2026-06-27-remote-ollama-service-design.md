@@ -2,7 +2,7 @@
 
 **Status:** Historical `1.13.0` release contract, implemented and verified on 2026-07-18. Tray, credential, tunnel and routing boundaries remain current; the userscript workflow in this file is archived.
 
-> **Iteration 5 supersession:** The three-action userscript flow and flattened health interpretation below describe released version `1.13.0` only. They were superseded on 2026-07-23 by the source-first contract recorded for userscript `1.15.2` / server `1.7.15` in [`2026-07-23-backend-driven-userscript-settings-design.md`](2026-07-23-backend-driven-userscript-settings-design.md). Current repository metadata is userscript `1.15.3` / server `1.7.16`; iteration 6 adds the formula interchange layer without changing the source-first translation contract. Historical sections are retained to explain the old release, not as current usage instructions.
+> **Iteration 5 supersession:** The three-action userscript flow and flattened health interpretation below describe released version `1.13.0` only. They were superseded on 2026-07-23 by the source-first contract recorded for userscript `1.15.2` / server `1.7.15` in [`2026-07-23-backend-driven-userscript-settings-design.md`](2026-07-23-backend-driven-userscript-settings-design.md). Current repository metadata is userscript `1.15.3` / server `1.7.17`; iterations 6–7 add the formula interchange layer and installable Word/WPS shells without changing the source-first translation contract. Historical sections are retained to explain the old release, not as current usage instructions.
 
 ## Goal
 

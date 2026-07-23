@@ -47,14 +47,20 @@ from windows_startup import (
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 SERVER_SCRIPT = SCRIPT_DIR / "server.py"
+ADDIN_HOST_SCRIPT = SCRIPT_DIR / "addon_host.py"
 TRAY_LAUNCHER = SCRIPT_DIR / "Kokoro TTS.bat"
 SETTINGS_FILE = SCRIPT_DIR / "tray_settings.json"
 CONDA_ENV_NAME = "kokoro-tts"
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", SCRIPT_DIR)) / "KokoroTTS"
 LOG_FILE = APP_DATA_DIR / "server.log"
+ADDIN_DATA_DIR = (
+    Path(os.environ.get("LOCALAPPDATA", SCRIPT_DIR)) / "LocalReadTranslate"
+)
+ADDIN_HOST_LOG_FILE = ADDIN_DATA_DIR / "addin-host.log"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
+ADDIN_HOST_PORT = 5443
 START_SERVER_EVENT_NAME = r"Local\LocalReadTranslate.StartServer"
 START_OLLAMA_EVENT_NAME = r"Local\LocalReadTranslate.StartOllama"
 OPEN_REMOTE_EVENT_NAME = r"Local\LocalReadTranslate.OpenRemote"
@@ -428,6 +434,9 @@ class TrayApp:
         self.server_process = None
         self.owns_server = False
         self._log_handle = None
+        self.addin_host_process = None
+        self.owns_addin_host = False
+        self._addin_log_handle = None
         self.settings = load_settings()
         self.tray_icon = None
         self.is_running = False
@@ -599,6 +608,82 @@ class TrayApp:
             pass
         return None
 
+    def get_addin_health(self, port=ADDIN_HOST_PORT):
+        """Return the loopback add-in host health without using proxies."""
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+        )
+        try:
+            with opener.open(
+                f"http://{DEFAULT_HOST}:{port}/health",
+                timeout=1,
+            ) as response:
+                data = json.load(response)
+            if (
+                response.status == 200
+                and data.get("service") == "localreadtranslate-addin-host"
+                and data.get("ready") is True
+            ):
+                return data
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        return None
+
+    def start_addin_host(self):
+        """Start the document add-in loopback host."""
+        if (
+            self.addin_host_process
+            and self.addin_host_process.poll() is None
+        ):
+            return True
+        if self.get_addin_health():
+            self.owns_addin_host = False
+            return True
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1)
+            if sock.connect_ex((DEFAULT_HOST, ADDIN_HOST_PORT)) == 0:
+                self.owns_addin_host = False
+                return False
+
+        ADDIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self._addin_log_handle = open(
+            ADDIN_HOST_LOG_FILE,
+            "a",
+            encoding="utf-8",
+        )
+        try:
+            self.addin_host_process = subprocess.Popen(
+                [str(self.python_exe), str(ADDIN_HOST_SCRIPT)],
+                cwd=str(SCRIPT_DIR),
+                stdin=subprocess.DEVNULL,
+                stdout=self._addin_log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            self._close_addin_log()
+            self.addin_host_process = None
+            self.owns_addin_host = False
+            return False
+        self.owns_addin_host = True
+        return True
+
+    def stop_addin_host(self):
+        """Stop only the add-in host process created by this tray."""
+        if (
+            self.owns_addin_host
+            and self.addin_host_process
+            and self.addin_host_process.poll() is None
+        ):
+            self.addin_host_process.terminate()
+            try:
+                self.addin_host_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.addin_host_process.kill()
+        self.addin_host_process = None
+        self.owns_addin_host = False
+        self._close_addin_log()
+
     def start_server(self, _=None):
         with self._lock:
             if self.server_process and self.server_process.poll() is None:
@@ -608,6 +693,7 @@ class TrayApp:
             if existing_health:
                 self.owns_server = False
                 self.is_running = True
+                self.start_addin_host()
                 self._update_icon("green", "Kokoro TTS - Running")
                 return
 
@@ -652,6 +738,7 @@ class TrayApp:
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self.owns_server = True
+            self.start_addin_host()
 
         # Wait for server to be ready in background
         def wait_ready():
@@ -1101,6 +1188,10 @@ class TrayApp:
             except Exception:
                 pass
             try:
+                self.stop_addin_host()
+            except Exception:
+                pass
+            try:
                 self.stop_server()
             except Exception:
                 pass
@@ -1122,6 +1213,11 @@ class TrayApp:
         if self._log_handle:
             self._log_handle.close()
             self._log_handle = None
+
+    def _close_addin_log(self):
+        if self._addin_log_handle:
+            self._addin_log_handle.close()
+            self._addin_log_handle = None
 
     def _build_menu(self):
         import pystray

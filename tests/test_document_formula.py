@@ -109,6 +109,91 @@ def test_converts_flat_opc_to_safe_docx_package():
         assert ">test<" in document
 
 
+def test_reconstructs_package_metadata_omitted_by_word_selection_ooxml():
+    root = document_formula.ElementTree.fromstring(_minimal_flat_opc())
+    for part in list(root):
+        name = part.attrib.get(
+            f"{{{document_formula._PKG_NAMESPACE}}}name",
+            "",
+        )
+        if name in {"/[Content_Types].xml", "/_rels/.rels"}:
+            root.remove(part)
+    selection_ooxml = document_formula.ElementTree.tostring(
+        root,
+        encoding="unicode",
+    )
+
+    docx = document_formula.flat_opc_to_docx(selection_ooxml)
+
+    with zipfile.ZipFile(io.BytesIO(docx), "r") as archive:
+        names = set(archive.namelist())
+        assert {"[Content_Types].xml", "_rels/.rels", "word/document.xml"} <= names
+        content_types = archive.read("[Content_Types].xml").decode("utf-8")
+        relationships = archive.read("_rels/.rels").decode("utf-8")
+        assert "/word/document.xml" in content_types
+        assert "officeDocument" in relationships
+
+
+def test_rejects_flat_opc_without_word_document_even_when_metadata_exists():
+    root = document_formula.ElementTree.fromstring(_minimal_flat_opc())
+    for part in list(root):
+        if part.attrib.get(
+            f"{{{document_formula._PKG_NAMESPACE}}}name",
+            "",
+        ) == "/word/document.xml":
+            root.remove(part)
+
+    with pytest.raises(
+        document_formula.FormulaConversionError,
+        match="missing word/document.xml",
+    ):
+        document_formula.flat_opc_to_docx(
+            document_formula.ElementTree.tostring(root, encoding="unicode")
+        )
+
+
+@pytest.mark.skipif(
+    document_formula.find_pandoc() is None,
+    reason="Pandoc is not installed",
+)
+def test_word_selection_flat_opc_round_trip_uses_only_inline_document_xml():
+    generated = document_formula.generate_formula_fragment(
+        "测试 $x^2+y^2=z^2$ 和 $\\frac{a}{b}$。",
+        fragment_dir=Path(__file__).resolve().parents[1] / "test-venv",
+    )
+    try:
+        with zipfile.ZipFile(
+            io.BytesIO(base64.b64decode(generated.docx_base64)),
+            "r",
+        ) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8")
+        document_xml = document_formula.ElementTree.tostring(
+            document_formula.ElementTree.fromstring(document_xml),
+            encoding="unicode",
+        )
+        selection_ooxml = (
+            '<pkg:package xmlns:pkg="'
+            f'{document_formula._PKG_NAMESPACE}">'
+            '<pkg:part pkg:name="/word/document.xml" '
+            'pkg:contentType="application/vnd.openxmlformats-officedocument.'
+            'wordprocessingml.document.main+xml">'
+            f"<pkg:xmlData>{document_xml}</pkg:xmlData>"
+            "</pkg:part></pkg:package>"
+        )
+
+        converted = document_formula.native_formula_to_latex(
+            "flat-opc",
+            selection_ooxml,
+            work_dir=Path(__file__).resolve().parents[1] / "test-venv",
+        )
+
+        assert converted.formula_count == 2
+        assert "$x^{2} + y^{2} = z^{2}$" in converted.latex
+        assert "$\\frac{a}{b}$" in converted.latex
+    finally:
+        Path(generated.local_path).unlink(missing_ok=True)
+
+
 @pytest.mark.skipif(
     document_formula.find_pandoc() is None,
     reason="Pandoc is not installed",

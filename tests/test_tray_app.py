@@ -41,6 +41,7 @@ class TrayOwnershipTests(unittest.TestCase):
     def test_quit_app_forces_process_exit_after_cleanup(self):
         app = self.make_app()
         app._stop_remote_ollama_tunnel = Mock()
+        app.stop_addin_host = Mock()
         app.stop_server = Mock()
         app.tray_icon = Mock()
 
@@ -48,6 +49,7 @@ class TrayOwnershipTests(unittest.TestCase):
             app.quit_app()
 
         app._stop_remote_ollama_tunnel.assert_called_once()
+        app.stop_addin_host.assert_called_once()
         app.stop_server.assert_called_once()
         app.tray_icon.stop.assert_called_once()
         exit_process.assert_called_once_with(0)
@@ -55,6 +57,7 @@ class TrayOwnershipTests(unittest.TestCase):
     def test_quit_app_still_exits_when_cleanup_fails(self):
         app = self.make_app()
         app._stop_remote_ollama_tunnel = Mock(side_effect=RuntimeError("stuck"))
+        app.stop_addin_host = Mock(side_effect=RuntimeError("also stuck"))
         app.stop_server = Mock(side_effect=RuntimeError("also stuck"))
         app.tray_icon = Mock()
 
@@ -62,9 +65,51 @@ class TrayOwnershipTests(unittest.TestCase):
             app.quit_app()
 
         app._stop_remote_ollama_tunnel.assert_called_once()
+        app.stop_addin_host.assert_called_once()
         app.stop_server.assert_called_once()
         app.tray_icon.stop.assert_called_once()
         exit_process.assert_called_once_with(0)
+
+    def test_addin_host_uses_hidden_project_process_and_is_owned(self):
+        app = self.make_app()
+        process = Mock()
+        process.poll.return_value = None
+        log_handle = Mock()
+        fake_socket = Mock()
+        fake_socket.__enter__ = Mock(return_value=fake_socket)
+        fake_socket.__exit__ = Mock(return_value=False)
+        fake_socket.connect_ex.return_value = 1
+        data_directory = Mock()
+        with patch.object(app, "get_addin_health", return_value=None), patch.object(
+            tray_app,
+            "ADDIN_DATA_DIR",
+            data_directory,
+        ), patch.object(
+            tray_app.socket,
+            "socket",
+            return_value=fake_socket,
+        ), patch(
+            "builtins.open",
+            return_value=log_handle,
+        ), patch.object(
+            tray_app.subprocess,
+            "Popen",
+            return_value=process,
+        ) as popen:
+            self.assertTrue(app.start_addin_host())
+
+        command = popen.call_args.args[0]
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(command, [str(app.python_exe), str(tray_app.ADDIN_HOST_SCRIPT)])
+        self.assertEqual(kwargs["cwd"], str(tray_app.SCRIPT_DIR))
+        self.assertIs(kwargs["stdin"], tray_app.subprocess.DEVNULL)
+        self.assertIs(kwargs["stdout"], log_handle)
+        self.assertTrue(app.owns_addin_host)
+
+        app.stop_addin_host()
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        log_handle.close.assert_called_once()
 
 
 class TrayAutoStartTests(unittest.TestCase):

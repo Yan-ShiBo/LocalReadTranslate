@@ -1,5 +1,10 @@
 # Iteration 6：Office / WPS 公式 LaTeX 统一交换层
 
+> **Iteration 7 后续说明：** 本文保留 FastAPI `1.7.16` 的公式引擎与宿主适配器
+> 原型历史。Office manifest、WPS 注册、共享任务窗格、严格回环宿主和安装器已经在
+> FastAPI `1.7.17` 中实现；当前边界与实机证据见
+> [`iteration-7-2026-07-23-installable-office-wps-addins.md`](iteration-7-2026-07-23-installable-office-wps-addins.md)。
+
 **状态：** userscript `1.15.3` / FastAPI `1.7.16` 的公式交换核心、Word/WPS
 宿主适配器原型、自动化测试与文档已经完成。50 个公式已在 Microsoft Word 16.0
 和 WPS Writer 12.0 中验证为原生可编辑公式。可安装任务窗格、Office manifest、

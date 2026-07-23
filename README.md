@@ -20,7 +20,7 @@
 - **Backend-driven source choice** — While the mediator is online, Local Ollama and Project Server remain explicit choices; the selected source shows either its one truthful recovery action or only its discovered generation models
 - **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
 - **Copy selection as canonical LaTeX** — Copy selected prose without translation, preserve paragraph breaks, and normalize detected inline/display MathJax, MathML, and KaTeX formulas to `$...$` / `$$...$$`
-- **Word/WPS formula interoperability core** — Convert mixed LaTeX paragraphs to editable DOCX/OMML equations and convert selected native equations back to LaTeX; installable task-pane packages are a documented next phase
+- **Installable Word/WPS formula add-ins** — One shared task pane converts mixed LaTeX paragraphs to editable native equations and copies selected native equations back as canonical plain-text LaTeX
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
 - **Target-language guard** — Chinese targets that return all-English output are retried once with a strict same-model instruction; a second non-compliant result is reported as failure
@@ -59,10 +59,12 @@
 
 The userscript never receives SSH credentials or talks directly to Ollama. The local API is the single browser boundary; the tray app owns process startup, SSH/API configuration and tunnel lifecycle.
 
-The same loopback API now also exposes a document-formula conversion boundary.
-The prototype Word/WPS adapters send only selected document content to this local
-service. LaTeX is the only external interchange format; DOCX/OMML is used only
-for inserting or reading native editable equations inside the document.
+Microsoft Word and WPS Writer use a second strict loopback host on
+`127.0.0.1:5443`. It serves only the allowlisted add-in files and proxies
+same-origin `/api/*` requests to FastAPI. The add-ins send only selected
+document content to the local service. LaTeX is the only external interchange
+format; DOCX/OMML is used only for inserting or reading native editable
+equations inside the document.
 
 ## 💻 Requirements
 
@@ -73,7 +75,7 @@ for inserting or reading native editable equations inside the document.
 | Python | Managed via Conda (Python 3.10) |
 | eSpeak-NG | Required for phonemization |
 | Browser | Chrome + [Tampermonkey](https://www.tampermonkey.net/) |
-| Pandoc 3.x | Required only for the Word/WPS native-formula conversion core |
+| Pandoc 3.x | Required only for the Word/WPS native-formula add-ins |
 
 ## 🚀 Quick Start
 
@@ -178,33 +180,61 @@ Editing the repository file does not update a copy already installed in Tampermo
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
-## Office/WPS formula add-in core
+## Installable Microsoft Word / WPS Writer formula add-ins
 
-The repository now contains the shared conversion engine and host adapters for
-two document actions:
+Close Word and WPS Writer, then install both current-user add-ins:
 
-- **Convert selected LaTeX**: mixed prose and `$...$` / `$$...$$` formulas
-  become editable native Word/WPS equations while paragraph structure remains;
-- **Copy selection as LaTeX**: selected native equations and prose return to
-  the clipboard as plain canonical LaTeX only.
+```powershell
+.\install-document-addins.bat
+```
 
-Pandoc performs the LaTeX ↔ DOCX/OMML conversion locally. A 50-formula corpus
-produced 50 native formulas and round-tripped back as 50 formulas; the generated
-document was opened in Microsoft Word 16.0 and WPS Writer 12.0 with 50 native
-formula objects in each application.
+Reopen the applications. In Word, choose
+**Home → Add-ins → LocalReadTranslate 公式工作台**. In WPS Writer, choose
+**LocalReadTranslate → LaTeX 公式**. The shared task pane has two commands:
 
-This iteration is deliberately a formula-engine prototype. It does **not** yet
-include an installable Office manifest, WPS registration package, task-pane UI,
-HTTPS add-in host, or installer. See
-[`addons/README.md`](addons/README.md) for the adapter contract and
-[`docs/iteration-6-2026-07-23-office-wps-latex-interchange.md`](docs/iteration-6-2026-07-23-office-wps-latex-interchange.md)
-for verification and the remaining release gates.
+- **Convert to document formula**: mixed prose and `$...$` / `$$...$$`
+  formulas become editable native Word/WPS equations;
+- **Copy as LaTeX**: selected native equations and prose return to the
+  clipboard as canonical plain text only.
+
+The pane checks local Pandoc once on initialization or explicit retry. Normal
+actions reuse the ready state and do not repeat translation-source discovery.
+Formula conversion does not use Ollama, start local Ollama, or change the
+remote tunnel.
+
+The installer registers the exact Office manifest, safely merges one WPS
+`publish.xml` item while preserving unrelated add-ins, and starts the strict
+`127.0.0.1:5443` host if needed. It deliberately does not modify the Windows
+certificate trust store. The default HTTP endpoint is for local desktop
+development only; `addon_host.py` can use caller-supplied trusted TLS
+certificate/key files for another deployment.
+
+To remove only LocalReadTranslate's registrations and an installer-owned
+standalone add-in host:
+
+```powershell
+.\uninstall-document-addins.bat
+```
+
+The 50-formula corpus still produces and round-trips 50 native equations in
+both Word 16.0 and WPS Writer 12.0. The installed Word task pane also completed
+both real button paths: two LaTeX expressions became editable equations, and
+copying them produced
+`测试公式 $x^{2} + y^{2} = z^{2}$ 和 $\frac{a}{b}$。`.
+WPS package/registration and JSAPI contracts are verified, but the WPS
+button-level run is intentionally pending because the validation session did
+not close the user's already-open document.
+
+See [`addons/README.md`](addons/README.md) for installation and troubleshooting,
+and
+[`docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](docs/iteration-7-2026-07-23-installable-office-wps-addins.md)
+for the exact release evidence and remaining WPS boundary.
 
 ## Tampermonkey Development and Publishing
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.3` (FastAPI `1.7.16`).
+The current repository metadata version is `1.15.3` (FastAPI `1.7.17`).
 
 For each release:
 
@@ -234,7 +264,9 @@ browser script and built-in test page are generated from this catalog.
 |------|-------------|
 | `server.py` | FastAPI server with Kokoro TTS inference |
 | `document_formula.py` | Canonical LaTeX parser plus validated Pandoc DOCX/OMML conversion |
-| `addons/` | Shared formula controller and Word/WPS host-adapter prototype |
+| `addons/` | Installable Word/WPS manifests, ribbon, shared task pane, controller and host adapters |
+| `addon_host.py` | Strict `127.0.0.1:5443` add-in asset host and same-origin formula API proxy |
+| `addin_registration.py` | Idempotent WPS `publish.xml` registration merge/remove |
 | `audio_encoding.py` | Bundled FFmpeg helpers for OGG/Opus and WebM/Opus |
 | `tray_app.py` | System tray application (background mode) |
 | `windows_protocol.py` | Per-user `localreadtranslate://` registration and exact validation for the fixed `start`, `ollama`, and `remote` actions |
@@ -245,12 +277,15 @@ browser script and built-in test page are generated from this catalog.
 | `docs/greasyfork-additional-info.md` | Markdown content for the Greasy Fork additional info field |
 | `setup.bat` | One-click environment setup |
 | `start.bat` | Terminal-mode server launcher |
+| `install-document-addins.bat` | Current-user Word/WPS add-in installer |
+| `uninstall-document-addins.bat` | Exact Word/WPS add-in uninstaller |
 | `requirements.txt` | Python dependencies |
 | `requirements-test.txt` | Lightweight CI/test dependencies (no Torch/Kokoro) |
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
 | `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
-| `docs/iteration-6-2026-07-23-office-wps-latex-interchange.md` | Current LaTeX/Office/WPS formula release record |
+| `docs/iteration-7-2026-07-23-installable-office-wps-addins.md` | Current installable Word/WPS formula add-in release record |
+| `docs/iteration-6-2026-07-23-office-wps-latex-interchange.md` | Historical formula interchange-core release record |
 | `docs/iteration-5-2026-07-23.md` | Historical backend-driven translation/settings release record |
 | `docs/iteration-4-2026-07-18.md` | Historical service-control and remote-translation release record |
 | `.github/workflows/ci.yml` | Windows CI |
@@ -380,7 +415,7 @@ Select **Local Ollama** in the Translation panel. If it is offline, click **Star
 
 ```powershell
 conda run -n kokoro-tts python -m pytest tests -v
-conda run -n kokoro-tts python -m py_compile server.py document_formula.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
+conda run -n kokoro-tts python -m py_compile server.py document_formula.py addon_host.py addin_registration.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
 node --check tts-userscript.js
 node --test tests/office-addins-core.test.cjs tests/userscript-core.test.cjs
 conda run -n kokoro-tts python scripts/sync_catalog.py --check
@@ -390,10 +425,10 @@ git diff --check
 ```
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
-The current formula release record is in
-[`docs/iteration-6-2026-07-23-office-wps-latex-interchange.md`](docs/iteration-6-2026-07-23-office-wps-latex-interchange.md).
-Iteration 5 remains the source/model-settings release record; iteration 4 and
-the original expert review remain as history.
+The current formula add-in release record is in
+[`docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](docs/iteration-7-2026-07-23-installable-office-wps-addins.md).
+Iteration 6 remains the formula-engine record, iteration 5 remains the
+source/model-settings record, and earlier iterations remain as history.
 
 ## License
 

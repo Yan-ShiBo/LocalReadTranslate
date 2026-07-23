@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import functools
 import io
 import os
 import re
@@ -33,6 +34,36 @@ MAX_DOCX_ENTRIES = 512
 
 _PKG_NAMESPACE = "http://schemas.microsoft.com/office/2006/xmlPackage"
 _PKG = f"{{{_PKG_NAMESPACE}}}"
+_CONTENT_TYPES_NAMESPACE = (
+    "http://schemas.openxmlformats.org/package/2006/content-types"
+)
+_RELATIONSHIPS_NAMESPACE = (
+    "http://schemas.openxmlformats.org/package/2006/relationships"
+)
+_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+    "officeDocument"
+)
+_WORD_XML_NAMESPACES = {
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    "r": (
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ),
+    "o": "urn:schemas-microsoft-com:office:office",
+    "v": "urn:schemas-microsoft-com:vml",
+    "w10": "urn:schemas-microsoft-com:office:word",
+    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
+    "wp": (
+        "http://schemas.openxmlformats.org/drawingml/2006/"
+        "wordprocessingDrawing"
+    ),
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+    "w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+    "w16": "http://schemas.microsoft.com/office/word/2018/wordml",
+}
 _DISPLAY_ENVIRONMENTS = {
     "equation": None,
     "equation*": None,
@@ -647,6 +678,80 @@ def decode_docx_base64(content: str) -> bytes:
     return data
 
 
+def _flat_opc_content_types(parts: dict[str, str]) -> bytes:
+    ElementTree.register_namespace("", _CONTENT_TYPES_NAMESPACE)
+    root = ElementTree.Element(f"{{{_CONTENT_TYPES_NAMESPACE}}}Types")
+    ElementTree.SubElement(
+        root,
+        f"{{{_CONTENT_TYPES_NAMESPACE}}}Default",
+        {
+            "Extension": "rels",
+            "ContentType": (
+                "application/vnd.openxmlformats-package.relationships+xml"
+            ),
+        },
+    )
+    ElementTree.SubElement(
+        root,
+        f"{{{_CONTENT_TYPES_NAMESPACE}}}Default",
+        {"Extension": "xml", "ContentType": "application/xml"},
+    )
+    default_content_types = {
+        "application/xml",
+        "application/vnd.openxmlformats-package.relationships+xml",
+    }
+    for name, content_type in sorted(parts.items()):
+        if (
+            name == "[Content_Types].xml"
+            or not content_type
+            or content_type in default_content_types
+        ):
+            continue
+        ElementTree.SubElement(
+            root,
+            f"{{{_CONTENT_TYPES_NAMESPACE}}}Override",
+            {"PartName": f"/{name}", "ContentType": content_type},
+        )
+    return ElementTree.tostring(
+        root,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+
+def _flat_opc_root_relationships() -> bytes:
+    ElementTree.register_namespace("", _RELATIONSHIPS_NAMESPACE)
+    root = ElementTree.Element(
+        f"{{{_RELATIONSHIPS_NAMESPACE}}}Relationships"
+    )
+    ElementTree.SubElement(
+        root,
+        f"{{{_RELATIONSHIPS_NAMESPACE}}}Relationship",
+        {
+            "Id": "rId1",
+            "Type": _OFFICE_DOCUMENT_RELATIONSHIP,
+            "Target": "word/document.xml",
+        },
+    )
+    return ElementTree.tostring(
+        root,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+
+def _flat_opc_empty_relationships() -> bytes:
+    ElementTree.register_namespace("", _RELATIONSHIPS_NAMESPACE)
+    root = ElementTree.Element(
+        f"{{{_RELATIONSHIPS_NAMESPACE}}}Relationships"
+    )
+    return ElementTree.tostring(
+        root,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+
 def flat_opc_to_docx(content: str) -> bytes:
     if not content or len(content) > MAX_DOCX_EXPANDED_BYTES:
         raise FormulaConversionError("Flat OPC payload is empty or too large")
@@ -657,48 +762,156 @@ def flat_opc_to_docx(content: str) -> bytes:
     if root.tag != f"{_PKG}package":
         raise FormulaConversionError("Expected an Office Flat OPC package")
 
-    buffer = io.BytesIO()
+    # ElementTree otherwise rewrites the core Word namespaces as ns0/ns1.
+    # Pandoc's DOCX reader expects the conventional w:/m: qualified names.
+    for prefix, namespace in _WORD_XML_NAMESPACES.items():
+        ElementTree.register_namespace(prefix, namespace)
+
     part_count = 0
     expanded_size = 0
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for part in root.findall(f"{_PKG}part"):
-            part_count += 1
-            if part_count > MAX_DOCX_ENTRIES:
-                raise FormulaConversionError("Flat OPC package contains too many parts")
-            name = _safe_docx_entry_name(part.attrib.get(f"{_PKG}name", ""))
-            xml_data = part.find(f"{_PKG}xmlData")
-            binary_data = part.find(f"{_PKG}binaryData")
-            if xml_data is not None:
-                children = list(xml_data)
-                if not children:
-                    payload = b""
-                else:
-                    payload = b"".join(
-                        ElementTree.tostring(
-                            child,
-                            encoding="utf-8",
-                            xml_declaration=index == 0,
-                        )
-                        for index, child in enumerate(children)
-                    )
-            elif binary_data is not None:
-                try:
-                    payload = base64.b64decode(
-                        "".join(binary_data.itertext()).strip(),
-                        validate=True,
-                    )
-                except (binascii.Error, ValueError) as error:
-                    raise FormulaConversionError(
-                        f"Flat OPC binary part {name} is invalid"
-                    ) from error
-            else:
+    part_content_types: dict[str, str] = {}
+    document_payload: bytes | None = None
+    for part in root.findall(f"{_PKG}part"):
+        part_count += 1
+        if part_count > MAX_DOCX_ENTRIES:
+            raise FormulaConversionError("Flat OPC package contains too many parts")
+        name = _safe_docx_entry_name(part.attrib.get(f"{_PKG}name", ""))
+        if name in part_content_types:
+            raise FormulaConversionError(
+                f"Flat OPC package contains duplicate part {name}"
+            )
+        part_content_types[name] = str(
+            part.attrib.get(f"{_PKG}contentType", "")
+        ).strip()
+        xml_data = part.find(f"{_PKG}xmlData")
+        binary_data = part.find(f"{_PKG}binaryData")
+        if xml_data is not None:
+            children = list(xml_data)
+            if not children:
                 payload = b""
-            expanded_size += len(payload)
-            if expanded_size > MAX_DOCX_EXPANDED_BYTES:
-                raise FormulaConversionError("Flat OPC package exceeds the safety limit")
-            archive.writestr(name, payload)
+            else:
+                payload = b"".join(
+                    ElementTree.tostring(
+                        child,
+                        encoding="utf-8",
+                        xml_declaration=index == 0,
+                    )
+                    for index, child in enumerate(children)
+                )
+        elif binary_data is not None:
+            try:
+                payload = base64.b64decode(
+                    "".join(binary_data.itertext()).strip(),
+                    validate=True,
+                )
+            except (binascii.Error, ValueError) as error:
+                raise FormulaConversionError(
+                    f"Flat OPC binary part {name} is invalid"
+                ) from error
+        else:
+            payload = b""
+        expanded_size += len(payload)
+        if expanded_size > MAX_DOCX_EXPANDED_BYTES:
+            raise FormulaConversionError("Flat OPC package exceeds the safety limit")
+        if name == "word/document.xml":
+            document_payload = payload
+
+    if document_payload is None:
+        raise FormulaConversionError(
+            "Flat OPC selection is missing word/document.xml"
+        )
+
+    # Word Range.getOoxml() is a selection package, not a complete document.
+    # It may omit package metadata or contain relationships to parts outside
+    # the selection.  Build a deliberately minimal DOCX from the selected
+    # document XML only.  Text and OMML equations are inline in this part;
+    # excluding unrelated relationships also prevents broken targets from
+    # making Pandoc reject an otherwise valid selection.
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            _flat_opc_content_types(
+                {
+                    "word/document.xml": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document.main+xml"
+                    )
+                }
+            )
+        )
+        archive.writestr("_rels/.rels", _flat_opc_root_relationships())
+        archive.writestr("word/document.xml", document_payload)
+        archive.writestr(
+            "word/_rels/document.xml.rels",
+            _flat_opc_empty_relationships(),
+        )
 
     data = buffer.getvalue()
+    _validate_docx_bytes(data)
+    return data
+
+
+@functools.lru_cache(maxsize=2)
+def _pandoc_reference_docx(executable: str) -> bytes:
+    """Load Pandoc's complete reference DOCX once per converter executable."""
+
+    try:
+        result = subprocess.run(
+            [executable, "--print-default-data-file=reference.docx"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+            creationflags=_subprocess_creation_flags(),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise FormulaConversionError(
+            "Formula converter reference document timed out"
+        ) from error
+    except OSError as error:
+        raise FormulaConversionError(
+            "Formula converter reference document could not be loaded"
+        ) from error
+    if result.returncode != 0:
+        diagnostic = (result.stderr or result.stdout or b"").decode(
+            "utf-8",
+            "replace",
+        )
+        detail = diagnostic.strip().splitlines()
+        suffix = detail[-1] if detail else "unknown reference document error"
+        raise FormulaConversionError(
+            f"Formula converter reference document failed: {suffix}"
+        )
+
+    data = bytes(result.stdout)
+    _validate_docx_bytes(data)
+    return data
+
+
+def _hydrate_word_selection_docx(
+    selection_docx: bytes,
+    *,
+    executable: Path,
+) -> bytes:
+    """Place a Word selection document.xml into Pandoc's valid DOCX shell."""
+
+    _validate_docx_bytes(selection_docx)
+    with zipfile.ZipFile(io.BytesIO(selection_docx), "r") as archive:
+        document_payload = archive.read("word/document.xml")
+
+    reference = _pandoc_reference_docx(str(executable))
+    output = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(reference), "r") as source,
+        zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as target,
+    ):
+        for info in source.infolist():
+            if info.is_dir() or info.filename == "word/document.xml":
+                continue
+            target.writestr(info, source.read(info.filename))
+        target.writestr("word/document.xml", document_payload)
+
+    data = output.getvalue()
     _validate_docx_bytes(data)
     return data
 
@@ -709,14 +922,17 @@ def native_formula_to_latex(
     *,
     work_dir: Path | None = None,
 ) -> NativeToLatexResult:
+    executable, version = _require_pandoc()
     if source_format == "docx-base64":
         docx = decode_docx_base64(content)
     elif source_format == "flat-opc":
-        docx = flat_opc_to_docx(content)
+        docx = _hydrate_word_selection_docx(
+            flat_opc_to_docx(content),
+            executable=executable,
+        )
     else:
         raise FormulaConversionError("Unsupported native formula source format")
 
-    _executable, version = _require_pandoc()
     root = _formula_fragment_directory(work_dir)
     input_path = (root / f"native-{uuid.uuid4().hex}.docx").resolve()
     if input_path.parent != root:

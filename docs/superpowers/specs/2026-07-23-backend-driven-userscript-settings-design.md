@@ -1,10 +1,10 @@
 # Backend-driven Userscript Settings Design
 
-> **Iteration 6 note:** This source/model contract remains unchanged. The
-> current repository metadata is userscript `1.15.3` / FastAPI `1.7.16`; the
-> added LaTeX/Office/WPS formula layer and its still-unpackaged add-in boundary
-> are recorded in
-> [`../../iteration-6-2026-07-23-office-wps-latex-interchange.md`](../../iteration-6-2026-07-23-office-wps-latex-interchange.md).
+> **Iteration 7 note:** This source/model contract remains unchanged. The
+> current repository metadata is userscript `1.15.3` / FastAPI `1.7.17`; the
+> LaTeX/Office/WPS formula core is recorded in iteration 6; the current
+> installable add-in boundary is recorded in
+> [`../../iteration-7-2026-07-23-installable-office-wps-addins.md`](../../iteration-7-2026-07-23-installable-office-wps-addins.md).
 
 **Status:** Historical release contract for userscript `1.15.2` and FastAPI `1.7.15`. Backend-driven discovery, source-first interaction, and non-blocking health refresh were implemented and verified on 2026-07-23.
 

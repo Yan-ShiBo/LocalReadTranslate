@@ -1,96 +1,189 @@
-# Office / WPS LaTeX formula add-in core
+# Microsoft Word / WPS Writer formula add-ins
 
-This directory contains the shared formula workflow and the host adapters for a
-future Microsoft Word and WPS Writer add-in. It is an implementation core, not
-yet an installable add-in package: there is no task-pane UI, Office manifest,
-WPS ribbon package, HTTPS add-in host, or installer in this iteration.
+This directory contains the installable LocalReadTranslate document add-ins.
+Both hosts expose the same two actions:
 
-## Interchange contract
+- **Convert to document formula** turns selected prose plus `$...$` or
+  `$$...$$` LaTeX into editable native Word/WPS equations.
+- **Copy as LaTeX** exports the selected native equations and surrounding
+  prose, canonicalizes the equations, and writes plain text only.
 
-LaTeX is the only format copied outside a document:
+LaTeX is the only external interchange format. DOCX/OMML is a short-lived
+local insertion/export format and is never copied as an image or proprietary
+clipboard object.
 
-- inline formulas use `$...$`;
-- display formulas use `$$...$$`;
-- paragraph breaks and surrounding prose are preserved;
-- Word/WPS native equations are used only inside the document;
-- failed or unsupported conversions return an error or warning instead of
-  silently copying an image or an invented approximation.
+## Install and remove
 
-The backend accepts the browser's historical `[[MATH: ...]]` wrapper, the new
-`[[MATH_BLOCK: ...]]` wrapper, `\(...\)`, `\[...\]`, dollar delimiters, and
-common display environments. It canonicalizes them before native conversion.
+First install the normal LocalReadTranslate environment and Pandoc 3.x. Then
+close Word and WPS Writer and run:
 
-## Modules
+```powershell
+.\install-document-addins.bat
+```
 
-| Module | Responsibility |
+The installer:
+
+1. registers the exact Office XML manifest for the current user;
+2. safely merges one `LocalReadTranslateFormula` entry into
+   `%APPDATA%\kingsoft\wps\jsaddons\publish.xml`, preserving unrelated entries
+   and backing up an existing file;
+3. starts the strict loopback add-in host on `127.0.0.1:5443` if the tray app
+   is not already managing it.
+
+Reopen the applications after installation. In Word, choose
+**Home → Add-ins → LocalReadTranslate 公式工作台**. In WPS Writer, choose
+**LocalReadTranslate → LaTeX 公式**.
+
+To remove only these two registrations and an installer-owned standalone host:
+
+```powershell
+.\uninstall-document-addins.bat
+```
+
+The uninstaller does not remove other Office/WPS add-ins, stop the remote
+Ollama tunnel, stop the local FastAPI service, or change local Ollama.
+
+Advanced installer switches:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -OfficeOnly
+powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -WpsOnly
+powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -NoStart
+```
+
+Local requirements:
+
+- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.17` environment;
+- Pandoc 3.x found through `PANDOC_PATH`, `PATH`, or a standard Windows path;
+- Microsoft Word desktop for the Office add-in;
+- a WPS Writer build with JavaScript add-in support for the WPS add-in.
+
+## Runtime architecture
+
+```text
+Word Office.js adapter ─┐
+                        ├─ shared task pane ─ http://127.0.0.1:5443
+WPS JSAPI adapter ──────┘                         │
+                                                │ same-origin /api proxy
+                                                ▼
+                                   http://127.0.0.1:5000
+                                   FastAPI + Pandoc
+```
+
+The add-in host is intentionally small:
+
+- it binds only to `127.0.0.1`;
+- it serves an explicit static-file allowlist, not the repository;
+- it proxies only `/api/*` to the loopback FastAPI service;
+- it disables CORS and adds CSP, `nosniff`, no-referrer, and no-store headers;
+- it never receives or exposes SSH credentials or remote Ollama settings.
+
+The default development installation uses loopback HTTP because it works in
+the tested desktop Word/WPS hosts without modifying the Windows certificate
+trust store. `addon_host.py --cert ... --key ...` supports TLS when the caller
+already owns a suitable trusted certificate, but the installer deliberately
+does not create or trust one.
+
+The host process can be owned by the tray app. Stopping that optional host does
+not stop the remote tunnel; closing the tray app follows the tray application's
+existing lifecycle rules.
+
+## Components
+
+| Path | Responsibility |
 |---|---|
-| `shared/localreadtranslate-client.js` | Calls the loopback formula endpoints and normalizes connection errors |
-| `shared/formula-controller.js` | Implements “Convert selected LaTeX” and “Copy selection as LaTeX” without host-specific logic |
-| `office-word/office-adapter.js` | Uses Word `getOoxml()` for export and `insertFileFromBase64(..., "Replace")` for insertion |
-| `wps-word/wps-adapter.js` | Uses a temporary DOCX for selection export and `Range.InsertFile` for insertion |
-
-The Python conversion engine is [`../document_formula.py`](../document_formula.py).
-It uses Pandoc to convert canonical LaTeX paragraphs to editable DOCX/OMML and
-to convert selected native Word/WPS equations back to canonical LaTeX.
+| `taskpane/` | Shared two-action UI; service health is checked once on initialization or explicit retry |
+| `shared/localreadtranslate-client.js` | Same-origin formula API client with source-neutral errors |
+| `shared/formula-controller.js` | Host-independent conversion and plain-text clipboard contract |
+| `office-word/manifest.xml` | Word task-pane XML manifest |
+| `office-word/office-adapter.js` | Word `getOoxml()` export and `insertFileFromBase64(..., "Replace")` insertion |
+| `wps-word/ribbon.xml` | WPS ribbon command |
+| `wps-word/js/ribbon.js` | Creates/toggles one shared WPS task pane |
+| `wps-word/wps-adapter.js` | WPS temporary-DOCX export and `Range.InsertFile` insertion |
+| `../addon_host.py` | Strict loopback static host and narrow API proxy |
+| `../addin_registration.py` | Idempotent WPS `publish.xml` merge/remove |
+| `../scripts/install_document_addins.ps1` | Current-user installation |
+| `../scripts/uninstall_document_addins.ps1` | Exact current-user removal |
 
 ## Data flow
 
-### LaTeX paragraph to editable native equations
+### LaTeX to native equations
 
-1. The adapter reads the selected paragraph as plain text.
-2. `POST /document/latex-fragment` canonicalizes the LaTeX and creates a
-   short-lived DOCX/OMML fragment.
-3. Word inserts the returned base64 DOCX; WPS inserts the returned local path.
-4. The inserted equations remain native and editable in the document.
+1. The task pane reads the current selection only when the user clicks.
+2. `POST /document/latex-fragment` canonicalizes supported wrappers and asks
+   local Pandoc to create an editable DOCX/OMML fragment.
+3. Word inserts the returned base64 package; WPS inserts the returned local
+   path.
+4. The selection becomes native equations that remain editable in the host.
 
-### Native equations to the clipboard
+### Native equations to LaTeX
 
-1. Word exports the selection as Flat OPC; WPS exports the selection to a
-   temporary DOCX.
-2. `POST /document/native-to-latex` validates the package and converts it back
-   to canonical LaTeX.
-3. The shared controller writes only the returned plain-text LaTeX to the
+1. Word exports the selection as Flat OPC; WPS copies the formatted selection
+   into a temporary DOCX.
+2. `POST /document/native-to-latex` validates package size, count, and paths.
+3. Word selection packages are placed into Pandoc's complete reference DOCX
+   shell while preserving conventional `w:` and `m:` namespaces.
+4. Only canonical plain-text LaTeX plus surrounding prose is written to the
    clipboard.
 
-## Local requirements
-
-- LocalReadTranslate FastAPI `1.7.16`;
-- Pandoc 3.x available through `PANDOC_PATH`, `PATH`, or a standard Windows
-  installation path;
-- Microsoft Word or WPS Writer for the corresponding host adapter.
-
-The WPS insertion path is local-machine only and expires after one hour. The
-backend validates decoded package size, expanded ZIP size, entry count, and
-entry paths before conversion.
+Formula conversion depends on Pandoc, not Ollama. Neither local Ollama nor a
+remote model is required, started, or contacted by these actions.
 
 ## Current verification
 
-- 50-formula corpus: 50 LaTeX formulas became 50 OMML formulas and 50 formulas
-  survived the native-to-LaTeX round trip;
-- Microsoft Word 16.0 opened the generated corpus as 50 native formulas across
-  61 paragraphs;
-- WPS Writer 12.0 opened the same corpus as 50 native formulas across
-  61 paragraphs;
-- controller and host-adapter contract tests pass under Node;
-- backend parser, API, package validation, and Pandoc round-trip tests pass.
+- The 50-formula corpus becomes 50 native OMML equations and round-trips as 50
+  formulas.
+- Microsoft Word 16.0 and WPS Writer 12.0 both opened that corpus as 50 native
+  equations across 61 paragraphs.
+- The installed Microsoft Word task pane was exercised in a real blank
+  document:
+  - `测试公式 $x^2 + y^2 = z^2$ 和 $\frac{a}{b}$。` became two editable
+    native equations;
+  - selecting the result and clicking **Copy as LaTeX** produced
+    `测试公式 $x^{2} + y^{2} = z^{2}$ 和 $\frac{a}{b}$。`.
+- WPS package structure, ribbon callbacks, adapter behavior, registration
+  merge/remove, and HTTP assets are covered by automated tests.
+- WPS button-level acceptance remains pending until WPS can be safely restarted;
+  the current validation session intentionally did not close the user's open
+  document.
 
-The generated document interoperability is therefore verified in both desktop
-applications. The live Office.js/WPS add-in buttons are not yet verified
-because the installable task-pane shells are the next phase.
+See
+[`../docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](../docs/iteration-7-2026-07-23-installable-office-wps-addins.md)
+for the release record and exact evidence.
 
-## Next phase
+## Troubleshooting
 
-1. Build a minimal task pane with two commands: **Convert LaTeX** and
-   **Copy as LaTeX**.
-2. Add the Office manifest and an HTTPS loopback/static host.
-3. Add the WPS ribbon/task-pane package and registration script.
-4. Run live button-level acceptance tests in both applications.
-5. Package and document installation only after those host-level tests pass.
+### The task pane is missing
+
+- Confirm `http://127.0.0.1:5443/health` returns
+  `localreadtranslate-addin-host`.
+- Close and reopen Word/WPS once after registration changes.
+- Rerun the installer; it is idempotent.
+- For Word, open **Home → Add-ins** and select the add-in once if Office has
+  registered it but has not opened the pane automatically.
+
+### The pane says the local service is offline
+
+Start `Kokoro TTS.bat` or `start.bat`, then click **Retry**. The task pane
+checks formula health only during initial load and explicit retry; ordinary
+actions do not repeat “Checking translation sources”.
+
+### Pandoc is unavailable
+
+Install Pandoc 3.x or set `PANDOC_PATH`, restart only the local FastAPI service,
+and click **Retry**. The formula health endpoint does not expose the executable
+path.
+
+### WPS does not show the ribbon
+
+WPS reads `publish.xml` at startup. Close WPS only after saving the document,
+then reopen it. Confirm the WPS build includes JS add-in support and that
+`http://127.0.0.1:5443/wps-word/ribbon.xml` is reachable.
 
 Host API references:
 
+- [Office add-in XML manifest](https://learn.microsoft.com/en-us/office/dev/add-ins/develop/xml-manifest-overview)
 - [Word Range API](https://learn.microsoft.com/en-us/javascript/api/word/word.range?view=word-js-preview)
-- [Word LaTeX equations](https://learn.microsoft.com/en-us/office/math/latex)
-- [Word MathML and clipboard behavior](https://learn.microsoft.com/en-us/office/math/mathml)
+- [WPS add-in deployment](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/wps-integration-mode/wps-addin-development/wps-addin-development-instructions)
+- [WPS task panes](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/addin-api/TaskPane/task-pane-overview)
 - [WPS Range.InsertFile](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Range/member/InsertFile)
-- [WPS OMath API](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/OMath/obj)

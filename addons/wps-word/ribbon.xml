@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="localReadTranslateTab" label="LocalReadTranslate">
+        <group id="localReadTranslateFormulaGroup" label="公式">
+          <button
+            id="localReadTranslateShowFormulaPane"
+            label="LaTeX 公式"
+            screentip="打开公式工作台"
+            supertip="将 LaTeX 转为 WPS 可编辑公式，或把原生公式复制为 LaTeX。"
+            onAction="OnAction"
+            getEnabled="OnGetEnabled"
+            getImage="GetImage"
+            size="large"
+            visible="true"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

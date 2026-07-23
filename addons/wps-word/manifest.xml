@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<JsPlugin>
+  <ApiVersion>1.0.0</ApiVersion>
+  <Name>LocalReadTranslateFormula</Name>
+  <Description>LaTeX 与 WPS Writer 原生公式双向转换</Description>
+</JsPlugin>

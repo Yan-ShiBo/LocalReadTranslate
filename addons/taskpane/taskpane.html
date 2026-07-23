@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LocalReadTranslate 公式</title>
+    <link rel="stylesheet" href="/taskpane/taskpane.css">
+  </head>
+  <body>
+    <main class="pane-shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">LOCALREADTRANSLATE</p>
+          <h1>公式工作台</h1>
+        </div>
+        <span id="host-name" class="host-badge">正在识别</span>
+      </header>
+
+      <section class="service-line" aria-labelledby="service-title">
+        <span id="service-pill" class="status-dot" aria-hidden="true"></span>
+        <div>
+          <h2 id="service-title">本地公式服务</h2>
+          <p id="service-detail">正在检查一次转换环境…</p>
+        </div>
+        <button id="retry-button" class="text-button" type="button" hidden>
+          重试
+        </button>
+      </section>
+
+      <section class="selection-paper" aria-labelledby="selection-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">当前选区</p>
+            <h2 id="selection-title">公式结构预览</h2>
+          </div>
+          <span id="formula-count" class="formula-total">—</span>
+        </div>
+        <div
+          id="selection-preview"
+          class="formula-strip is-empty"
+          aria-label="当前选区中的公式结构"
+        >
+          <span class="empty-strip">切回文档选择一段内容</span>
+        </div>
+        <div class="formula-legend" aria-label="公式计数">
+          <span><i class="legend-mark inline"></i>行内 <b id="inline-count">0</b></span>
+          <span><i class="legend-mark display"></i>独立 <b id="display-count">0</b></span>
+        </div>
+        <p id="selection-note" class="selection-note">
+          执行时会重新读取选区；复制原生公式无需 LaTeX 定界符。
+        </p>
+      </section>
+
+      <section class="actions" aria-label="公式操作">
+        <button id="convert-button" class="action-button primary" type="button" disabled>
+          <span class="action-index">01</span>
+          <span>
+            <strong>转为文档公式</strong>
+            <small>LaTeX → 可编辑原生公式</small>
+          </span>
+        </button>
+        <button id="copy-button" class="action-button secondary" type="button" disabled>
+          <span class="action-index">02</span>
+          <span>
+            <strong>复制为 LaTeX</strong>
+            <small>原生公式 → 统一纯文本</small>
+          </span>
+        </button>
+      </section>
+
+      <section
+        id="operation-status"
+        class="operation-status is-idle"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <span id="operation-mark" class="operation-mark" aria-hidden="true">·</span>
+        <div>
+          <h2 id="operation-title">准备就绪</h2>
+          <p id="operation-detail">选择内容后直接执行，不会重复检查服务。</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/shared/localreadtranslate-client.js"></script>
+    <script src="/shared/formula-controller.js"></script>
+    <script src="/office-word/office-adapter.js"></script>
+    <script src="/wps-word/wps-adapter.js"></script>
+    <script src="/taskpane/taskpane.js"></script>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+  xsi:type="TaskPaneApp">
+  <Id>74d95f3f-f8d0-4a33-95d8-2f0b637df535</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>LocalReadTranslate</ProviderName>
+  <DefaultLocale>zh-CN</DefaultLocale>
+  <DisplayName DefaultValue="LocalReadTranslate 公式工作台"/>
+  <Description DefaultValue="在 Word 中将 LaTeX 转为可编辑公式，并把原生公式统一复制为 LaTeX。"/>
+  <IconUrl DefaultValue="http://localhost:5443/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="http://localhost:5443/assets/icon-80.png"/>
+  <SupportUrl DefaultValue="https://github.com/Yan-ShiBo/LocalReadTranslate/issues"/>
+  <AppDomains>
+    <AppDomain>http://localhost:5443</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Document"/>
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="http://localhost:5443/taskpane/taskpane.html?host=office"/>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+</OfficeApp>
