@@ -1,12 +1,24 @@
-# Microsoft Word / WPS Writer formula add-ins
+# Microsoft Word / WPS Writer document add-ins
 
 This directory contains the installable LocalReadTranslate document add-ins.
-Both hosts expose the same two actions:
+Both hosts expose the same source-first document assistant:
 
+- **Translate selection** uses only eligible models discovered on the selected
+  Local Ollama or Project Server source. The result can be copied or replace
+  the current selection.
+- **Read selection** uses the API voice/speed catalog and local WAV playback.
+  Chinese or formula-bearing text is prepared with the selected discovered
+  model; plain English can go directly to Kokoro.
 - **Convert to document formula** turns selected prose plus `$...$` or
   `$$...$$` LaTeX into editable native Word/WPS equations.
-- **Copy as LaTeX** exports the selected native equations and surrounding
-  prose, canonicalizes the equations, and writes plain text only.
+- **Copy selection as LaTeX** exports the selected native equations and
+  surrounding prose, canonicalizes the equations, and writes plain text only.
+
+The task pane mirrors the userscript layout: Translation is the sole expanded
+primary section; target/model lifecycle controls are under Advanced; Read
+aloud and Formula & LaTeX are separate collapsed sections. Local is the
+default source, and the pane remembers the source, one model per source,
+target language, voice and speed.
 
 LaTeX is the only external interchange format. DOCX/OMML is a short-lived
 local insertion/export format and is never copied as an image or proprietary
@@ -33,8 +45,8 @@ The installer:
    is not already managing it.
 
 Reopen the applications after installation. In Word, choose
-**Home → Add-ins → LocalReadTranslate 公式工作台**. In WPS Writer, choose
-**LocalReadTranslate → LaTeX 公式**.
+**Home → Add-ins → LocalReadTranslate 文档工作台**. In WPS Writer, choose
+**LocalReadTranslate → 阅读与公式**.
 
 To remove only these two registrations and an installer-owned standalone host:
 
@@ -55,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -No
 
 Local requirements:
 
-- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.17` environment;
+- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.18` environment;
 - Pandoc 3.x found through `PANDOC_PATH`, `PATH`, or a standard Windows path;
 - Microsoft Word desktop for the Office add-in;
 - a WPS Writer build with JavaScript add-in support for the WPS add-in.
@@ -69,7 +81,7 @@ WPS JSAPI adapter ──────┘                         │
                                                 │ same-origin /api proxy
                                                 ▼
                                    http://127.0.0.1:5000
-                                   FastAPI + Pandoc
+                          FastAPI + Pandoc + Ollama routing + Kokoro
 ```
 
 The add-in host is intentionally small:
@@ -78,7 +90,9 @@ The add-in host is intentionally small:
 - it serves an explicit static-file allowlist, not the repository;
 - it proxies only `/api/*` to the loopback FastAPI service;
 - it disables CORS and adds CSP, `nosniff`, no-referrer, and no-store headers;
-- it never receives or exposes SSH credentials or remote Ollama settings.
+- it never receives or exposes SSH credentials or remote Ollama settings;
+- it allows up to 150 seconds for a bounded upstream request so a cold,
+  explicitly selected Ollama model can initialize without a premature 502.
 
 The default development installation uses loopback HTTP because it works in
 the tested desktop Word/WPS hosts without modifying the Windows certificate
@@ -94,20 +108,46 @@ existing lifecycle rules.
 
 | Path | Responsibility |
 |---|---|
-| `taskpane/` | Shared two-action UI; service health is checked once on initialization or explicit retry |
-| `shared/localreadtranslate-client.js` | Same-origin formula API client with source-neutral errors |
+| `taskpane/` | Userscript-aligned shared translation/read/formula UI with persisted source-scoped preferences |
+| `shared/localreadtranslate-client.js` | Same-origin formula, translation, read, speech and model-lifecycle API client with source-neutral errors |
 | `shared/formula-controller.js` | Host-independent conversion and plain-text clipboard contract |
 | `office-word/manifest.xml` | Word task-pane XML manifest |
-| `office-word/office-adapter.js` | Word `getOoxml()` export and `insertFileFromBase64(..., "Replace")` insertion |
+| `office-word/office-adapter.js` | Word selection text read/replace, `getOoxml()` export and `insertFileFromBase64(..., "Replace")` insertion |
 | `wps-word/ribbon.xml` | WPS ribbon command |
 | `wps-word/js/ribbon.js` | Creates/toggles one shared WPS task pane |
-| `wps-word/wps-adapter.js` | WPS `Range.Copy/Paste` one-shot DOCX export, `finally`-driven cleanup, and `Range.InsertFile` insertion |
+| `wps-word/wps-adapter.js` | WPS selection text read/replace, `Range.Copy/Paste` one-shot DOCX export, `finally`-driven cleanup, and `Range.InsertFile` insertion |
 | `../addon_host.py` | Strict loopback static host and narrow API proxy |
 | `../addin_registration.py` | Idempotent WPS `publish.xml` merge/remove |
 | `../scripts/install_document_addins.ps1` | Current-user installation |
 | `../scripts/uninstall_document_addins.ps1` | Exact current-user removal |
 
 ## Data flow
+
+### Translation and model sources
+
+1. Initialization (or explicit Retry) requests formula health, translation
+   health and the voice catalog once in parallel.
+2. The pane keeps Local Ollama and Project Server as explicit source rows while
+   the mediator is online. Only the selected reachable source contributes
+   options, and only `available_model_options` values are rendered.
+3. Source and model choices do not trigger another discovery request.
+   Ordinary translation also reuses the cached snapshot. Only explicit
+   Start/Connect or model keep/unload actions refresh source state.
+4. `POST /translate` receives the current selection, exact selected model and
+   target language. The returned text stays in the pane until copied or
+   written back with the host adapter.
+5. Preferences are stored per task-pane origin. A saved
+   `remote:project-server:qwen3:30b` is restored only if discovery still lists
+   that exact model on that source; a stale value is never injected into the
+   selector.
+
+### Read aloud
+
+1. The pane reads the current document selection only after the user clicks.
+2. Plain English can go directly to `/tts`. CJK or formula-bearing text
+   requires the selected discovered model and first calls `/read/prepare`.
+3. `/tts` returns `audio/wav` through the same-origin proxy. The pane creates a
+   temporary blob URL, plays it, and revokes it when stopped or replaced.
 
 ### LaTeX to native equations
 
@@ -158,9 +198,25 @@ remote model is required, started, or contacted by these actions.
 - WPS package structure, ribbon callbacks, `Copy/Paste` export, one-shot spool
   validation/cleanup, registration merge/remove, and HTTP assets are covered
   by automated tests.
+- The current assistant core has 20 Node subtests covering the translation,
+  read/audio, source filtering, preference restore, explicit connection poll,
+  Word/WPS selection replacement, formula controller and WPS ribbon seams.
+- The exact add-in proxy path was tested with
+  `remote:project-server:qwen3:30b` (never a 100B+ model):
+  - selected-text translation returned Simplified Chinese and preserved
+    `$x^2 + y^2 = z^2$`;
+  - `/read/prepare` returned an English formula reading with the same exact
+    model;
+  - `/tts` returned `200 audio/wav`, 307,244 bytes and a `RIFF` header;
+  - the 30B model was explicitly unloaded afterward, Project Server remained
+    reachable, and local Ollama remained stopped.
+- Isolated browser checks at 390 px and 280 px found no horizontal overflow.
+  These checks plus the proxy integration do not claim the new
+  translation/read buttons were clicked inside a real Word/WPS document; the
+  host-level UI evidence above remains specific to the formula paths.
 
 See
-[`../docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](../docs/iteration-7-2026-07-23-installable-office-wps-addins.md)
+[`../docs/iteration-8-2026-07-23-office-wps-document-assistant.md`](../docs/iteration-8-2026-07-23-office-wps-document-assistant.md)
 for the release record and exact evidence.
 
 ## Troubleshooting
@@ -177,8 +233,19 @@ for the release record and exact evidence.
 ### The pane says the local service is offline
 
 Start `Kokoro TTS.bat` or `start.bat`, then click **Retry**. The task pane
-checks formula health only during initial load and explicit retry; ordinary
-actions do not repeat “Checking translation sources”.
+checks formula, translation and voice capability only during initial load and
+explicit retry; ordinary actions do not repeat “Checking translation
+sources”.
+
+### Local or Project Server models are missing
+
+Choose the source row first. An offline Local Ollama row shows **Start**; a
+disconnected Project Server row shows **Connect**. Once the selected source is
+reachable, only its discovered generation models appear. A connected source
+with no generation model stays visibly connected and does not invent a
+default. Source credentials remain in the tray app. The pane polls only after
+an explicit Start/Connect action and refreshes the list automatically when
+that source becomes ready.
 
 ### Pandoc is unavailable
 

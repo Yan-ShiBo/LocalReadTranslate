@@ -3,12 +3,12 @@
   <ribbon startFromScratch="false">
     <tabs>
       <tab id="localReadTranslateTab" label="LocalReadTranslate">
-        <group id="localReadTranslateFormulaGroup" label="公式">
+        <group id="localReadTranslateFormulaGroup" label="文档助手">
           <button
             id="localReadTranslateShowFormulaPane"
-            label="LaTeX 公式"
-            screentip="打开公式工作台"
-            supertip="将 LaTeX 转为 WPS 可编辑公式，或把原生公式复制为 LaTeX。"
+            label="阅读与公式"
+            screentip="打开文档工作台"
+            supertip="朗读或翻译选区，并在 LaTeX 与 WPS 可编辑公式之间双向转换。"
             onAction="OnAction"
             getEnabled="OnGetEnabled"
             getImage="GetImage"

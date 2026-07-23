@@ -3,70 +3,155 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>LocalReadTranslate 公式</title>
+    <title>Local Read &amp; Translate 文档助手</title>
     <link rel="stylesheet" href="/taskpane/taskpane.css">
   </head>
   <body>
-    <main class="pane-shell">
-      <header class="masthead">
-        <div>
-          <p class="eyebrow">LOCALREADTRANSLATE</p>
-          <h1>公式工作台</h1>
+    <main class="settings-panel">
+      <header class="settings-header">
+        <div class="settings-title">
+          <h1>Local Read &amp; Translate</h1>
+          <span id="host-name" class="host-name">正在识别文档宿主</span>
         </div>
-        <span id="host-name" class="host-badge">正在识别</span>
+        <span id="assistant-state" class="settings-state checking">检查中</span>
       </header>
 
-      <section class="service-line" aria-labelledby="service-title">
-        <span id="service-pill" class="status-dot" aria-hidden="true"></span>
-        <div>
-          <h2 id="service-title">本地公式服务</h2>
-          <p id="service-detail">正在检查一次转换环境…</p>
-        </div>
-        <button id="retry-button" class="text-button" type="button" hidden>
-          重试
-        </button>
-      </section>
+      <section class="settings-section" aria-labelledby="translation-title">
+        <h2 id="translation-title">翻译</h2>
 
-      <section class="selection-paper" aria-labelledby="selection-title">
-        <div class="section-heading">
-          <div>
-            <p class="section-kicker">当前选区</p>
-            <h2 id="selection-title">公式结构预览</h2>
-          </div>
-          <span id="formula-count" class="formula-total">—</span>
-        </div>
         <div
-          id="selection-preview"
-          class="formula-strip is-empty"
-          aria-label="当前选区中的公式结构"
-        >
-          <span class="empty-strip">切回文档选择一段内容</span>
+          id="assistant-source-list"
+          class="source-picker"
+          role="group"
+          aria-label="翻译来源"
+          hidden
+        ></div>
+
+        <div id="source-rail" class="source-rail">
+          <p id="assistant-source-message" class="source-message">
+            正在读取真实可用来源…
+          </p>
+          <div id="source-action-slot" class="source-action-slot">
+            <button
+              id="source-action-button"
+              class="source-action"
+              type="button"
+              hidden
+            >启动本地 Ollama</button>
+          </div>
         </div>
-        <div class="formula-legend" aria-label="公式计数">
-          <span><i class="legend-mark inline"></i>行内 <b id="inline-count">0</b></span>
-          <span><i class="legend-mark display"></i>独立 <b id="display-count">0</b></span>
+
+        <label id="model-field" class="settings-field" hidden>
+          <span>模型</span>
+          <select id="model-select" aria-label="翻译模型"></select>
+        </label>
+
+        <div class="primary-actions">
+          <button id="translate-button" class="panel-button primary" type="button" disabled>
+            翻译选区
+          </button>
         </div>
-        <p id="selection-note" class="selection-note">
-          执行时会重新读取选区；复制原生公式无需 LaTeX 定界符。
-        </p>
+
+        <article id="translation-result" class="translation-result" hidden>
+          <div class="translation-heading">
+            <strong>翻译结果</strong>
+            <span id="translation-meta"></span>
+          </div>
+          <div id="translation-text" class="translation-text"></div>
+          <div class="result-actions">
+            <button id="copy-translation-button" class="panel-button" type="button" disabled>
+              复制译文
+            </button>
+            <button id="replace-translation-button" class="panel-button" type="button" disabled>
+              替换选区
+            </button>
+          </div>
+        </article>
       </section>
 
-      <section class="actions" aria-label="公式操作">
-        <button id="convert-button" class="action-button primary" type="button" disabled>
-          <span class="action-index">01</span>
-          <span>
-            <strong>转为文档公式</strong>
-            <small>LaTeX → 可编辑原生公式</small>
-          </span>
-        </button>
-        <button id="copy-button" class="action-button secondary" type="button" disabled>
-          <span class="action-index">02</span>
-          <span>
-            <strong>复制为 LaTeX</strong>
-            <small>原生公式 → 统一纯文本</small>
-          </span>
-        </button>
-      </section>
+      <details id="advanced-settings" class="settings-details">
+        <summary>高级</summary>
+        <div class="settings-details-body">
+          <label class="settings-field">
+            <span>目标语言</span>
+            <select id="target-language">
+              <option value="Simplified Chinese" selected>简体中文</option>
+              <option value="Traditional Chinese">繁体中文</option>
+              <option value="English">English</option>
+              <option value="Japanese">日本語</option>
+              <option value="Korean">한국어</option>
+            </select>
+          </label>
+          <div class="model-actions">
+            <button id="keep-model-button" class="panel-button" type="button" hidden>
+              加载并保持
+            </button>
+            <button id="unload-model-button" class="panel-button" type="button" hidden>
+              卸载
+            </button>
+          </div>
+        </div>
+      </details>
+
+      <details id="read-settings" class="settings-details">
+        <summary>朗读</summary>
+        <div class="settings-details-body">
+          <div class="service-status" aria-labelledby="service-title">
+            <span id="service-pill" class="status-dot is-checking" aria-hidden="true"></span>
+            <div>
+              <strong id="service-title">文档服务</strong>
+              <p id="service-detail">正在发现朗读、翻译与公式能力…</p>
+            </div>
+            <button id="retry-button" class="inline-button" type="button" hidden>
+              重试
+            </button>
+          </div>
+
+          <label class="settings-field">
+            <span>声音</span>
+            <select id="voice-select" aria-label="朗读声音"></select>
+          </label>
+          <label class="settings-field">
+            <span>语速</span>
+            <select id="speed-select" aria-label="朗读语速"></select>
+          </label>
+          <button id="read-button" class="panel-button primary" type="button" disabled>
+            <span id="read-button-label">朗读选区</span>
+          </button>
+          <audio id="speech-audio" preload="none" hidden></audio>
+        </div>
+      </details>
+
+      <details class="settings-details formula-details">
+        <summary>
+          <span>公式与 LaTeX</span>
+          <span id="formula-count" class="formula-total">—</span>
+        </summary>
+        <div class="settings-details-body">
+          <div
+            id="selection-preview"
+            class="formula-strip is-empty"
+            aria-label="当前选区中的公式结构"
+          >
+            <span class="empty-strip">切回文档选择一段内容</span>
+          </div>
+          <div class="formula-legend" aria-label="公式计数">
+            <span><i class="legend-mark inline"></i>行内 <b id="inline-count">0</b></span>
+            <span><i class="legend-mark display"></i>独立 <b id="display-count">0</b></span>
+          </div>
+          <p id="selection-note" class="selection-note">
+            执行时会重新读取选区；复制原生公式会统一输出为 LaTeX 纯文本。
+          </p>
+          <div class="formula-actions">
+            <button id="convert-button" class="panel-button primary" type="button" disabled>
+              LaTeX 转为文档公式
+            </button>
+            <button id="copy-button" class="panel-button" type="button" disabled>
+              复制选区为 LaTeX
+            </button>
+          </div>
+        </div>
+      </details>
 
       <section
         id="operation-status"
@@ -76,8 +161,8 @@
       >
         <span id="operation-mark" class="operation-mark" aria-hidden="true">·</span>
         <div>
-          <h2 id="operation-title">准备就绪</h2>
-          <p id="operation-detail">选择内容后直接执行，不会重复检查服务。</p>
+          <strong id="operation-title">准备就绪</strong>
+          <p id="operation-detail">来源只检查一次，普通操作直接使用当前状态。</p>
         </div>
       </section>
     </main>

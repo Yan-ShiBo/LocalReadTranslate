@@ -19,6 +19,9 @@ const {
   createClipboardWriter,
   createTaskPaneApp,
   detectHostHint,
+  deriveAssistantSourceView,
+  needsReadPreparation,
+  normalizeAssistantPreferences,
   summarizeLatexSelection,
 } = require("../addons/taskpane/taskpane.js");
 const {
@@ -78,6 +81,106 @@ test("shared client returns source-neutral connection errors", async () => {
       error instanceof LocalReadTranslateServiceError &&
       error.message === "Cannot connect to the local translation service"
   );
+});
+
+test("shared client exposes translation, read preparation, voices, and speech audio", async () => {
+  const requests = [];
+  const audioBlob = new Blob(["RIFF-test-audio"], { type: "audio/wav" });
+  const client = createClient({
+    baseUrl: "http://localhost:5443/api",
+    fetch: async (url, init = {}) => {
+      requests.push({ url, init });
+      const path = new URL(url).pathname;
+      const payloads = {
+        "/api/translate/health": {
+          sources: [],
+          available_model_options: [],
+        },
+        "/api/voices": {
+          default_voice: "af_bella",
+          default_speed: 0.8,
+          speeds: [0.8, 1],
+          groups: [],
+        },
+        "/api/translate": {
+          translated_text: "你好",
+          model: "qwen3:8b",
+        },
+        "/api/read/prepare": {
+          prepared_text: "Readable English.",
+          model: "qwen3:8b",
+        },
+        "/api/translate/model/keepalive": {
+          model: "qwen3:8b",
+          model_running: true,
+          model_pinned: true,
+        },
+        "/api/translate/model/unload": {
+          model: "qwen3:8b",
+          model_running: false,
+          model_pinned: false,
+        },
+      };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return payloads[path] || null;
+        },
+        async blob() {
+          return audioBlob;
+        },
+      };
+    },
+  });
+
+  await client.getTranslateHealth();
+  await client.getVoices();
+  const translated = await client.translate({
+    text: "Hello",
+    model: "qwen3:8b",
+    target_language: "Simplified Chinese",
+  });
+  const prepared = await client.prepareRead({
+    text: "论文 $x^2$",
+    model: "qwen3:8b",
+  });
+  const speech = await client.synthesizeSpeech({
+    text: "Readable English.",
+    voice: "af_bella",
+    speed: 0.8,
+  });
+  await client.keepModelLoaded("qwen3:8b");
+  await client.unloadModel("qwen3:8b");
+
+  assert.equal(translated.translated_text, "你好");
+  assert.equal(prepared.prepared_text, "Readable English.");
+  assert.equal(speech, audioBlob);
+  assert.deepEqual(
+    requests.map((request) => new URL(request.url).pathname),
+    [
+      "/api/translate/health",
+      "/api/voices",
+      "/api/translate",
+      "/api/read/prepare",
+      "/api/tts",
+      "/api/translate/model/keepalive",
+      "/api/translate/model/unload",
+    ]
+  );
+  assert.deepEqual(JSON.parse(requests[2].init.body), {
+    text: "Hello",
+    model: "qwen3:8b",
+    target_language: "Simplified Chinese",
+  });
+  assert.equal(requests[4].init.headers.Accept, "audio/wav");
+  assert.deepEqual(JSON.parse(requests[5].init.body), {
+    model: "qwen3:8b",
+    keep_alive: -1,
+  });
+  assert.deepEqual(JSON.parse(requests[6].init.body), {
+    model: "qwen3:8b",
+  });
 });
 
 test("formula controller converts selected LaTeX through the host adapter", async () => {
@@ -177,6 +280,9 @@ test("Office adapter reads OOXML and inserts generated DOCX at the selection", a
     insertFileFromBase64(content, location) {
       calls.push(["insert", content, location]);
     },
+    insertText(content, location) {
+      calls.push(["insert-text", content, location]);
+    },
   };
   const Word = {
     async run(callback) {
@@ -198,6 +304,9 @@ test("Office adapter reads OOXML and inserts generated DOCX at the selection", a
   await adapter.replaceSelectionWithFragment({ docx_base64: "ZG9jeA==" });
 
   assert.deepEqual(calls.at(-2), ["insert", "ZG9jeA==", "Replace"]);
+  assert.deepEqual(calls.at(-1), ["sync"]);
+  await adapter.replaceSelectionWithText("翻译结果");
+  assert.deepEqual(calls.at(-2), ["insert-text", "翻译结果", "Replace"]);
   assert.deepEqual(calls.at(-1), ["sync"]);
 });
 
@@ -297,6 +406,8 @@ test("WPS adapter exports selection as DOCX and inserts a generated fragment", a
   assert.equal(selectionRange.Text, "");
   assert.deepEqual(calls.at(-2), ["collapse", 1]);
   assert.deepEqual(calls.at(-1), ["insert", "C:\\Temp\\formula.docx"]);
+  await adapter.replaceSelectionWithText("翻译结果");
+  assert.equal(selectionRange.Text, "翻译结果");
 });
 
 test("task pane host hint and formula strip summary stay deterministic", () => {
@@ -313,17 +424,146 @@ test("task pane host hint and formula strip summary stay deterministic", () => {
   );
 });
 
+test("assistant source view exposes only models discovered on the selected reachable source", () => {
+  const payload = {
+    sources: [
+      {
+        id: "local",
+        name: "Local Ollama",
+        kind: "local",
+        configured: true,
+        reachable: false,
+        models: [],
+      },
+      {
+        id: "project-server",
+        name: "Project Server",
+        kind: "remote",
+        configured: true,
+        reachable: true,
+        models: [
+          {
+            value: "remote:project-server:qwen3:8b",
+            running: true,
+            usable_for_translation: true,
+          },
+        ],
+      },
+    ],
+    available_model_options: [
+      {
+        value: "remote:project-server:qwen3:8b",
+        label: "qwen3:8b",
+        source: "project-server",
+        source_name: "Project Server",
+        model: "qwen3:8b",
+      },
+      {
+        value: "stale-local:latest",
+        label: "stale-local:latest",
+        source: "local",
+        source_name: "Local Ollama",
+        model: "stale-local:latest",
+      },
+    ],
+  };
+
+  const remote = deriveAssistantSourceView(
+    payload,
+    "project-server",
+    "remote:project-server:qwen3:8b"
+  );
+  assert.equal(remote.mode, "ready");
+  assert.equal(remote.activeSource, "project-server");
+  assert.deepEqual(
+    remote.modelOptions.map((option) => option.value),
+    ["remote:project-server:qwen3:8b"]
+  );
+  assert.equal(remote.selectedModel, "remote:project-server:qwen3:8b");
+  assert.equal(remote.action, null);
+  assert.deepEqual(remote.keepAction, {
+    visible: true,
+    label: "保持加载",
+  });
+  assert.deepEqual(remote.unloadAction, {
+    visible: true,
+    label: "卸载",
+  });
+  assert.equal(
+    remote.sourceRows.find((source) => source.id === "project-server").statusLabel,
+    "已连接"
+  );
+
+  const local = deriveAssistantSourceView(payload, "local", "");
+  assert.equal(local.mode, "source-offline");
+  assert.deepEqual(local.modelOptions, []);
+  assert.equal(local.selectedModel, "");
+  assert.deepEqual(local.action, {
+    label: "启动本地 Ollama",
+    protocolUrl: "localreadtranslate://ollama",
+  });
+  assert.equal(
+    local.sourceRows.find((source) => source.id === "local").statusLabel,
+    "未启动"
+  );
+});
+
+test("assistant read preparation is required only for CJK or formula-bearing text", () => {
+  assert.equal(needsReadPreparation("A plain English paragraph."), false);
+  assert.equal(needsReadPreparation("需要朗读的中文"), true);
+  assert.equal(needsReadPreparation("The result is $x^2$."), true);
+  assert.equal(needsReadPreparation("Display: \\[x+y\\]."), true);
+});
+
+test("assistant preferences preserve one discovered-model choice per source", () => {
+  assert.deepEqual(
+    normalizeAssistantPreferences({
+      translationSource: "project-server",
+      translationModels: {
+        local: "qwen3:8b",
+        "project-server": "remote:project-server:qwen3:30b",
+        invalid: "remote:other:qwen3:122b",
+      },
+      targetLanguage: "English",
+      voice: "bf_emma",
+      speed: 1,
+    }),
+    {
+      translationSource: "project-server",
+      translationModels: {
+        local: "qwen3:8b",
+        "project-server": "remote:project-server:qwen3:30b",
+      },
+      targetLanguage: "English",
+      voice: "bf_emma",
+      speed: 1,
+    }
+  );
+  assert.deepEqual(normalizeAssistantPreferences(null), {
+    translationSource: "local",
+    translationModels: {},
+    targetLanguage: "Simplified Chinese",
+    voice: "",
+    speed: 0.8,
+  });
+});
+
 function fakeTaskPaneDocument() {
   const listeners = new Map();
   class Element {
     constructor(id = "") {
       this.id = id;
       this.textContent = "";
+      this.value = "";
       this.hidden = false;
       this.disabled = false;
       this.className = "";
       this.children = [];
+      this.dataset = {};
       this.style = {};
+      this.src = "";
+      this.currentTime = 0;
+      this.paused = true;
     }
     addEventListener(name, callback) {
       listeners.set(`${this.id}:${name}`, callback);
@@ -337,6 +577,12 @@ function fakeTaskPaneDocument() {
     }
     setAttribute() {}
     select() {}
+    async play() {
+      this.paused = false;
+    }
+    pause() {
+      this.paused = true;
+    }
   }
   const ids = [
     "host-name",
@@ -350,6 +596,30 @@ function fakeTaskPaneDocument() {
     "selection-note",
     "convert-button",
     "copy-button",
+    "assistant-source-list",
+    "assistant-state",
+    "source-rail",
+    "assistant-source-message",
+    "source-action-slot",
+    "source-action-button",
+    "model-field",
+    "model-select",
+    "target-language",
+    "voice-select",
+    "speed-select",
+    "read-button",
+    "read-button-label",
+    "translate-button",
+    "speech-audio",
+    "translation-result",
+    "translation-text",
+    "translation-meta",
+    "copy-translation-button",
+    "replace-translation-button",
+    "keep-model-button",
+    "unload-model-button",
+    "advanced-settings",
+    "read-settings",
     "operation-status",
     "operation-mark",
     "operation-title",
@@ -386,6 +656,20 @@ test("task pane checks formula health once, then actions reuse that state", asyn
     async getLatexHealth() {
       healthChecks += 1;
       return { available: true, version: "3.8" };
+    },
+    async getTranslateHealth() {
+      return {
+        sources: [],
+        available_model_options: [],
+      };
+    },
+    async getVoices() {
+      return {
+        default_voice: "af_bella",
+        default_speed: 0.8,
+        speeds: [0.8],
+        groups: [],
+      };
     },
   };
   const app = createTaskPaneApp({
@@ -440,6 +724,485 @@ test("task pane checks formula health once, then actions reuse that state", asyn
   assert.equal(elements["service-detail"].textContent, "本地翻译服务已断开");
   assert.equal(elements["retry-button"].hidden, false);
   assert.equal(elements["copy-button"].disabled, true);
+});
+
+test("task pane translates and reads with cached backend discovery", async () => {
+  const { document, elements, listeners } = fakeTaskPaneDocument();
+  let latexChecks = 0;
+  let translationChecks = 0;
+  let voiceChecks = 0;
+  let translations = 0;
+  let preparations = 0;
+  let speechRequests = 0;
+  const clipboard = [];
+  const replacements = [];
+  const adapter = {
+    async readSelectionText() {
+      return "论文结论是 $x^2$。";
+    },
+    async replaceSelectionWithText(text) {
+      replacements.push(text);
+    },
+  };
+  const client = {
+    async getLatexHealth() {
+      latexChecks += 1;
+      return { available: true, version: "3.8" };
+    },
+    async getTranslateHealth() {
+      translationChecks += 1;
+      return {
+        sources: [
+          {
+            id: "local",
+            name: "Local Ollama",
+            kind: "local",
+            configured: true,
+            reachable: false,
+            models: [],
+          },
+          {
+            id: "project-server",
+            name: "Project Server",
+            kind: "remote",
+            configured: true,
+            reachable: true,
+            models: [],
+          },
+        ],
+        available_model_options: [
+          {
+            value: "remote:project-server:qwen3:8b",
+            label: "qwen3:8b",
+            source: "project-server",
+            model: "qwen3:8b",
+          },
+        ],
+      };
+    },
+    async getVoices() {
+      voiceChecks += 1;
+      return {
+        default_voice: "af_bella",
+        default_speed: 0.8,
+        speeds: [0.8, 1],
+        groups: [
+          {
+            id: "american-female",
+            label_zh: "美式女声",
+            voices: [{ id: "af_bella", label_zh: "Bella" }],
+          },
+        ],
+      };
+    },
+    async translate(payload) {
+      translations += 1;
+      assert.deepEqual(payload, {
+        text: "论文结论是 $x^2$。",
+        model: "remote:project-server:qwen3:8b",
+        target_language: "Simplified Chinese",
+      });
+      return {
+        translated_text: "The paper concludes that $x^2$.",
+        model: payload.model,
+        elapsed: 1.2,
+      };
+    },
+    async prepareRead(payload) {
+      preparations += 1;
+      assert.equal(payload.model, "remote:project-server:qwen3:8b");
+      return { prepared_text: "The paper concludes that x squared." };
+    },
+    async synthesizeSpeech(payload) {
+      speechRequests += 1;
+      assert.deepEqual(payload, {
+        text: "The paper concludes that x squared.",
+        voice: "af_bella",
+        speed: 0.8,
+      });
+      return new Blob(["RIFF"], { type: "audio/wav" });
+    },
+  };
+  const app = createTaskPaneApp({
+    document,
+    hostHint: "wps",
+    wpsApplication: {},
+    wpsAdapterFactory() {
+      return adapter;
+    },
+    officeAdapterFactory() {
+      throw new Error("Office should not be selected");
+    },
+    clientFactory() {
+      return client;
+    },
+    controller: {
+      async convertSelectedLatex() {
+        return { formula_count: 1, warnings: [] };
+      },
+      async copySelectionAsLatex() {
+        return { formula_count: 1, latex: "$x^2$" };
+      },
+    },
+    async writeClipboard(value) {
+      clipboard.push(value);
+    },
+    createObjectUrl() {
+      return "blob:assistant-audio";
+    },
+    revokeObjectUrl() {},
+  });
+
+  await app.initialize();
+  assert.deepEqual(
+    [latexChecks, translationChecks, voiceChecks],
+    [1, 1, 1]
+  );
+  assert.equal(elements["source-action-button"].hidden, false);
+  assert.equal(elements["source-action-button"].textContent, "启动本地 Ollama");
+  assert.equal(elements["translate-button"].disabled, true);
+  assert.equal(elements["translate-button"].hidden, true);
+  assert.equal(elements["advanced-settings"].hidden, true);
+  assert.equal(elements["read-settings"].hidden, false);
+
+  app.selectSource("project-server");
+  assert.equal(elements["source-action-button"].hidden, true);
+  assert.equal(elements["model-select"].value, "remote:project-server:qwen3:8b");
+  assert.equal(elements["translate-button"].disabled, false);
+  assert.equal(elements["translate-button"].hidden, false);
+  assert.equal(elements["advanced-settings"].hidden, false);
+  assert.equal(elements["source-rail"].hidden, true);
+
+  await app.runAssistantAction("translate");
+  assert.equal(translations, 1);
+  assert.equal(translationChecks, 1);
+  assert.equal(elements["translation-result"].hidden, false);
+  assert.equal(
+    elements["translation-text"].textContent,
+    "The paper concludes that $x^2$."
+  );
+  await app.copyTranslation();
+  await app.replaceTranslation();
+  assert.deepEqual(clipboard, ["The paper concludes that $x^2$."]);
+  assert.deepEqual(replacements, ["The paper concludes that $x^2$."]);
+
+  elements["target-language"].value = "English";
+  listeners.get("target-language:change")();
+  assert.equal(elements["translation-result"].hidden, true);
+  assert.equal(elements["copy-translation-button"].disabled, true);
+
+  await app.runAssistantAction("read");
+  assert.equal(preparations, 1);
+  assert.equal(speechRequests, 1);
+  assert.equal(translationChecks, 1);
+  assert.equal(elements["speech-audio"].src, "blob:assistant-audio");
+  assert.equal(elements["speech-audio"].paused, false);
+});
+
+test("task pane keeps plain-English read aloud available when translation discovery fails", async () => {
+  const { document, elements } = fakeTaskPaneDocument();
+  let speechRequests = 0;
+  const app = createTaskPaneApp({
+    document,
+    hostHint: "wps",
+    wpsApplication: {},
+    wpsAdapterFactory() {
+      return {
+        async readSelectionText() {
+          return "A plain English paragraph.";
+        },
+      };
+    },
+    officeAdapterFactory() {
+      throw new Error("Office should not be selected");
+    },
+    clientFactory() {
+      return {
+        async getLatexHealth() {
+          return { available: true };
+        },
+        async getTranslateHealth() {
+          throw new Error("translation discovery unavailable");
+        },
+        async getVoices() {
+          return {
+            default_voice: "af_bella",
+            default_speed: 0.8,
+            speeds: [0.8],
+            groups: [
+              {
+                label_zh: "美式女声",
+                voices: [{ id: "af_bella", label_zh: "Bella" }],
+              },
+            ],
+          };
+        },
+        async synthesizeSpeech(payload) {
+          speechRequests += 1;
+          assert.equal(payload.text, "A plain English paragraph.");
+          return new Blob(["RIFF"], { type: "audio/wav" });
+        },
+      };
+    },
+    controller: {
+      async convertSelectedLatex() {
+        return { formula_count: 0, warnings: [] };
+      },
+      async copySelectionAsLatex() {
+        return { formula_count: 0, latex: "" };
+      },
+    },
+    async writeClipboard() {},
+    createObjectUrl() {
+      return "blob:plain-english";
+    },
+    revokeObjectUrl() {},
+  });
+
+  await app.initialize();
+
+  assert.equal(elements["assistant-state"].textContent, "不可用");
+  assert.equal(elements["translate-button"].hidden, true);
+  assert.equal(elements["advanced-settings"].hidden, true);
+  assert.equal(elements["read-settings"].hidden, false);
+  assert.equal(elements["read-button"].disabled, false);
+
+  await app.runAssistantAction("read");
+  assert.equal(speechRequests, 1);
+  assert.equal(elements["speech-audio"].src, "blob:plain-english");
+});
+
+test("task pane restores the saved 30b server model instead of selecting a larger first option", async () => {
+  const { document, elements } = fakeTaskPaneDocument();
+  const writes = [];
+  const storage = {
+    getItem() {
+      return JSON.stringify({
+        translationSource: "project-server",
+        translationModels: {
+          "project-server": "remote:project-server:qwen3:30b",
+        },
+        targetLanguage: "English",
+        voice: "af_bella",
+        speed: 1,
+      });
+    },
+    setItem(key, value) {
+      writes.push({ key, value: JSON.parse(value) });
+    },
+  };
+  const app = createTaskPaneApp({
+    document,
+    storage,
+    hostHint: "wps",
+    wpsApplication: {},
+    wpsAdapterFactory() {
+      return {
+        async readSelectionText() {
+          return "Selected text";
+        },
+      };
+    },
+    officeAdapterFactory() {
+      throw new Error("Office should not be selected");
+    },
+    clientFactory() {
+      return {
+        async getLatexHealth() {
+          return { available: true };
+        },
+        async getTranslateHealth() {
+          return {
+            sources: [
+              {
+                id: "local",
+                name: "Local Ollama",
+                kind: "local",
+                configured: true,
+                reachable: false,
+                models: [],
+              },
+              {
+                id: "project-server",
+                name: "Project Server",
+                kind: "remote",
+                configured: true,
+                reachable: true,
+                models: [],
+              },
+            ],
+            available_model_options: [
+              {
+                value: "remote:project-server:qwen3:122b",
+                label: "qwen3:122b",
+                source: "project-server",
+                model: "qwen3:122b",
+              },
+              {
+                value: "remote:project-server:qwen3:30b",
+                label: "qwen3:30b",
+                source: "project-server",
+                model: "qwen3:30b",
+              },
+            ],
+          };
+        },
+        async getVoices() {
+          return {
+            default_voice: "af_bella",
+            default_speed: 0.8,
+            speeds: [0.8, 1],
+            groups: [
+              {
+                label_zh: "美式女声",
+                voices: [{ id: "af_bella", label_zh: "Bella" }],
+              },
+            ],
+          };
+        },
+      };
+    },
+    controller: {
+      async convertSelectedLatex() {
+        return { formula_count: 0, warnings: [] };
+      },
+      async copySelectionAsLatex() {
+        return { formula_count: 0, latex: "" };
+      },
+    },
+    async writeClipboard() {},
+  });
+
+  await app.initialize();
+
+  assert.equal(app.state.selectedSource, "project-server");
+  assert.equal(
+    app.state.selectedModel,
+    "remote:project-server:qwen3:30b"
+  );
+  assert.equal(
+    elements["model-select"].value,
+    "remote:project-server:qwen3:30b"
+  );
+  assert.equal(elements["target-language"].value, "English");
+  assert.equal(elements["voice-select"].value, "af_bella");
+  assert.equal(elements["speed-select"].value, "1");
+
+  app.selectSource("local");
+  assert.equal(writes.at(-1).value.translationSource, "local");
+  assert.equal(
+    writes.at(-1).value.translationModels["project-server"],
+    "remote:project-server:qwen3:30b"
+  );
+});
+
+test("task pane refreshes discovery only after an explicit source connection action", async () => {
+  const { document, elements } = fakeTaskPaneDocument();
+  const timers = [];
+  const opened = [];
+  let healthChecks = 0;
+  let connected = false;
+  const app = createTaskPaneApp({
+    document,
+    hostHint: "wps",
+    wpsApplication: {},
+    wpsAdapterFactory() {
+      return {
+        async readSelectionText() {
+          return "Selected text";
+        },
+      };
+    },
+    officeAdapterFactory() {
+      throw new Error("Office should not be selected");
+    },
+    clientFactory() {
+      return {
+        async getLatexHealth() {
+          return { available: true };
+        },
+        async getTranslateHealth() {
+          healthChecks += 1;
+          return {
+            sources: [
+              {
+                id: "local",
+                name: "Local Ollama",
+                kind: "local",
+                configured: true,
+                reachable: false,
+                models: [],
+              },
+              {
+                id: "project-server",
+                name: "Project Server",
+                kind: "remote",
+                configured: connected,
+                reachable: connected,
+                models: [],
+              },
+            ],
+            available_model_options: connected
+              ? [
+                  {
+                    value: "remote:project-server:qwen3:30b",
+                    label: "qwen3:30b",
+                    source: "project-server",
+                    model: "qwen3:30b",
+                  },
+                ]
+              : [],
+          };
+        },
+        async getVoices() {
+          return {
+            default_voice: "af_bella",
+            default_speed: 0.8,
+            speeds: [0.8],
+            groups: [],
+          };
+        },
+      };
+    },
+    controller: {
+      async convertSelectedLatex() {
+        return { formula_count: 0, warnings: [] };
+      },
+      async copySelectionAsLatex() {
+        return { formula_count: 0, latex: "" };
+      },
+    },
+    async writeClipboard() {},
+    openProtocol(url) {
+      opened.push(url);
+    },
+    setTimeout(callback, delay) {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimeout() {},
+  });
+
+  await app.initialize();
+  app.selectSource("project-server");
+  assert.equal(healthChecks, 1);
+  assert.equal(elements["source-action-button"].textContent, "连接服务器");
+
+  assert.equal(app.runSourceAction(), true);
+  assert.deepEqual(opened, ["localreadtranslate://remote"]);
+  assert.equal(healthChecks, 1);
+  assert.equal(timers[0].delay, 0);
+
+  connected = true;
+  await timers.shift().callback();
+
+  assert.equal(healthChecks, 2);
+  assert.equal(app.state.assistantView.mode, "ready");
+  assert.equal(
+    app.state.selectedModel,
+    "remote:project-server:qwen3:30b"
+  );
+  assert.equal(elements["source-action-button"].hidden, true);
 });
 
 test("clipboard fallback writes only text through the host document", async () => {

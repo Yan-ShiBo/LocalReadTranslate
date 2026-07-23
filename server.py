@@ -571,7 +571,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.17",
+    version="1.7.18",
     lifespan=lifespan,
 )
 
@@ -2946,7 +2946,7 @@ async def read_prepare_endpoint(request: ReadPrepareRequest):
         )
     except Exception as error:
         print(f"[ERROR] Read preparation failed: {error}")
-        raise HTTPException(status_code=502, detail="Local read preparation failed")
+        raise HTTPException(status_code=502, detail="Read preparation source failed")
 
     return ReadPrepareResponse(
         text=text,

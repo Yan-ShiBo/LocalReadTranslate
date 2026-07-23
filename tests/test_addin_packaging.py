@@ -17,6 +17,10 @@ def test_office_manifest_targets_word_and_loopback_taskpane():
     assert root.find("o:Id", namespace).text == (
         "74d95f3f-f8d0-4a33-95d8-2f0b637df535"
     )
+    assert root.findtext("o:Version", namespaces=namespace) == "1.1.0.0"
+    assert root.find("o:DisplayName", namespace).attrib["DefaultValue"] == (
+        "LocalReadTranslate 文档工作台"
+    )
     assert root.find("o:Hosts/o:Host", namespace).attrib["Name"] == "Document"
     assert root.find("o:Permissions", namespace).text == "ReadWriteDocument"
     source = root.find(
@@ -39,6 +43,7 @@ def test_wps_package_has_official_entrypoints_and_one_formula_button():
     assert len(buttons) == 1
     assert buttons[0].attrib["id"] == "localReadTranslateShowFormulaPane"
     assert buttons[0].attrib["onAction"] == "OnAction"
+    assert buttons[0].attrib["label"] == "阅读与公式"
 
     index = Path("addons/wps-word/index.html").read_text(encoding="utf-8")
     main = Path("addons/wps-word/main.js").read_text(encoding="utf-8")

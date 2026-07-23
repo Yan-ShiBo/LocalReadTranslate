@@ -8,6 +8,10 @@ import pytest
 import addon_host
 
 
+def test_proxy_timeout_allows_cold_translation_models_to_initialize():
+    assert addon_host.UPSTREAM_TIMEOUT_SECONDS >= 120
+
+
 class _UpstreamHandler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         return None
@@ -28,6 +32,17 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers["Content-Length"])
         payload = json.loads(self.rfile.read(length))
+        if self.path == "/tts":
+            if self.headers.get("Accept") != "audio/wav":
+                self.send_error(406)
+                return
+            result = b"RIFF-test-audio"
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(result)))
+            self.end_headers()
+            self.wfile.write(result)
+            return
         result = json.dumps(
             {"canonical_latex": payload["text"], "formula_count": 1}
         ).encode("utf-8")
@@ -102,6 +117,7 @@ def test_health_and_static_assets_are_explicitly_served(addin_server):
     assert json.loads(payload)["service"] == "localreadtranslate-addin-host"
     assert headers["Cache-Control"] == "no-store"
     assert "default-src 'self'" in headers["Content-Security-Policy"]
+    assert "media-src 'self' blob:" in headers["Content-Security-Policy"]
 
     status, headers, payload = request(
         addin_server,
@@ -111,6 +127,8 @@ def test_health_and_static_assets_are_explicitly_served(addin_server):
     assert status == 200
     assert "text/html" in headers["Content-Type"]
     assert b"convert-button" in payload
+    assert b"read-button" in payload
+    assert b"translate-button" in payload
 
     status, _headers, payload = request(
         addin_server,
@@ -178,3 +196,24 @@ def test_proxy_rejects_non_json_and_oversize_lengths(addin_server):
             "Content-Length": str(addon_host.MAX_REQUEST_BYTES + 1),
         },
     )[0] == 413
+
+
+def test_proxy_forwards_audio_accept_and_response_type(addin_server):
+    body = json.dumps(
+        {"text": "Readable English.", "voice": "af_bella", "speed": 0.8}
+    ).encode("utf-8")
+    status, headers, payload = request(
+        addin_server,
+        "POST",
+        "/api/tts",
+        body=body,
+        headers={
+            "Accept": "audio/wav",
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        },
+    )
+
+    assert status == 200
+    assert headers["Content-Type"] == "audio/wav"
+    assert payload == b"RIFF-test-audio"

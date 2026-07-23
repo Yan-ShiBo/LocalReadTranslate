@@ -20,7 +20,7 @@
 - **Backend-driven source choice** — While the mediator is online, Local Ollama and Project Server remain explicit choices; the selected source shows either its one truthful recovery action or only its discovered generation models
 - **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
 - **Copy selection as canonical LaTeX** — Copy selected prose without translation, preserve paragraph breaks, and normalize detected inline/display MathJax, MathML, and KaTeX formulas to `$...$` / `$$...$$`
-- **Installable Word/WPS formula add-ins** — One shared task pane converts mixed LaTeX paragraphs to editable native equations and copies selected native equations back as canonical plain-text LaTeX
+- **Installable Word/WPS document add-ins** — The shared task pane brings the userscript's source-first translation and local read-aloud workflow into Word/WPS, while retaining bidirectional native-equation/LaTeX conversion
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
 - **Target-language guard** — Chinese targets that return all-English output are retried once with a strict same-model instruction; a second non-compliant result is reported as failure
@@ -61,14 +61,16 @@ The userscript never receives SSH credentials or talks directly to Ollama. The l
 
 Microsoft Word and WPS Writer use a second strict loopback host on
 `127.0.0.1:5443`. It serves only the allowlisted add-in files and proxies
-same-origin `/api/*` requests to FastAPI. The add-ins send only selected
-document content to the local service. LaTeX is the only external interchange
-format; DOCX/OMML is used only for inserting or reading native editable
-equations inside the document. For WPS reverse conversion, a randomly named
-one-shot DOCX is saved directly under the current user's temporary directory.
-The API accepts only that exact directory and filename pattern, validates the
-DOCX limits, and the controller invokes spool cleanup after both successful
-and failed conversions.
+same-origin `/api/*` requests to FastAPI. Translation, read preparation and
+speech use the same discovered-source contract as the userscript. The add-ins
+send only the selected document text; choosing a remote model intentionally
+forwards that selection to the tray-configured server through FastAPI. LaTeX
+is the only external formula interchange format; DOCX/OMML is used only for
+inserting or reading native editable equations inside the document. For WPS
+reverse conversion, a randomly named one-shot DOCX is saved directly under
+the current user's temporary directory. The API accepts only that exact
+directory and filename pattern, validates the DOCX limits, and the controller
+invokes spool cleanup after both successful and failed conversions.
 
 ## 💻 Requirements
 
@@ -184,7 +186,7 @@ Editing the repository file does not update a copy already installed in Tampermo
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
-## Installable Microsoft Word / WPS Writer formula add-ins
+## Installable Microsoft Word / WPS Writer document add-ins
 
 Close Word and WPS Writer, then install both current-user add-ins:
 
@@ -193,18 +195,33 @@ Close Word and WPS Writer, then install both current-user add-ins:
 ```
 
 Reopen the applications. In Word, choose
-**Home → Add-ins → LocalReadTranslate 公式工作台**. In WPS Writer, choose
-**LocalReadTranslate → LaTeX 公式**. The shared task pane has two commands:
+**Home → Add-ins → LocalReadTranslate 文档工作台**. In WPS Writer, choose
+**LocalReadTranslate → 阅读与公式**.
 
-- **Convert to document formula**: mixed prose and `$...$` / `$$...$$`
-  formulas become editable native Word/WPS equations;
-- **Copy as LaTeX**: selected native equations and prose return to the
-  clipboard as canonical plain text only.
+The shared task pane follows the userscript's layout and state rules:
 
-The pane checks local Pandoc once on initialization or explicit retry. Normal
-actions reuse the ready state and do not repeat translation-source discovery.
-Formula conversion does not use Ollama, start local Ollama, or change the
-remote tunnel.
+- **Translation** is the only expanded primary section. Select **Local
+  Ollama** or **Project Server**, then choose only a generation model actually
+  discovered on that reachable source. Translate the current selection, copy
+  the result, or replace the selection in the document.
+- **Advanced** contains the target language and only the model residency
+  actions that are currently applicable.
+- **Read aloud** uses the API voice catalog and plays local WAV audio. Plain
+  English can be read without Ollama; Chinese or formula-bearing text uses
+  `/read/prepare` with the currently selected discovered model before Kokoro
+  TTS.
+- **Formula & LaTeX** converts mixed prose plus `$...$` / `$$...$$` into
+  editable native Word/WPS equations, or copies selected native equations and
+  prose as canonical plain-text LaTeX.
+
+Local is the default source. Source, per-source model, target language, voice
+and speed are remembered in the task pane. Initialization (or an explicit
+retry) discovers formula, translation and voice capabilities once in
+parallel. Normal translation, read and formula actions reuse that cached
+state, so clicking them does not flash **Checking translation sources...**.
+An explicit **Start/Connect** action alone polls source health and refreshes
+the real model list when the source becomes reachable. Formula conversion does
+not use Ollama, start local Ollama, or change the remote tunnel.
 
 The installer registers the exact Office manifest, safely merges one WPS
 `publish.xml` item while preserving unrelated add-ins, and starts the strict
@@ -222,7 +239,7 @@ standalone add-in host:
 
 The 50-formula corpus still produces and round-trips 50 native equations in
 both Word 16.0 and WPS Writer 12.1.0.26895. Both installed task panes completed
-their real two-button paths. Word converted two LaTeX expressions to editable
+their real formula paths. Word converted two LaTeX expressions to editable
 equations and copied
 `测试公式 $x^{2} + y^{2} = z^{2}$ 和 $\frac{a}{b}$。`.
 WPS likewise converted two expressions to editable native equations; copying
@@ -230,16 +247,28 @@ the selected result reported two formulas and wrote exactly
 `WPS 测试：$x^{2} + y^{2} = z^{2}$，以及 $\frac{a}{b}$。`
 once, with no duplicate paragraph.
 
+The expanded document-assistant path was also exercised through the exact
+add-in proxy (`127.0.0.1:5443/api/*`) with
+`remote:project-server:qwen3:30b`: selected-text translation returned
+Simplified Chinese while preserving `$x^2 + y^2 = z^2$`; read preparation
+returned English formula speech; and local TTS returned a valid 307,244-byte
+RIFF/WAV response. The 30B model was then explicitly unloaded, the project
+server remained reachable, and local Ollama remained stopped. Browser layout
+checks at 390 px and 280 px found no horizontal overflow. This API/proxy
+evidence does not claim that the new translation/read buttons were clicked in
+a real Word/WPS document; the prior native-formula button evidence remains the
+current host-level UI verification.
+
 See [`addons/README.md`](addons/README.md) for installation and troubleshooting,
 and
-[`docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](docs/iteration-7-2026-07-23-installable-office-wps-addins.md)
+[`docs/iteration-8-2026-07-23-office-wps-document-assistant.md`](docs/iteration-8-2026-07-23-office-wps-document-assistant.md)
 for the exact release evidence.
 
 ## Tampermonkey Development and Publishing
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.3` (FastAPI `1.7.17`).
+The current repository metadata version is `1.15.3` (FastAPI `1.7.18`).
 
 For each release:
 
@@ -269,8 +298,8 @@ browser script and built-in test page are generated from this catalog.
 |------|-------------|
 | `server.py` | FastAPI server with Kokoro TTS inference |
 | `document_formula.py` | Canonical LaTeX parser plus validated Pandoc DOCX/OMML conversion |
-| `addons/` | Installable Word/WPS manifests, ribbon, shared task pane, controller and host adapters |
-| `addon_host.py` | Strict `127.0.0.1:5443` add-in asset host and same-origin formula API proxy |
+| `addons/` | Installable Word/WPS manifests, ribbon, shared document-assistant task pane, controller and host adapters |
+| `addon_host.py` | Strict `127.0.0.1:5443` add-in asset host and same-origin API proxy |
 | `addin_registration.py` | Idempotent WPS `publish.xml` registration merge/remove |
 | `audio_encoding.py` | Bundled FFmpeg helpers for OGG/Opus and WebM/Opus |
 | `tray_app.py` | System tray application (background mode) |
@@ -289,7 +318,8 @@ browser script and built-in test page are generated from this catalog.
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
 | `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
-| `docs/iteration-7-2026-07-23-installable-office-wps-addins.md` | Current installable Word/WPS formula add-in release record |
+| `docs/iteration-8-2026-07-23-office-wps-document-assistant.md` | Current Word/WPS read, translate and formula add-in release record |
+| `docs/iteration-7-2026-07-23-installable-office-wps-addins.md` | Historical installable formula add-in release record |
 | `docs/iteration-6-2026-07-23-office-wps-latex-interchange.md` | Historical formula interchange-core release record |
 | `docs/iteration-5-2026-07-23.md` | Historical backend-driven translation/settings release record |
 | `docs/iteration-4-2026-07-18.md` | Historical service-control and remote-translation release record |
@@ -433,10 +463,11 @@ git diff --check
 ```
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
-The current formula add-in release record is in
-[`docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](docs/iteration-7-2026-07-23-installable-office-wps-addins.md).
-Iteration 6 remains the formula-engine record, iteration 5 remains the
-source/model-settings record, and earlier iterations remain as history.
+The current document add-in release record is in
+[`docs/iteration-8-2026-07-23-office-wps-document-assistant.md`](docs/iteration-8-2026-07-23-office-wps-document-assistant.md).
+Iteration 7 remains the installable formula-shell record, iteration 6 remains
+the formula-engine record, iteration 5 remains the source/model-settings
+record, and earlier iterations remain as history.
 
 ## License
 

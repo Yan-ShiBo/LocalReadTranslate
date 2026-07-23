@@ -41,7 +41,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.15.3`（FastAPI `1.7.17`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.3`（FastAPI `1.7.18`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
 
 1. 按项目 README 完成环境安装，并至少启动本地 FastAPI 服务。
 2. `Read` 需要 Kokoro TTS 环境；Kokoro 会在第一次朗读时按需加载，不会因仅启动 API 或仅使用远程翻译而占用本地 GPU。

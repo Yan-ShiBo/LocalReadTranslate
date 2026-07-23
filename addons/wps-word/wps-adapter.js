@@ -112,6 +112,10 @@
         }
         range.InsertFile(path, null, false, false, false);
       },
+
+      async replaceSelectionWithText(text) {
+        app.Selection.Range.Text = String(text || "");
+      },
     });
   }
 

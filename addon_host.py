@@ -28,7 +28,10 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5443
 DEFAULT_API_BASE_URL = "http://127.0.0.1:5000"
 MAX_REQUEST_BYTES = 12 * 1024 * 1024
-UPSTREAM_TIMEOUT_SECONDS = 75
+# Cold initialization of a discovered Ollama model can legitimately exceed one
+# minute. Match the userscript's long-running translation allowance while
+# keeping the add-in proxy bounded.
+UPSTREAM_TIMEOUT_SECONDS = 150
 
 # A tiny valid PNG is embedded so the Office manifest does not depend on a
 # generated binary file in the repository.  The task pane itself uses text and
@@ -113,7 +116,7 @@ class AddinHostHandler(BaseHTTPRequestHandler):
             self._send_bytes(HTTPStatus.OK, _ICON_PNG, "image/png")
             return
         if path.startswith("/api/"):
-            self._proxy_request("GET", path)
+            self._proxy_request("GET", self.path)
             return
         if path == "/wps-word/" or path == "/wps-word":
             self._serve_static("/wps-word/index.html")
@@ -125,7 +128,7 @@ class AddinHostHandler(BaseHTTPRequestHandler):
         if not path.startswith("/api/"):
             self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "POST is API-only")
             return
-        self._proxy_request("POST", path)
+        self._proxy_request("POST", self.path)
 
     def do_OPTIONS(self):  # noqa: N802 - BaseHTTPRequestHandler contract
         self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "CORS is not enabled")
@@ -158,14 +161,26 @@ class AddinHostHandler(BaseHTTPRequestHandler):
             raise OverflowError("Request body is too large")
         return self.rfile.read(length)
 
-    def _proxy_request(self, method: str, path: str):
-        upstream_path = path.removeprefix("/api")
+    def _proxy_request(self, method: str, request_target: str):
+        parsed_target = urlsplit(request_target)
+        upstream_path = parsed_target.path.removeprefix("/api")
         if not upstream_path.startswith("/"):
             self.send_error(HTTPStatus.BAD_REQUEST, "Invalid API path")
             return
+        if parsed_target.query:
+            upstream_path = f"{upstream_path}?{parsed_target.query}"
 
         data = None
-        headers = {"Accept": "application/json"}
+        requested_accept = self.headers.get("Accept", "")
+        accepted_type = next(
+            (
+                content_type
+                for content_type in ("audio/wav", "audio/ogg", "application/json")
+                if content_type in requested_accept
+            ),
+            "application/json",
+        )
+        headers = {"Accept": accepted_type}
         if method == "POST":
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip()
             if content_type != "application/json":
@@ -239,7 +254,8 @@ class AddinHostHandler(BaseHTTPRequestHandler):
             "default-src 'self'; "
             "script-src 'self' https://appsforoffice.microsoft.com; "
             "style-src 'self'; img-src 'self' data:; connect-src 'self'; "
-            "font-src 'self'; frame-ancestors 'self' https://*.officeapps.live.com",
+            "font-src 'self'; media-src 'self' blob:; "
+            "frame-ancestors 'self' https://*.officeapps.live.com",
         )
         self.end_headers()
         self.wfile.write(payload)

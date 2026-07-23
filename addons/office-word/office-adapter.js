@@ -49,6 +49,14 @@
           await context.sync();
         });
       },
+
+      async replaceSelectionWithText(text) {
+        await WordApi.run(async (context) => {
+          const selection = context.document.getSelection();
+          selection.insertText(String(text || ""), "Replace");
+          await context.sync();
+        });
+      },
     });
   }
 

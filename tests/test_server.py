@@ -1014,7 +1014,7 @@ class ApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 502)
-        self.assertEqual(response.json()["detail"], "Local read preparation failed")
+        self.assertEqual(response.json()["detail"], "Read preparation source failed")
         self.assertNotIn("secret read prompt", response.text)
 
     def test_read_prepare_final_cleanup_removes_remaining_chinese(self):

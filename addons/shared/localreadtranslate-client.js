@@ -25,7 +25,7 @@
       (typeof fetch === "function" ? fetch.bind(globalThis) : null);
     if (!fetchFn) throw new Error("A fetch implementation is required");
 
-    async function request(path, init = {}) {
+    async function fetchResponse(path, init = {}) {
       let response;
       try {
         response = await fetchFn(`${baseUrl}${path}`, init);
@@ -36,26 +36,49 @@
           String(error && error.message || "")
         );
       }
+      return response;
+    }
 
+    async function readJson(response) {
       let payload = null;
       try {
         payload = await response.json();
       } catch (_error) {
         payload = null;
       }
+      return payload;
+    }
+
+    function serviceError(response, payload) {
+      const detail = String(payload && payload.detail || "");
+      return new LocalReadTranslateServiceError(
+        detail || `Local service returned HTTP ${response.status}`,
+        response.status,
+        detail
+      );
+    }
+
+    async function requestJson(path, init = {}) {
+      const response = await fetchResponse(path, init);
+      const payload = await readJson(response);
       if (!response.ok) {
-        const detail = String(payload && payload.detail || "");
-        throw new LocalReadTranslateServiceError(
-          detail || `Local service returned HTTP ${response.status}`,
-          response.status,
-          detail
-        );
+        throw serviceError(response, payload);
       }
       return payload;
     }
 
+    async function requestBlob(path, init = {}) {
+      const response = await fetchResponse(path, init);
+      if (!response.ok) {
+        const payload = await readJson(response);
+        const detail = String(payload && payload.detail || "");
+        throw serviceError(response, detail ? { detail } : payload);
+      }
+      return response.blob();
+    }
+
     function postJson(path, payload) {
-      return request(path, {
+      return requestJson(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -64,7 +87,13 @@
 
     return Object.freeze({
       getLatexHealth() {
-        return request("/document/latex/health");
+        return requestJson("/document/latex/health");
+      },
+      getTranslateHealth() {
+        return requestJson("/translate/health");
+      },
+      getVoices() {
+        return requestJson("/voices");
       },
       createLatexFragment(text) {
         return postJson("/document/latex-fragment", {
@@ -80,6 +109,33 @@
         return postJson("/document/native-to-latex", {
           source_format: source.source_format,
           content: source.content,
+        });
+      },
+      translate(payload) {
+        return postJson("/translate", payload || {});
+      },
+      prepareRead(payload) {
+        return postJson("/read/prepare", payload || {});
+      },
+      keepModelLoaded(model, keepAlive = -1) {
+        return postJson("/translate/model/keepalive", {
+          model: String(model || ""),
+          keep_alive: keepAlive,
+        });
+      },
+      unloadModel(model) {
+        return postJson("/translate/model/unload", {
+          model: String(model || ""),
+        });
+      },
+      synthesizeSpeech(payload) {
+        return requestBlob("/tts", {
+          method: "POST",
+          headers: {
+            Accept: "audio/wav",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload || {}),
         });
       },
     });
