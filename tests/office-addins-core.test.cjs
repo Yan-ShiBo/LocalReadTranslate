@@ -106,11 +106,15 @@ test("formula controller converts selected LaTeX through the host adapter", asyn
 
 test("formula controller copies only canonical LaTeX", async () => {
   const clipboard = [];
+  let cleanupCalls = 0;
   const adapter = {
     async exportSelectionForLatex() {
       return {
         source_format: "flat-opc",
         content: "<pkg:package/>",
+        cleanup() {
+          cleanupCalls += 1;
+        },
       };
     },
   };
@@ -131,6 +135,33 @@ test("formula controller copies only canonical LaTeX", async () => {
 
   assert.equal(result.latex, "正文 $\\frac{a}{b}$。");
   assert.deepEqual(clipboard, ["正文 $\\frac{a}{b}$。"]);
+  assert.equal(cleanupCalls, 1);
+});
+
+test("formula controller cleans up a WPS spool when conversion fails", async () => {
+  let cleanupCalls = 0;
+  const adapter = {
+    async exportSelectionForLatex() {
+      return {
+        source_format: "docx-local-path",
+        content: "C:\\Temp\\localreadtranslate-selection-1-a.docx",
+        cleanup() {
+          cleanupCalls += 1;
+        },
+      };
+    },
+  };
+  const client = {
+    async nativeToLatex() {
+      throw new Error("DOCX payload is not a valid package");
+    },
+  };
+
+  await assert.rejects(
+    copySelectionAsLatex({ adapter, client }),
+    /DOCX payload is not a valid package/
+  );
+  assert.equal(cleanupCalls, 1);
 });
 
 test("Office adapter reads OOXML and inserts generated DOCX at the selection", async () => {
@@ -172,10 +203,14 @@ test("Office adapter reads OOXML and inserts generated DOCX at the selection", a
 
 test("WPS adapter exports selection as DOCX and inserts a generated fragment", async () => {
   const calls = [];
-  const sourceFormattedText = { rich: true };
   const selectionRange = {
-    FormattedText: sourceFormattedText,
+    get FormattedText() {
+      throw new Error("WPS export must not assign FormattedText");
+    },
     Text: "selected",
+    Copy() {
+      calls.push(["copy-selection"]);
+    },
     Collapse(value) {
       calls.push(["collapse", value]);
     },
@@ -190,6 +225,14 @@ test("WPS adapter exports selection as DOCX and inserts a generated fragment", a
   };
   const temporaryDocument = {
     Content: { FormattedText: null },
+    Range(start, end) {
+      calls.push(["range", start, end]);
+      return {
+        Paste() {
+          calls.push(["paste"]);
+        },
+      };
+    },
     SaveAs2(path, format, _a, _b, addToRecent) {
       calls.push(["save", path, format, addToRecent]);
     },
@@ -212,10 +255,6 @@ test("WPS adapter exports selection as DOCX and inserts a generated fragment", a
       },
     },
     FileSystem: {
-      readAsBinaryString(path) {
-        calls.push(["read", path]);
-        return "docx";
-      },
       unlinkSync(path) {
         calls.push(["unlink", path]);
       },
@@ -225,12 +264,32 @@ test("WPS adapter exports selection as DOCX and inserts a generated fragment", a
 
   assert.equal(await adapter.readSelectionText(), "selected");
   const exported = await adapter.exportSelectionForLatex();
-  assert.deepEqual(exported, {
-    source_format: "docx-base64",
-    content: Buffer.from("docx", "binary").toString("base64"),
-  });
-  assert.equal(temporaryDocument.Content.FormattedText, sourceFormattedText);
+  assert.equal(exported.source_format, "docx-local-path");
+  assert.match(
+    exported.content,
+    /^C:\\Temp\\localreadtranslate-selection-\d+-[0-9a-f]+\.docx$/
+  );
+  assert.equal(typeof exported.cleanup, "function");
+  assert.equal(temporaryDocument.Content.FormattedText, null);
+  assert.equal(
+    calls.filter((call) => call[0] === "copy-selection").length,
+    1
+  );
+  assert.deepEqual(
+    calls.filter((call) => ["copy-selection", "add", "range", "paste"].includes(call[0])),
+    [["copy-selection"], ["add"], ["range", 0, 0], ["paste"]]
+  );
   assert.equal(calls.find((call) => call[0] === "save")[2], 12);
+  assert.equal(calls.some((call) => call[0] === "read"), false);
+  assert.equal(calls.some((call) => call[0] === "unlink"), false);
+
+  await exported.cleanup();
+  await exported.cleanup();
+  assert.equal(
+    calls.filter((call) => call[0] === "unlink").length,
+    1
+  );
+  assert.deepEqual(calls.at(-1), ["unlink", exported.content]);
 
   await adapter.replaceSelectionWithFragment({
     local_path: "C:\\Temp\\formula.docx",

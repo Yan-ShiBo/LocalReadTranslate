@@ -1,5 +1,6 @@
 import base64
 import io
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -61,6 +62,72 @@ def test_reports_unclosed_formula_without_destroying_source():
 def test_rejects_invalid_docx_base64():
     with pytest.raises(document_formula.FormulaConversionError):
         document_formula.decode_docx_base64("not-base64")
+
+
+def test_reads_wps_local_docx_spool_without_browser_binary_encoding():
+    docx = document_formula.flat_opc_to_docx(_minimal_flat_opc())
+    test_root = (
+        Path(__file__).resolve().parents[1]
+        / "test-venv"
+        / f"wps-spool-{uuid.uuid4().hex}"
+    )
+    test_root.mkdir(parents=True)
+    try:
+        spool_path = (
+            test_root / "localreadtranslate-selection-1234567890-a1b2c3.docx"
+        )
+        spool_path.write_bytes(docx)
+
+        assert (
+            document_formula.read_wps_local_docx(
+                str(spool_path),
+                temp_root=test_root,
+            )
+            == docx
+        )
+    finally:
+        spool_path.unlink(missing_ok=True)
+        test_root.rmdir()
+
+
+def test_rejects_wps_local_docx_paths_outside_the_temp_root():
+    docx = document_formula.flat_opc_to_docx(_minimal_flat_opc())
+    test_root = (
+        Path(__file__).resolve().parents[1]
+        / "test-venv"
+        / f"wps-spool-{uuid.uuid4().hex}"
+    )
+    nested = test_root / "nested"
+    nested.mkdir(parents=True)
+    try:
+        unsafe_path = (
+            nested / "localreadtranslate-selection-1234567890-a1b2c3.docx"
+        )
+        unsafe_name_path = test_root / "unrelated-document.docx"
+        unsafe_path.write_bytes(docx)
+        unsafe_name_path.write_bytes(docx)
+
+        with pytest.raises(
+            document_formula.FormulaConversionError,
+            match="Unsafe WPS formula spool path",
+        ):
+            document_formula.read_wps_local_docx(
+                str(unsafe_path),
+                temp_root=test_root,
+            )
+        with pytest.raises(
+            document_formula.FormulaConversionError,
+            match="Unsafe WPS formula spool path",
+        ):
+            document_formula.read_wps_local_docx(
+                str(unsafe_name_path),
+                temp_root=test_root,
+            )
+    finally:
+        unsafe_path.unlink(missing_ok=True)
+        unsafe_name_path.unlink(missing_ok=True)
+        nested.rmdir()
+        test_root.rmdir()
 
 
 def _minimal_flat_opc() -> str:

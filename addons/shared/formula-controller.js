@@ -47,13 +47,19 @@
     requireMethod(client, "nativeToLatex");
 
     const nativeSource = await adapter.exportSelectionForLatex();
-    const result = await client.nativeToLatex(nativeSource);
-    const latex = String(result && result.latex || "").trim();
-    if (!latex) throw new Error("The selected content did not produce LaTeX");
+    try {
+      const result = await client.nativeToLatex(nativeSource);
+      const latex = String(result && result.latex || "").trim();
+      if (!latex) throw new Error("The selected content did not produce LaTeX");
 
-    // LaTeX is deliberately the only externally copied representation.
-    await writeClipboard(latex);
-    return { ...result, latex };
+      // LaTeX is deliberately the only externally copied representation.
+      await writeClipboard(latex);
+      return { ...result, latex };
+    } finally {
+      if (nativeSource && typeof nativeSource.cleanup === "function") {
+        await nativeSource.cleanup();
+      }
+    }
   }
 
   return {

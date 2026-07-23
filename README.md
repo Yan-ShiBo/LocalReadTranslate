@@ -64,7 +64,11 @@ Microsoft Word and WPS Writer use a second strict loopback host on
 same-origin `/api/*` requests to FastAPI. The add-ins send only selected
 document content to the local service. LaTeX is the only external interchange
 format; DOCX/OMML is used only for inserting or reading native editable
-equations inside the document.
+equations inside the document. For WPS reverse conversion, a randomly named
+one-shot DOCX is saved directly under the current user's temporary directory.
+The API accepts only that exact directory and filename pattern, validates the
+DOCX limits, and the controller invokes spool cleanup after both successful
+and failed conversions.
 
 ## 💻 Requirements
 
@@ -217,18 +221,19 @@ standalone add-in host:
 ```
 
 The 50-formula corpus still produces and round-trips 50 native equations in
-both Word 16.0 and WPS Writer 12.0. The installed Word task pane also completed
-both real button paths: two LaTeX expressions became editable equations, and
-copying them produced
+both Word 16.0 and WPS Writer 12.1.0.26895. Both installed task panes completed
+their real two-button paths. Word converted two LaTeX expressions to editable
+equations and copied
 `测试公式 $x^{2} + y^{2} = z^{2}$ 和 $\frac{a}{b}$。`.
-WPS package/registration and JSAPI contracts are verified, but the WPS
-button-level run is intentionally pending because the validation session did
-not close the user's already-open document.
+WPS likewise converted two expressions to editable native equations; copying
+the selected result reported two formulas and wrote exactly
+`WPS 测试：$x^{2} + y^{2} = z^{2}$，以及 $\frac{a}{b}$。`
+once, with no duplicate paragraph.
 
 See [`addons/README.md`](addons/README.md) for installation and troubleshooting,
 and
 [`docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](docs/iteration-7-2026-07-23-installable-office-wps-addins.md)
-for the exact release evidence and remaining WPS boundary.
+for the exact release evidence.
 
 ## Tampermonkey Development and Publishing
 
@@ -368,9 +373,12 @@ one recognized formula is required.
 { "source_format": "flat-opc", "content": "<pkg:package>...</pkg:package>" }
 ```
 
-Accepts Word `flat-opc` XML or a WPS-compatible `docx-base64` package and
-returns plain canonical LaTeX plus formula counts. This endpoint is the only
-copy representation used by the add-in controller.
+Accepts Word `flat-opc` XML, a backwards-compatible `docx-base64` package, or
+the WPS add-in's `docx-local-path` one-shot spool. Local paths must resolve to
+a matching file directly under the current user's temporary directory; package
+size, ZIP entry count, expanded size, and required DOCX structure are then
+validated. The response is plain canonical LaTeX plus formula counts, and is
+the only copy representation used by the add-in controller.
 
 ### `GET /translate/health?model=translategemma:4b`
 

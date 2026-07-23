@@ -10,7 +10,9 @@ Both hosts expose the same two actions:
 
 LaTeX is the only external interchange format. DOCX/OMML is a short-lived
 local insertion/export format and is never copied as an image or proprietary
-clipboard object.
+clipboard object. WPS reverse export uses a random one-shot DOCX directly
+under the current user's temporary directory; the API validates the exact path
+and package before use, and the controller always invokes cleanup afterward.
 
 ## Install and remove
 
@@ -99,7 +101,7 @@ existing lifecycle rules.
 | `office-word/office-adapter.js` | Word `getOoxml()` export and `insertFileFromBase64(..., "Replace")` insertion |
 | `wps-word/ribbon.xml` | WPS ribbon command |
 | `wps-word/js/ribbon.js` | Creates/toggles one shared WPS task pane |
-| `wps-word/wps-adapter.js` | WPS temporary-DOCX export and `Range.InsertFile` insertion |
+| `wps-word/wps-adapter.js` | WPS `Range.Copy/Paste` one-shot DOCX export, `finally`-driven cleanup, and `Range.InsertFile` insertion |
 | `../addon_host.py` | Strict loopback static host and narrow API proxy |
 | `../addin_registration.py` | Idempotent WPS `publish.xml` merge/remove |
 | `../scripts/install_document_addins.ps1` | Current-user installation |
@@ -118,12 +120,17 @@ existing lifecycle rules.
 
 ### Native equations to LaTeX
 
-1. Word exports the selection as Flat OPC; WPS copies the formatted selection
-   into a temporary DOCX.
-2. `POST /document/native-to-latex` validates package size, count, and paths.
-3. Word selection packages are placed into Pandoc's complete reference DOCX
+1. Word exports the selection as Flat OPC. WPS uses native
+   `Range.Copy()` followed by `Range(0, 0).Paste()` in a temporary document,
+   then saves a randomly named one-shot DOCX.
+2. WPS sends `docx-local-path`, not WebView-encoded binary data. The API
+   requires a matching filename directly under the current user's temporary
+   root, then validates package size, entry count, expanded size, and structure.
+3. The shared controller removes the WPS spool in `finally`, including API or
+   clipboard failures.
+4. Word selection packages are placed into Pandoc's complete reference DOCX
    shell while preserving conventional `w:` and `m:` namespaces.
-4. Only canonical plain-text LaTeX plus surrounding prose is written to the
+5. Only canonical plain-text LaTeX plus surrounding prose is written to the
    clipboard.
 
 Formula conversion depends on Pandoc, not Ollama. Neither local Ollama nor a
@@ -133,7 +140,7 @@ remote model is required, started, or contacted by these actions.
 
 - The 50-formula corpus becomes 50 native OMML equations and round-trips as 50
   formulas.
-- Microsoft Word 16.0 and WPS Writer 12.0 both opened that corpus as 50 native
+- Microsoft Word 16.0 and WPS Writer 12.1.0.26895 both opened that corpus as 50 native
   equations across 61 paragraphs.
 - The installed Microsoft Word task pane was exercised in a real blank
   document:
@@ -141,11 +148,16 @@ remote model is required, started, or contacted by these actions.
     native equations;
   - selecting the result and clicking **Copy as LaTeX** produced
     `测试公式 $x^{2} + y^{2} = z^{2}$ 和 $\frac{a}{b}$。`.
-- WPS package structure, ribbon callbacks, adapter behavior, registration
-  merge/remove, and HTTP assets are covered by automated tests.
-- WPS button-level acceptance remains pending until WPS can be safely restarted;
-  the current validation session intentionally did not close the user's open
-  document.
+- The installed WPS Writer 12.1.0.26895 task pane completed the same real
+  two-button flow in a new unsaved test document:
+  - `WPS 测试：$x^2 + y^2 = z^2$，以及 $\frac{a}{b}$。` became two editable
+    native equations;
+  - selecting the result and clicking **Copy as LaTeX** reported two formulas
+    and wrote exactly
+    `WPS 测试：$x^{2} + y^{2} = z^{2}$，以及 $\frac{a}{b}$。` once.
+- WPS package structure, ribbon callbacks, `Copy/Paste` export, one-shot spool
+  validation/cleanup, registration merge/remove, and HTTP assets are covered
+  by automated tests.
 
 See
 [`../docs/iteration-7-2026-07-23-installable-office-wps-addins.md`](../docs/iteration-7-2026-07-23-installable-office-wps-addins.md)

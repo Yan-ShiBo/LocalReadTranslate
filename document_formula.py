@@ -31,6 +31,9 @@ FORMULA_FRAGMENT_TTL_SECONDS = 60 * 60
 MAX_DOCX_BYTES = 8 * 1024 * 1024
 MAX_DOCX_EXPANDED_BYTES = 24 * 1024 * 1024
 MAX_DOCX_ENTRIES = 512
+_WPS_LOCAL_DOCX_NAME = re.compile(
+    r"localreadtranslate-selection-\d+-[0-9a-f]+\.docx"
+)
 
 _PKG_NAMESPACE = "http://schemas.microsoft.com/office/2006/xmlPackage"
 _PKG = f"{{{_PKG_NAMESPACE}}}"
@@ -678,6 +681,40 @@ def decode_docx_base64(content: str) -> bytes:
     return data
 
 
+def read_wps_local_docx(
+    content: str,
+    *,
+    temp_root: Path | None = None,
+) -> bytes:
+    """Read a one-shot WPS selection spool from the current user's temp root."""
+
+    raw_path = str(content or "").strip()
+    candidate = Path(raw_path)
+    root = (
+        Path(temp_root)
+        if temp_root is not None
+        else Path(tempfile.gettempdir())
+    ).resolve()
+    if not raw_path or not candidate.is_absolute():
+        raise FormulaConversionError("Unsafe WPS formula spool path")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (FileNotFoundError, OSError) as error:
+        raise FormulaConversionError("WPS formula spool file is unavailable") from error
+    if (
+        resolved.parent != root
+        or _WPS_LOCAL_DOCX_NAME.fullmatch(resolved.name) is None
+    ):
+        raise FormulaConversionError("Unsafe WPS formula spool path")
+    try:
+        with resolved.open("rb") as handle:
+            data = handle.read(MAX_DOCX_BYTES + 1)
+    except OSError as error:
+        raise FormulaConversionError("WPS formula spool file is unavailable") from error
+    _validate_docx_bytes(data)
+    return data
+
+
 def _flat_opc_content_types(parts: dict[str, str]) -> bytes:
     ElementTree.register_namespace("", _CONTENT_TYPES_NAMESPACE)
     root = ElementTree.Element(f"{{{_CONTENT_TYPES_NAMESPACE}}}Types")
@@ -917,7 +954,7 @@ def _hydrate_word_selection_docx(
 
 
 def native_formula_to_latex(
-    source_format: Literal["docx-base64", "flat-opc"],
+    source_format: Literal["docx-base64", "docx-local-path", "flat-opc"],
     content: str,
     *,
     work_dir: Path | None = None,
@@ -925,6 +962,8 @@ def native_formula_to_latex(
     executable, version = _require_pandoc()
     if source_format == "docx-base64":
         docx = decode_docx_base64(content)
+    elif source_format == "docx-local-path":
+        docx = read_wps_local_docx(content)
     elif source_format == "flat-opc":
         docx = _hydrate_word_selection_docx(
             flat_opc_to_docx(content),

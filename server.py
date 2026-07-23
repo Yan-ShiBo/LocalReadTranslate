@@ -813,7 +813,7 @@ class LatexFormulaFragmentResponse(BaseModel):
 class NativeFormulaToLatexRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_format: Literal["docx-base64", "flat-opc"]
+    source_format: Literal["docx-base64", "docx-local-path", "flat-opc"]
     content: str = Field(min_length=1, max_length=12000000)
 
 

@@ -9,15 +9,6 @@
   const WD_DO_NOT_SAVE_CHANGES = 0;
   const WD_FORMAT_XML_DOCUMENT = 12;
 
-  function binaryStringToBase64(value) {
-    const binary = String(value || "");
-    if (typeof btoa === "function") return btoa(binary);
-    if (typeof Buffer !== "undefined") {
-      return Buffer.from(binary, "binary").toString("base64");
-    }
-    throw new Error("Binary-to-base64 conversion is unavailable");
-  }
-
   function tempDocxPath(application) {
     const root = String(
       application.Env && application.Env.GetTempPath
@@ -25,7 +16,7 @@
         : application.FileSystem.tmpdir()
     );
     const separator = /[\\/]$/.test(root) ? "" : "\\";
-    const random = Math.random().toString(16).slice(2);
+    const random = Math.random().toString(16).slice(2) || "0";
     return `${root}${separator}localreadtranslate-selection-${Date.now()}-${random}.docx`;
   }
 
@@ -60,12 +51,20 @@
 
       async exportSelectionForLatex() {
         const originalDocument = app.ActiveDocument;
-        const sourceFormattedText = app.Selection.Range.FormattedText;
+        const sourceRange = app.Selection.Range;
         const path = tempDocxPath(app);
         let temporaryDocument = null;
+        let handedOff = false;
+        let cleaned = false;
+        const cleanup = () => {
+          if (cleaned) return;
+          cleaned = true;
+          removeFile(app.FileSystem, path);
+        };
         try {
+          sourceRange.Copy();
           temporaryDocument = app.Documents.Add();
-          temporaryDocument.Content.FormattedText = sourceFormattedText;
+          temporaryDocument.Range(0, 0).Paste();
           temporaryDocument.SaveAs2(
             path,
             WD_FORMAT_XML_DOCUMENT,
@@ -78,14 +77,11 @@
           if (originalDocument && typeof originalDocument.Activate === "function") {
             originalDocument.Activate();
           }
-          const binary = await Promise.resolve(
-            app.FileSystem.readAsBinaryString(path)
-          );
-          const content = binaryStringToBase64(binary);
-          if (!content) throw new Error("WPS did not export the selected content");
+          handedOff = true;
           return {
-            source_format: "docx-base64",
-            content,
+            source_format: "docx-local-path",
+            content: path,
+            cleanup,
           };
         } finally {
           if (temporaryDocument) {
@@ -102,7 +98,7 @@
               // The original document may have been closed during the operation.
             }
           }
-          removeFile(app.FileSystem, path);
+          if (!handedOff) cleanup();
         }
       },
 
@@ -123,7 +119,6 @@
     WD_COLLAPSE_START,
     WD_DO_NOT_SAVE_CHANGES,
     WD_FORMAT_XML_DOCUMENT,
-    binaryStringToBase64,
     createWpsWriterAdapter,
   };
 });

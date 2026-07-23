@@ -1,13 +1,13 @@
 # Iteration 7：可安装的 Microsoft Word / WPS Writer 公式加载项
 
 **状态：** userscript `1.15.3` 不变；FastAPI 升级为 `1.7.17`。共享任务窗格、
-Office XML manifest、WPS ribbon/package、回环宿主、安装/卸载脚本和 Word
-按钮级实机验收已经完成。WPS 已完成包、注册与自动化契约验证，但为了不关闭用户
-正在编辑的真实文档，本次没有重启 WPS，因此 WPS 真实按钮级验收明确留待安全窗口。
+Office XML manifest、WPS ribbon/package、回环宿主、安装/卸载脚本，以及 Word 与
+WPS 的按钮级双向实机验收已经完成。
 
 Iteration 6 的公式交换契约保持不变：对外复制只使用 LaTeX；Word/WPS 内部继续
 使用可编辑原生公式。Iteration 7 把该核心装进真实加载项壳层，并修复 Word 选区
-Flat OPC 在反向转换中的兼容问题。
+Flat OPC 在反向转换中的兼容问题，以及 WPS WebView 二进制导出损坏和临时文档
+重复选区问题。
 
 ## 1. 用户工作流
 
@@ -58,8 +58,14 @@ manifest ID 为 `74d95f3f-f8d0-4a33-95d8-2f0b637df535`，权限为
 - `addons/wps-word/wps-adapter.js`
 - `addons/wps-word/manifest.xml`
 
-WPS ribbon 创建或切换一个共享任务窗格。适配器把选区的 `FormattedText` 复制到
-临时文档并另存为 DOCX，读取后立即清理；插入时使用 `Range.InsertFile`。
+WPS ribbon 创建或切换一个共享任务窗格。反向导出时，适配器先对原选区执行
+`Range.Copy()`，再在临时文档的 `Range(0, 0)` 执行 `Paste()`，保存为当前用户
+临时目录下随机命名的一次性 DOCX。任务窗格只把 `docx-local-path` 交给回环 API；
+控制器在成功、API 失败或剪贴板失败时都执行清理。插入时使用 `Range.InsertFile`。
+
+本地 API 不接受任意 WPS 文件路径：文件必须直接位于当前用户临时目录，名称必须
+匹配 `localreadtranslate-selection-<时间>-<随机值>.docx`，并继续通过 8 MiB 文件
+上限、ZIP 条目/展开大小和 DOCX 必需结构校验。
 
 `addin_registration.py` 对
 `%APPDATA%\kingsoft\wps\jsaddons\publish.xml` 做解析、去重、合并和精确删除：
@@ -151,21 +157,41 @@ Word 实机复制都通过。
 
 ### 4.2 WPS Writer 12.1.0.26895
 
-已验证：
+安装后重启 WPS，在新的未保存测试文档中输入：
 
-- `publish.xml` 注册内容正确；
-- 回环 URL、`ribbon.xml`、`index.html` 和任务窗格资源可达；
-- WPS ribbon 创建/切换、PluginStorage、临时 DOCX 导出、文件读取/清理和
-  `Range.InsertFile` 的自动化契约通过；
-- 50 公式探针在 WPS 中仍为 50 个原生公式、61 个段落。
+```text
+WPS 测试：$x^2 + y^2 = z^2$，以及 $\frac{a}{b}$。
+```
 
-未验证：
+点击 **转为文档公式**：
 
-- 本次没有在当前 WPS 会话中点击新 ribbon，因为 WPS 在安装前已经打开一个用户
-  真实文档；加载新注册需要重启应用。
+- 显示“已转换 2 个公式”；
+- 两个公式成为 WPS 原生可编辑对象；
+- 正文与中文标点保留。
 
-因此本文不会把 WPS “真实按钮双向链路”写成已通过。用户保存并安全关闭该文档后，
-重启 WPS 即可执行最终两按钮验收。
+重新选择该段并点击 **复制为 LaTeX**：
+
+- 显示“已复制 2 个公式”；
+- Windows 剪贴板长度为 48 个字符；
+- 实际内容只有一份：
+
+```text
+WPS 测试：$x^{2} + y^{2} = z^{2}$，以及 $\frac{a}{b}$。
+```
+
+实机验收同时确认 `publish.xml`、ribbon、PluginStorage、任务窗格资源和
+`Range.InsertFile` 正常；50 公式探针在 WPS 中仍为 50 个原生公式、61 个段落。
+测试文档保持未保存并留在 WPS 中，未触碰用户其他文档。
+
+本次实机测试发现并修复两个独立的 WPS 兼容问题：
+
+1. WPS `FileSystem.readAsBinaryString` 的返回值不能按浏览器 Latin-1 字符串直接
+   `btoa`，UTF-8 重编码也会破坏 ZIP，因此改为受限的一次性本地路径桥接；
+2. `temporaryDocument.Content.FormattedText = source.FormattedText` 会把同一选区
+   写入两次，产生 4 个公式；WPS 原生 `Range.Copy/Paste` 只生成一个正文段和
+   2 个公式。
+
+路径白名单、DOCX 校验和 `finally` 清理共同保证该桥接不会扩展为任意本地文件读取。
 
 ## 5. 运行状态边界
 
@@ -186,20 +212,24 @@ Word 实机复制都通过。
 - `tests/test_addin_packaging.py`
   - Office/WPS manifest、ribbon、安装器与 URL 一致性；
 - `tests/office-addins-core.test.cjs`
-  - 两宿主适配器、控制器、剪贴板、任务窗格一次健康检查和 WPS ribbon；
+  - 两宿主适配器、控制器、剪贴板、任务窗格一次健康检查、WPS ribbon，以及
+    `Copy/Paste` 不重复选区与一次性文件清理；
 - `tests/test_document_formula.py`
-  - Word 选区 Flat OPC 元数据重建、标准命名空间和 Pandoc 回环；
+  - Word 选区 Flat OPC 元数据重建、标准命名空间、Pandoc 回环，以及 WPS
+    本地路径直属目录/随机文件名/DOCX 校验；
+- `tests/test_document_formula_api.py`
+  - API 接受 `docx-local-path`，并继续拒绝未知来源格式；
 - `tests/test_tray_app.py`
   - 托盘拥有/启动/停止加载项宿主，且远程隧道生命周期不被混用。
 
 发布前必须继续通过完整 Python 套件、两个 Node 套件、Python/JavaScript 语法检查、
 XML 解析、PowerShell 解析、catalog 同步、release metadata 和 `git diff --check`。
 
-最终在项目实际 `kokoro-tts` Conda 环境中的结果：
+本轮在项目实际 `kokoro-tts` Conda 环境中的最终结果：
 
-- Python：`247 passed`，另有 `17 subtests passed`；
+- Python：`250 passed`，另有 `17 subtests passed`；
 - userscript Node：`49 passed`；
-- Office/WPS Node：`11 passed`；
+- Office/WPS Node：`12 passed`；
 - Python/JavaScript 语法、Office/WPS XML、PowerShell AST、catalog、项目环境
   `pip check` 与 `git diff --check`：全部通过；
 - 唯一 warning 是现有 FastAPI TestClient 的 Starlette `httpx2` 迁移提示，不影响
@@ -226,7 +256,9 @@ powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -Wp
 - Microsoft XML manifest、Office.js Word Range 和本地旁加载按官方 Office
   Add-ins 文档实现；
 - WPS 使用官方 publish 模式、`CreateTaskPane`、`PluginStorage`、
-  `FileSystem.readAsBinaryString`、`Document.SaveAs2` 与 `Range.InsertFile`。
+  `Range.Copy/Paste`、`Document.SaveAs2` 与 `Range.InsertFile`。实机证明
+  `readAsBinaryString` 不适合作为 WPS DOCX 的 WebView Base64 桥接，因此不再
+  位于生产链路。
 
 Office 官方建议生产/网络传输使用 HTTPS；当前 HTTP 仅用于严格的本机开发旁加载。
 如果未来发布到 Marketplace、Office 网页版或远程地址，必须换成受信任 HTTPS

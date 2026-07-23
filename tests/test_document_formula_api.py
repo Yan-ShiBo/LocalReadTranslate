@@ -139,6 +139,33 @@ def test_native_formula_copy_outputs_only_canonical_latex():
     }
 
 
+def test_native_formula_copy_accepts_wps_local_spool_paths():
+    converted = NativeToLatexResult(
+        latex="正文 $x^{2}$。",
+        formula_count=1,
+        inline_formula_count=1,
+        display_formula_count=0,
+        warnings=(),
+        generator="pandoc",
+        generator_version="3.8",
+    )
+    spool_path = (
+        r"C:\Temp\localreadtranslate-selection-1234567890-a1b2c3.docx"
+    )
+    with patch.object(
+        server,
+        "native_formula_to_latex",
+        return_value=converted,
+    ) as convert:
+        response = client.post(
+            "/document/native-to-latex",
+            json={"source_format": "docx-local-path", "content": spool_path},
+        )
+
+    assert response.status_code == 200
+    convert.assert_called_once_with("docx-local-path", spool_path)
+
+
 def test_native_formula_copy_rejects_unknown_source_format():
     response = client.post(
         "/document/native-to-latex",
