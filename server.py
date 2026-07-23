@@ -21,7 +21,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -46,6 +46,15 @@ from audio_encoding import (
     WebMOpusEncoder,
     encode_ogg_opus,
     validate_ffmpeg,
+)
+from document_formula import (
+    FormulaConversionError,
+    GeneratedFormulaFragment,
+    NativeToLatexResult,
+    PandocUnavailableError,
+    generate_formula_fragment,
+    native_formula_to_latex,
+    pandoc_health,
 )
 from tts_catalog import (
     AVAILABLE_VOICES,
@@ -562,7 +571,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.15",
+    version="1.7.16",
     lifespan=lifespan,
 )
 
@@ -770,6 +779,52 @@ class FormulaVerbalizeResponse(BaseModel):
     verbalizations: list[str]
     model: str
     elapsed: float
+
+
+class LatexFormulaHealthResponse(BaseModel):
+    available: bool
+    version: Optional[str] = None
+    interchange_format: str = "latex"
+    native_format: str = "docx-omml"
+
+
+class LatexFormulaFragmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=50000)
+
+
+class LatexFormulaFragmentResponse(BaseModel):
+    canonical_latex: str
+    docx_base64: str
+    local_path: str
+    filename: str
+    formula_count: int
+    inline_formula_count: int
+    display_formula_count: int
+    native_formula_count: int
+    native_display_formula_count: int
+    warnings: list[str] = Field(default_factory=list)
+    generator: str
+    generator_version: str
+    expires_in_seconds: int
+
+
+class NativeFormulaToLatexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_format: Literal["docx-base64", "flat-opc"]
+    content: str = Field(min_length=1, max_length=12000000)
+
+
+class NativeFormulaToLatexResponse(BaseModel):
+    latex: str
+    formula_count: int
+    inline_formula_count: int
+    display_formula_count: int
+    warnings: list[str] = Field(default_factory=list)
+    generator: str
+    generator_version: str
 
 
 class OllamaModelOption(BaseModel):
@@ -1218,7 +1273,8 @@ def _wait_for_ollama_model_state(
 def _protect_formulas(text: str) -> tuple[str, list[tuple[str, str]]]:
     formulas = []
     pattern = re.compile(
-        r"(\[\[MATH:\s*(.*?)\s*\]\]|"
+        r"(\[\[MATH_BLOCK:\s*(.*?)\s*\]\]|"
+        r"\[\[MATH:\s*(.*?)\s*\]\]|"
         r"\$\$([\s\S]*?)\$\$|"
         r"\\\[([\s\S]*?)\\\]|"
         r"\\\(([\s\S]*?)\\\)|"
@@ -1247,7 +1303,10 @@ def _restore_formulas(text: str, formulas: list[tuple[str, str]]) -> str:
     result = text
     for placeholder, original in formulas:
         cleaned = original
-        if cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
+        if cleaned.startswith("[[MATH_BLOCK:") and cleaned.endswith("]]"):
+            content = cleaned[13:-2].strip()
+            cleaned = f"$${content}$$"
+        elif cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
             content = cleaned[7:-2].strip()
             cleaned = f"${content}$"
         result = result.replace(placeholder, cleaned)
@@ -1256,6 +1315,8 @@ def _restore_formulas(text: str, formulas: list[tuple[str, str]]) -> str:
 
 def _unwrap_formula_for_translation(formula: str) -> str:
     cleaned = (formula or "").strip()
+    if cleaned.startswith("[[MATH_BLOCK:") and cleaned.endswith("]]"):
+        return cleaned[13:-2].strip()
     if cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
         return cleaned[7:-2].strip()
     if cleaned.startswith("$$") and cleaned.endswith("$$"):
@@ -1332,19 +1393,34 @@ def _format_formula_for_translation(formula: str) -> str:
     content = _formula_content_as_latex(original)
     if not content:
         return original
-    if original.startswith(("$$", r"\[")):
+    if original.startswith(("$$", r"\[", "[[MATH_BLOCK:")):
         return f"$${content}$$"
     return f"${content}$"
 
 
 def _normalize_translated_math_wrappers(text: str) -> str:
-    def replace(match: re.Match) -> str:
+    def replace_block(match: re.Match) -> str:
+        content = match.group(1).strip()
+        if not content:
+            return ""
+        return _format_formula_for_translation(f"[[MATH_BLOCK: {content}]]")
+
+    def replace_inline(match: re.Match) -> str:
         content = match.group(1).strip()
         if not content:
             return ""
         return _format_formula_for_translation(f"[[MATH: {content}]]")
 
-    return re.sub(r"\[\[MATH:\s*([\s\S]*?)\s*\]\]", replace, text or "")
+    normalized = re.sub(
+        r"\[\[MATH_BLOCK:\s*([\s\S]*?)\s*\]\]",
+        replace_block,
+        text or "",
+    )
+    return re.sub(
+        r"\[\[MATH:\s*([\s\S]*?)\s*\]\]",
+        replace_inline,
+        normalized,
+    )
 
 
 def _restore_formulas_for_display(text: str, formulas: list[tuple[str, str]]) -> str:
@@ -2906,6 +2982,96 @@ async def formula_verbalize_endpoint(request: FormulaVerbalizeRequest):
         verbalizations=verbalizations,
         model=model,
         elapsed=round(elapsed, 3),
+    )
+
+
+@app.get("/document/latex/health", response_model=LatexFormulaHealthResponse)
+async def latex_formula_health_endpoint():
+    """Report whether editable Word/WPS formula conversion is available."""
+    status = await asyncio.to_thread(pandoc_health)
+    return LatexFormulaHealthResponse(
+        available=bool(status.get("available")),
+        version=status.get("version"),
+        interchange_format="latex",
+        native_format="docx-omml",
+    )
+
+
+@app.post(
+    "/document/latex-fragment",
+    response_model=LatexFormulaFragmentResponse,
+)
+async def latex_formula_fragment_endpoint(request: LatexFormulaFragmentRequest):
+    """Convert mixed prose/LaTeX into a short-lived editable DOCX fragment."""
+    try:
+        result: GeneratedFormulaFragment = await asyncio.to_thread(
+            generate_formula_fragment,
+            request.text,
+        )
+    except PandocUnavailableError as error:
+        print(f"[ERROR] Native formula converter unavailable: {error}")
+        raise HTTPException(
+            status_code=503,
+            detail="Native formula conversion is unavailable",
+        )
+    except FormulaConversionError as error:
+        print(f"[ERROR] Native formula conversion failed: {error}")
+        raise HTTPException(status_code=422, detail=str(error))
+
+    print(
+        f"[FORMULA DOCX] {result.formula_count} LaTeX formulas -> "
+        f"{result.native_formula_count} native formulas"
+    )
+    return LatexFormulaFragmentResponse(
+        canonical_latex=result.canonical_latex,
+        docx_base64=result.docx_base64,
+        local_path=result.local_path,
+        filename=result.filename,
+        formula_count=result.formula_count,
+        inline_formula_count=result.inline_formula_count,
+        display_formula_count=result.display_formula_count,
+        native_formula_count=result.native_formula_count,
+        native_display_formula_count=result.native_display_formula_count,
+        warnings=list(result.warnings),
+        generator=result.generator,
+        generator_version=result.generator_version,
+        expires_in_seconds=result.expires_in_seconds,
+    )
+
+
+@app.post(
+    "/document/native-to-latex",
+    response_model=NativeFormulaToLatexResponse,
+)
+async def native_formula_to_latex_endpoint(request: NativeFormulaToLatexRequest):
+    """Copy selected Word/WPS native formulas using LaTeX as the only output."""
+    try:
+        result: NativeToLatexResult = await asyncio.to_thread(
+            native_formula_to_latex,
+            request.source_format,
+            request.content,
+        )
+    except PandocUnavailableError as error:
+        print(f"[ERROR] Native formula converter unavailable: {error}")
+        raise HTTPException(
+            status_code=503,
+            detail="Native formula conversion is unavailable",
+        )
+    except FormulaConversionError as error:
+        print(f"[ERROR] Native formula copy failed: {error}")
+        raise HTTPException(status_code=422, detail=str(error))
+
+    print(
+        f"[FORMULA LATEX] native selection -> {result.formula_count} LaTeX formulas"
+    )
+    return NativeFormulaToLatexResponse(
+        latex=result.latex,
+        formula_count=result.formula_count,
+        inline_formula_count=result.inline_formula_count,
+        display_formula_count=result.display_formula_count,
+        warnings=list(result.warnings),
+        generator=result.generator,
+        generator_version=result.generator_version,
     )
 
 

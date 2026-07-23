@@ -19,7 +19,8 @@
 - **System tray app** — Runs silently in the background, right-click to control, with optional login auto-start
 - **Backend-driven source choice** — While the mediator is online, Local Ollama and Project Server remain explicit choices; the selected source shows either its one truthful recovery action or only its discovered generation models
 - **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
-- **Copy selection as LaTeX** — Copy selected prose without translation while converting detected MathJax/MathML/KaTeX formulas to LaTeX
+- **Copy selection as canonical LaTeX** — Copy selected prose without translation, preserve paragraph breaks, and normalize detected inline/display MathJax, MathML, and KaTeX formulas to `$...$` / `$$...$$`
+- **Word/WPS formula interoperability core** — Convert mixed LaTeX paragraphs to editable DOCX/OMML equations and convert selected native equations back to LaTeX; installable task-pane packages are a documented next phase
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
 - **Target-language guard** — Chinese targets that return all-English output are retried once with a strict same-model instruction; a second non-compliant result is reported as failure
@@ -58,6 +59,11 @@
 
 The userscript never receives SSH credentials or talks directly to Ollama. The local API is the single browser boundary; the tray app owns process startup, SSH/API configuration and tunnel lifecycle.
 
+The same loopback API now also exposes a document-formula conversion boundary.
+The prototype Word/WPS adapters send only selected document content to this local
+service. LaTeX is the only external interchange format; DOCX/OMML is used only
+for inserting or reading native editable equations inside the document.
+
 ## 💻 Requirements
 
 | Item | Requirement |
@@ -67,6 +73,7 @@ The userscript never receives SSH credentials or talks directly to Ollama. The l
 | Python | Managed via Conda (Python 3.10) |
 | eSpeak-NG | Required for phonemization |
 | Browser | Chrome + [Tampermonkey](https://www.tampermonkey.net/) |
+| Pandoc 3.x | Required only for the Word/WPS native-formula conversion core |
 
 ## 🚀 Quick Start
 
@@ -155,7 +162,7 @@ Editing the repository file does not update a copy already installed in Tampermo
 
 1. Open any webpage
 2. **Select text** → floating `Read`, `Translate`, and `Copy` buttons appear
-3. Click `Read` for local English TTS with background formula verbalization, `Translate` with the selected local or remote Ollama model, or `Copy` to copy the selection while preserving formulas as LaTeX
+3. Click `Read` for local English TTS with background formula verbalization, `Translate` with the selected local or remote Ollama model, or `Copy` to copy the selection while preserving paragraphs and canonicalizing inline/display formulas as `$...$` / `$$...$$`
 4. Open the gear panel to choose the route first and then the model:
    - while the mediator is online, **Local Ollama** and **Project Server** remain visible as separate source rows, even when one of them is offline;
    - select **Local Ollama** to see only discovered local generation models; if it is offline, the row shows **Start**, which opens the fixed `localreadtranslate://ollama` action and waits for local Ollama;
@@ -171,11 +178,33 @@ Editing the repository file does not update a copy already installed in Tampermo
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
+## Office/WPS formula add-in core
+
+The repository now contains the shared conversion engine and host adapters for
+two document actions:
+
+- **Convert selected LaTeX**: mixed prose and `$...$` / `$$...$$` formulas
+  become editable native Word/WPS equations while paragraph structure remains;
+- **Copy selection as LaTeX**: selected native equations and prose return to
+  the clipboard as plain canonical LaTeX only.
+
+Pandoc performs the LaTeX ↔ DOCX/OMML conversion locally. A 50-formula corpus
+produced 50 native formulas and round-tripped back as 50 formulas; the generated
+document was opened in Microsoft Word 16.0 and WPS Writer 12.0 with 50 native
+formula objects in each application.
+
+This iteration is deliberately a formula-engine prototype. It does **not** yet
+include an installable Office manifest, WPS registration package, task-pane UI,
+HTTPS add-in host, or installer. See
+[`addons/README.md`](addons/README.md) for the adapter contract and
+[`docs/iteration-6-2026-07-23-office-wps-latex-interchange.md`](docs/iteration-6-2026-07-23-office-wps-latex-interchange.md)
+for verification and the remaining release gates.
+
 ## Tampermonkey Development and Publishing
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.2` (FastAPI `1.7.15`).
+The current repository metadata version is `1.15.3` (FastAPI `1.7.16`).
 
 For each release:
 
@@ -204,6 +233,8 @@ browser script and built-in test page are generated from this catalog.
 | File | Description |
 |------|-------------|
 | `server.py` | FastAPI server with Kokoro TTS inference |
+| `document_formula.py` | Canonical LaTeX parser plus validated Pandoc DOCX/OMML conversion |
+| `addons/` | Shared formula controller and Word/WPS host-adapter prototype |
 | `audio_encoding.py` | Bundled FFmpeg helpers for OGG/Opus and WebM/Opus |
 | `tray_app.py` | System tray application (background mode) |
 | `windows_protocol.py` | Per-user `localreadtranslate://` registration and exact validation for the fixed `start`, `ollama`, and `remote` actions |
@@ -218,7 +249,9 @@ browser script and built-in test page are generated from this catalog.
 | `requirements-test.txt` | Lightweight CI/test dependencies (no Torch/Kokoro) |
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
-| `docs/iteration-5-2026-07-23.md` | Current backend-driven translation/settings release record |
+| `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
+| `docs/iteration-6-2026-07-23-office-wps-latex-interchange.md` | Current LaTeX/Office/WPS formula release record |
+| `docs/iteration-5-2026-07-23.md` | Historical backend-driven translation/settings release record |
 | `docs/iteration-4-2026-07-18.md` | Historical service-control and remote-translation release record |
 | `.github/workflows/ci.yml` | Windows CI |
 
@@ -277,6 +310,33 @@ Returns `prepared_text`: plain English read-aloud text for Kokoro. English prose
 Fallback endpoint returning concise spoken English descriptions for formulas that cannot be handled by local rules. The server passes the configurable math glossary to Ollama so symbols such as arrows, hats and subscripts can be interpreted from nearby context.
 `model` is optional; if omitted, the server uses `OLLAMA_FORMULA_MODEL` (`translategemma:4b` by default).
 
+### `GET /document/latex/health`
+
+Reports whether the local Pandoc conversion layer is available. The response
+names `latex` as the interchange format and `docx-omml` as the native format,
+but does not expose the local executable path.
+
+### `POST /document/latex-fragment`
+
+```json
+{ "text": "First paragraph with $x^2$.\\n\\n$$\\n\\\\frac{a}{b}\\n$$" }
+```
+
+Canonicalizes the mixed paragraph and returns a short-lived editable DOCX/OMML
+fragment in both `docx_base64` (Word insertion) and `local_path` (WPS
+insertion) forms, together with inline/display/native formula counts. At least
+one recognized formula is required.
+
+### `POST /document/native-to-latex`
+
+```json
+{ "source_format": "flat-opc", "content": "<pkg:package>...</pkg:package>" }
+```
+
+Accepts Word `flat-opc` XML or a WPS-compatible `docx-base64` package and
+returns plain canonical LaTeX plus formula counts. This endpoint is the only
+copy representation used by the add-in controller.
+
 ### `GET /translate/health?model=translategemma:4b`
 
 Checks translation sources without starting a translation. A plain model name selects local Ollama; `remote:<source-id>:<model>` selects a tray-configured remote source. Compatibility fields still describe the selected model, while `sources[]` independently reports each configured source's safe ID/name/kind, reachability and models with `running`, `pinned` and `usable_for_translation`. It never exposes remote URLs, hosts, ports or credentials. `available_model_options` is the flattened selector list and excludes non-generation models.
@@ -320,9 +380,9 @@ Select **Local Ollama** in the Translation panel. If it is offline, click **Star
 
 ```powershell
 conda run -n kokoro-tts python -m pytest tests -v
-conda run -n kokoro-tts python -m py_compile server.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
+conda run -n kokoro-tts python -m py_compile server.py document_formula.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
 node --check tts-userscript.js
-node --test tests/userscript-core.test.cjs
+node --test tests/office-addins-core.test.cjs tests/userscript-core.test.cjs
 conda run -n kokoro-tts python scripts/sync_catalog.py --check
 conda run -n kokoro-tts python -c "from audio_encoding import validate_ffmpeg; validate_ffmpeg()"
 conda run -n kokoro-tts python -m pip check
@@ -330,7 +390,10 @@ git diff --check
 ```
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
-The current release record is in [`docs/iteration-5-2026-07-23.md`](docs/iteration-5-2026-07-23.md); iteration 4 and the original expert review remain as history.
+The current formula release record is in
+[`docs/iteration-6-2026-07-23-office-wps-latex-interchange.md`](docs/iteration-6-2026-07-23-office-wps-latex-interchange.md).
+Iteration 5 remains the source/model-settings release record; iteration 4 and
+the original expert review remain as history.
 
 ## License
 

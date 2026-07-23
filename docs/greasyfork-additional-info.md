@@ -17,7 +17,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 - `Read`：英文含公式时先读正文，同时后台处理公式；播放到公式处如果还没处理好再等待，然后继续交给 Kokoro TTS 朗读
 - `Translate`：先选择本地 Ollama 或项目服务器，再使用本地中介为该来源实际发现的生成模型；不显示静态、跨来源或 embedding/reranking 选项
-- `Copy`：不翻译，只复制选中原文；MathJax/MathML/KaTeX 公式会尽量扩展到完整公式框并复制为 LaTeX
+- `Copy`：不翻译，保留选中原文的段落；MathJax/MathML/KaTeX 公式会尽量扩展到完整公式框，行内公式统一复制为 `$...$`，独立公式统一复制为 `$$...$$`
 - UI 使用原生 DOM API 构建，不使用 `innerHTML` 等 HTML 字符串注入，以兼容 Gemini 等启用 Trusted Types 的页面
 - 设置面板以两行紧凑状态轨始终提供 **Local Ollama** 和 **Project Server** 两个来源入口；当前来源的模型列表不会混入另一来源
 - 本地 Ollama 离线时选择本地来源会显示 **Start**，通过固定 `localreadtranslate://ollama` 操作请求托盘启动已安装的 `ollama serve`
@@ -41,7 +41,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.15.2`（FastAPI `1.7.15`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.3`（FastAPI `1.7.16`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
 
 1. 按项目 README 完成环境安装，并至少启动本地 FastAPI 服务。
 2. `Read` 需要 Kokoro TTS 环境；Kokoro 会在第一次朗读时按需加载，不会因仅启动 API 或仅使用远程翻译而占用本地 GPU。

@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.2
+// @version      1.15.3
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -632,23 +632,48 @@ const KokoroTTSCore = (() => {
   }
 
   function normalizeDisplayMathWrappers(text) {
-    return String(text || "").replace(
-      /\[\[MATH:\s*([\s\S]*?)\s*\]\]/g,
-      (_match, formula) => {
-        const value = String(formula || "").trim();
-        return value ? `$${value}$` : "";
-      }
-    );
+    return String(text || "")
+      .replace(
+        /\[\[MATH_BLOCK:\s*([\s\S]*?)\s*\]\]/g,
+        (_match, formula) => {
+          const value = String(formula || "").trim();
+          return value ? `$$${value}$$` : "";
+        }
+      )
+      .replace(
+        /\[\[MATH:\s*([\s\S]*?)\s*\]\]/g,
+        (_match, formula) => {
+          const value = String(formula || "").trim();
+          return value ? `$${value}$` : "";
+        }
+      );
   }
 
   function normalizeCopyTextWithLatex(text) {
-    return normalizeDisplayMathWrappers(text)
+    const normalized = normalizeDisplayMathWrappers(text)
       .replace(/[\u200B-\u200F\uFEFF]/g, "")
-      .replace(/[ \t]*\n[ \t]*/g, " ")
+      .replace(/\r\n?/g, "\n");
+    const pieces = splitLatexSegments(normalized).map((segment) => {
+      if (segment.type === "latex") {
+        const formula = stripLatexDelimiters(segment.value);
+        if (!formula) return "";
+        return segment.block
+          ? `\n\n$$\n${formula}\n$$\n\n`
+          : `$${formula}$`;
+      }
+      return String(segment.value || "")
+        .split("\n")
+        .map((line) => line.replace(/[ \t]+/g, " "))
+        .join("\n");
+    });
+    return pieces.join("")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
       .replace(/[ \t]{2,}/g, " ")
-      .replace(/\s+([,.;:!?，。；：！？])/g, "$1")
-      .replace(/([([{（])\s+/g, "$1")
-      .replace(/\s+([)\]}）])/g, "$1")
+      .replace(/[ \t]+([,.;:!?，。；：！？])/g, "$1")
+      .replace(/([([{（])[ \t]+/g, "$1")
+      .replace(/[ \t]+([)\]}）])/g, "$1")
       .trim();
   }
 
@@ -3571,6 +3596,27 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     );
   }
 
+  function isDisplayMathElement(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    const type = String(element.getAttribute && element.getAttribute("type") || "");
+    const display = String(element.getAttribute && element.getAttribute("display") || "");
+    if (tag === "script" && /mode\s*=\s*display/i.test(type)) return true;
+    if (tag === "math" && /^block$/i.test(display)) return true;
+    if (tag === "mjx-container" && /^(?:true|block)$/i.test(display)) return true;
+    if (
+      element.classList &&
+      (element.classList.contains("katex-display") ||
+        element.classList.contains("MathJax_Display"))
+    ) {
+      return true;
+    }
+    return Boolean(
+      element.closest &&
+      element.closest(".katex-display, .MathJax_Display")
+    );
+  }
+
   function closestSemanticMathElement(node) {
     let element = null;
     if (!node) return null;
@@ -3625,7 +3671,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (tag === "style" || tag === "noscript") return "";
       if (isSemanticMathElement(element)) {
         const formula = extractMathFormula(element);
-        return formula ? ` [[MATH: ${formula}]] ` : "";
+        const wrapper = isDisplayMathElement(element) ? "MATH_BLOCK" : "MATH";
+        return formula ? ` [[${wrapper}: ${formula}]] ` : "";
       }
       if (tag === "br") return "\n";
       if (tag === "script") return "";

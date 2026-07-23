@@ -329,6 +329,12 @@ test("translation display renders LaTeX formulas as readable math", () => {
     "记为 $D_I$ 和 $D_U$。"
   );
   assert.equal(
+    normalizeDisplayMathWrappers(
+      "结论为 [[MATH_BLOCK: \\int_0^1 x\\,dx=\\frac{1}{2}]]。"
+    ),
+    "结论为 $$\\int_0^1 x\\,dx=\\frac{1}{2}$$。"
+  );
+  assert.equal(
     splitLatexSegments("记为 [[MATH: D_I]]。")[1].value,
     "$D_I$"
   );
@@ -343,9 +349,26 @@ The resulting sampled sets are denoted by [[MATH: D_I]], [[MATH: D_U]], and [[MA
 
   assert.equal(
     copied,
-    "The resulting sampled sets are denoted by $D_I$, $D_U$, and $D_D$, respectively. 其中 $D_w \\to \\hat{B}(x)$ 表示数据构造。"
+    "The resulting sampled sets are denoted by $D_I$, $D_U$, and $D_D$, respectively.\n其中 $D_w \\to \\hat{B}(x)$ 表示数据构造。"
   );
   assert.doesNotMatch(copied, /\[\[MATH:/);
+});
+
+test("copy text preserves paragraphs and canonicalizes display formulas", () => {
+  const { normalizeCopyTextWithLatex } = require("../tts-userscript.js");
+  const copied = normalizeCopyTextWithLatex(
+    "设 \\(f(x)=x^2\\)，则\n\n" +
+    "[[MATH_BLOCK: \\int_0^1 f(x)\\,dx=\\frac{1}{3}]]\n\n" +
+    "结果为 \\[\\frac{1}{3}\\]。"
+  );
+
+  assert.equal(
+    copied,
+    "设 $f(x)=x^2$，则\n\n" +
+    "$$\n\\int_0^1 f(x)\\,dx=\\frac{1}{3}\n$$\n\n" +
+    "结果为\n\n$$\n\\frac{1}{3}\n$$\n\n。"
+  );
+  assert.doesNotMatch(copied, /\\\(|\\\)|\\\[|\\\]/);
 });
 
 
