@@ -1,6 +1,6 @@
 # Backend-driven Userscript Settings Design
 
-**Status:** Release contract for userscript `1.15.1` and FastAPI `1.7.15`. Backend-driven discovery and the source-first interaction correction were implemented and verified on 2026-07-23.
+**Status:** Release contract for userscript `1.15.2` and FastAPI `1.7.15`. Backend-driven discovery, source-first interaction, and non-blocking health refresh were implemented and verified on 2026-07-23.
 
 ## Implementation status
 
@@ -27,7 +27,10 @@ Completed and verified on 2026-07-23:
 - offline state hides translation output and Read aloud as well as model/Advanced controls; stale startup/error wording no longer refers to removed actions;
 - unload preserves an explicit `keep_alive: 0`, removes pin before the request, restores it on failure, and reports `still_running` when post-request source state still contains the model; an already absent model clears only its stale pin without a generation call;
 - model-source failures use source-neutral public errors, so a remote failure is not mislabeled as local Ollama;
-- the complete backend suite passes **212 tests plus 17 subtests** and the userscript core suite passes **45 tests**;
+- translation-test, source/model-switch, and residency-action refreshes preserve the last valid source view while the health request is pending instead of replacing the panel with a checking state;
+- request generations prevent an older health or model-lifecycle response from overwriting a newer source/model selection, and changing source, model, or target language clears the stale test result;
+- source-action polling waits for each health request before scheduling the next one, so slow checks cannot accumulate overlapping requests;
+- the complete backend suite passes **212 tests plus 17 subtests** and the userscript core suite passes **48 tests**;
 - syntax, Python compilation, catalog synchronization, dependencies, FFmpeg availability, and diff hygiene checks pass;
 - live `1.7.15` health reports local Ollama unreachable, Project Server reachable, five eligible generation models, and no local Ollama listener;
 - runtime inspection confirms all three fixed tray events exist, the FastAPI listener is healthy, and the project-server tunnel remains connected without starting local Ollama;
@@ -177,10 +180,11 @@ Automated verification covers:
 - exact parsing and single-instance handoff for the fixed `start`, `ollama`, and `remote` protocol actions;
 - local Ollama startup idempotence and remote-dialog dispatch without credential exposure;
 - actual unload ordering and post-request running-state verification;
+- non-blocking background health refresh, stale-response rejection, serialized source polling, and stale translation-test reset;
 - Trusted Types sink regression and syntax checks.
 
-The normal compact panel and narrow viewport were exercised with the production userscript in an isolated ordinary-page harness; the source switch showed only server models and the `390 × 844` viewport had no horizontal overflow. Trusted Types sinks, native DOM construction, trust guards, syntax, and request behavior are covered by regression tests. Tampermonkey's protected update page for `1.15.1` still requires the user to click the final confirmation before the installed copy can be rechecked on a strict production page; this browser-owned consent step is not bypassed.
+The normal compact panel and narrow viewport were exercised with the production userscript in an isolated ordinary-page harness; the source switch showed only server models and the `390 × 844` viewport had no horizontal overflow. A delayed-health harness also verified that source switching, successful test translation, and model switching do not flash the checking state, and that the old test result is cleared after the model changes. Trusted Types sinks, native DOM construction, trust guards, syntax, and request behavior are covered by regression tests. Tampermonkey's protected update page for `1.15.2` still requires the user to click the final confirmation before the installed copy can be rechecked on a strict production page; this browser-owned consent step is not bypassed.
 
 ## Rollout
 
-The release updates the backend first while preserving old health fields, then ships userscript `1.15.1`. Repository code and GitHub Raw are updated together; Tampermonkey and Greasy Fork must be confirmed separately because both keep their own installed/published copies.
+The release updates the backend first while preserving old health fields, then ships userscript `1.15.2`. Repository code and GitHub Raw are updated together; Tampermonkey and Greasy Fork must be confirmed separately because both keep their own installed/published copies.

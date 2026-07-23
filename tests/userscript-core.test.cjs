@@ -1028,3 +1028,113 @@ test("settings messages do not reference removed local-model actions", () => {
   assert.match(source, /Local service is running\. Translation sources are being refreshed\./);
   assert.match(source, /Local service is offline\. Start it from this panel or the tray app\./);
 });
+
+test("background translation health refresh keeps the ready settings visible", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+  const healthBody = source.match(
+    /function checkTranslationStatus[\s\S]*?(?=\n  async function keepTranslationModelLoaded)/
+  )?.[0] || "";
+  const testBody = source.match(
+    /async function testTranslation[\s\S]*?(?=\n  function toggleSettings)/
+  )?.[0] || "";
+  const modelChangeBody = source.match(
+    /#tts-translate-model-select[\s\S]*?(?=\n\s*for \(const choiceId)/
+  )?.[0] || "";
+  const sourceChangeBody = source.match(
+    /for \(const choiceId[\s\S]*?(?=\n\s*panel\.querySelector\("#tts-target-language-select")/
+  )?.[0] || "";
+
+  assert.match(
+    healthBody,
+    /function checkTranslationStatus\(\{\s*preserveVisibleState = false\s*\} = \{\}\)/
+  );
+  assert.match(
+    healthBody,
+    /if \(!preserveVisibleState \|\| !translationHealthPayload\)/
+  );
+  assert.match(
+    testBody,
+    /checkTranslationStatus\(\{\s*preserveVisibleState:\s*true\s*\}\)/
+  );
+  assert.match(
+    modelChangeBody,
+    /checkTranslationStatus\(\{\s*preserveVisibleState:\s*true\s*\}\)/
+  );
+  assert.match(
+    sourceChangeBody,
+    /checkTranslationStatus\(\{\s*preserveVisibleState:\s*true\s*\}\)/
+  );
+});
+
+test("translation health refresh ignores stale responses and resets stale test results", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+  const healthBody = source.match(
+    /function checkTranslationStatus[\s\S]*?(?=\n  async function keepTranslationModelLoaded)/
+  )?.[0] || "";
+  const sourceChangeBody = source.match(
+    /for \(const choiceId[\s\S]*?(?=\n\s*panel\.querySelector\("#tts-target-language-select")/
+  )?.[0] || "";
+
+  assert.match(source, /let translationHealthRequestId = 0;/);
+  assert.match(healthBody, /const requestId = \+\+translationHealthRequestId;/);
+  assert.ok(
+    (healthBody.match(/requestId !== translationHealthRequestId/g) || []).length >= 3,
+    "every health response path must ignore stale requests"
+  );
+  assert.match(source, /function resetTranslationTestResult\(\)/);
+  assert.match(sourceChangeBody, /resetTranslationTestResult\(\)/);
+  assert.match(
+    source,
+    /#tts-translate-model-select[\s\S]*?resetTranslationTestResult\(\)/
+  );
+  assert.match(
+    source,
+    /#tts-target-language-select[\s\S]*?resetTranslationTestResult\(\)/
+  );
+});
+
+test("stale model lifecycle responses cannot overwrite a newer selection", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+  const rememberBody = source.match(
+    /function rememberTranslationModel[\s\S]*?(?=\n  function )/
+  )?.[0] || "";
+  const keepBody = source.match(
+    /async function keepTranslationModelLoaded[\s\S]*?(?=\n  async function unloadTranslationModel)/
+  )?.[0] || "";
+  const unloadBody = source.match(
+    /async function unloadTranslationModel[\s\S]*?(?=\n  async function testTranslation)/
+  )?.[0] || "";
+  const modelChangeBody = source.match(
+    /#tts-translate-model-select[\s\S]*?(?=\n\s*for \(const choiceId)/
+  )?.[0] || "";
+
+  assert.match(source, /let translationModelActionRequestId = 0;/);
+  assert.match(rememberBody, /translationModelActionRequestId \+= 1;/);
+  assert.match(
+    keepBody,
+    /const actionRequestId = \+\+translationModelActionRequestId;/
+  );
+  assert.match(
+    unloadBody,
+    /const actionRequestId = \+\+translationModelActionRequestId;/
+  );
+  assert.ok(
+    (keepBody.match(/actionRequestId !== translationModelActionRequestId/g) || []).length >= 2
+  );
+  assert.ok(
+    (unloadBody.match(/actionRequestId !== translationModelActionRequestId/g) || []).length >= 2
+  );
+  assert.match(
+    modelChangeBody,
+    /resetTranslationTestResult\(\);[\s\S]*?renderTranslationSettingsState\(\);[\s\S]*?checkTranslationStatus/
+  );
+});

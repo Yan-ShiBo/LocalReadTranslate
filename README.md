@@ -163,6 +163,7 @@ Editing the repository file does not update a copy already installed in Tampermo
    - a reachable selected source with no eligible generation model remains visibly connected and asks for a generation model instead of inventing options;
    - **Start local service** appears only while the mediator itself is offline and opens `localreadtranslate://start`; model, translation-test, Advanced and Read aloud controls stay hidden in that state;
    - a failed translation-health request becomes an explicit **Unavailable** state rather than leaving a contradictory **Checking** badge;
+   - background refresh after a translation test, source/model switch, or residency action keeps the last valid source view visible instead of flashing **Checking translation sources...**; changing source, model, or target language clears the now-stale test result;
    - target language and applicable model residency actions are under **Advanced**; voice/speed controls are under **Read aloud**;
    - remote credentials and connection lifecycle remain in the tray app's `Remote Service` dialog, never in the webpage.
 
@@ -174,7 +175,7 @@ If the floating gear does not appear on a site such as Gemini, first check Tampe
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.1` (FastAPI `1.7.15`).
+The current repository metadata version is `1.15.2` (FastAPI `1.7.15`).
 
 For each release:
 

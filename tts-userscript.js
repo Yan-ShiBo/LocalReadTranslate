@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.1
+// @version      1.15.2
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -1334,8 +1334,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   let mediatorOnline = false;
   let translationHealthPayload = null;
   let translationHealthError = "";
+  let translationHealthRequestId = 0;
+  let translationModelActionRequestId = 0;
   const translationSourceActionPending = new Set();
   const translationSourcePollTimers = new Map();
+  const translationSourcePollDeadlines = new Map();
 
   // Load saved settings
   function loadSettings() {
@@ -1412,6 +1415,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   function setActiveTranslationSource(sourceId) {
     const nextSource = String(sourceId || "").trim();
     if (!nextSource || nextSource === settings.translationSource) return false;
+    translationModelActionRequestId += 1;
     settings.translationSource = nextSource;
     settings.translateModel = settings.translationModels[nextSource] || "";
     settings.settingsVersion = DEFAULTS.settingsVersion;
@@ -1422,6 +1426,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   function rememberTranslationModel(model) {
     const selectedModel = String(model || "").trim();
+    if (settings.translateModel !== selectedModel) {
+      translationModelActionRequestId += 1;
+    }
     settings.translateModel = selectedModel;
     if (selectedModel) {
       settings.translationModels[settings.translationSource] = selectedModel;
@@ -2488,7 +2495,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       rememberTranslationModel(selectedModel);
       translationDiscoveryReady = true;
       syncSettingsFromPanel(panel);
-      checkTranslationStatus();
+      resetTranslationTestResult();
+      renderTranslationSettingsState();
+      checkTranslationStatus({ preserveVisibleState: true });
     });
 
     for (const choiceId of ["tts-source-local-choice", "tts-source-project-server-choice"]) {
@@ -2496,15 +2505,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         const sourceId = event.currentTarget.dataset.sourceId;
         if (setActiveTranslationSource(sourceId)) {
           syncInstalledTranslationModels(translationHealthPayload || {});
+          resetTranslationTestResult();
         }
         renderTranslationSettingsState();
-        checkTranslationStatus();
+        checkTranslationStatus({ preserveVisibleState: true });
       });
     }
 
     panel.querySelector("#tts-target-language-select").addEventListener("change", (e) => {
       settings.targetLanguage = KokoroTTSCore.normalizeTargetLanguage(e.target.value);
       syncSettingsFromPanel(panel);
+      resetTranslationTestResult();
     });
 
     panel.querySelector("#tts-test-btn").addEventListener("click", (e) => {
@@ -2551,6 +2562,24 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     if (!output) return;
     output.textContent = message;
     output.style.color = color;
+  }
+
+  function resetTranslationTestResult() {
+    if (isTranslating) cancelTranslationRequest();
+    const output = document.getElementById("tts-translate-test-output");
+    if (output) {
+      output.textContent = "No translation test yet.";
+      output.style.color = "";
+    }
+    const button = document.getElementById("tts-translate-test-btn");
+    if (button) {
+      setButtonHtml(
+        button,
+        "tts-test-btn",
+        "\uD83C\uDF10",
+        "Test translation"
+      );
+    }
   }
 
   function renderTranslationSourceRow(kind, rowView) {
@@ -2662,6 +2691,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     const timer = translationSourcePollTimers.get(sourceId);
     if (timer) clearTimeout(timer);
     translationSourcePollTimers.delete(sourceId);
+    translationSourcePollDeadlines.delete(sourceId);
   }
 
   function finishTranslationSourceAction(sourceId, message = "", success = false) {
@@ -2673,9 +2703,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
   }
 
-  function pollTranslationSourceStatus(sourceId, attempt = 0) {
+  async function pollTranslationSourceStatus(sourceId) {
     if (!translationSourceActionPending.has(sourceId)) return;
-    if (attempt >= 120) {
+    const deadline = translationSourcePollDeadlines.get(sourceId);
+    if (!deadline || Date.now() >= deadline) {
       finishTranslationSourceAction(
         sourceId,
         sourceId === "local"
@@ -2684,19 +2715,41 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       );
       return;
     }
-    checkTranslationStatus();
-    clearTranslationSourcePoll(sourceId);
+
+    await checkTranslationStatus({ preserveVisibleState: true });
+    if (
+      !translationSourceActionPending.has(sourceId) ||
+      translationSourcePollDeadlines.get(sourceId) !== deadline
+    ) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      finishTranslationSourceAction(
+        sourceId,
+        sourceId === "local"
+          ? "Local Ollama did not become ready. Check the tray notification."
+          : "The server is still not connected. Complete the Remote Service dialog and try again."
+      );
+      return;
+    }
+
     translationSourcePollTimers.set(
       sourceId,
-      setTimeout(() => pollTranslationSourceStatus(sourceId, attempt + 1), 1000)
+      setTimeout(() => {
+        translationSourcePollTimers.delete(sourceId);
+        pollTranslationSourceStatus(sourceId);
+      }, 1000)
     );
   }
 
   function launchTranslationSourceAction(sourceId, protocolUrl) {
     const source = String(sourceId || "").trim();
     if (!source || translationSourceActionPending.has(source)) return;
-    setActiveTranslationSource(source);
+    if (setActiveTranslationSource(source)) {
+      resetTranslationTestResult();
+    }
     translationSourceActionPending.add(source);
+    translationSourcePollDeadlines.set(source, Date.now() + 120000);
     renderTranslationSettingsState();
     try {
       window.location.assign(protocolUrl);
@@ -2739,7 +2792,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
     if (online) {
       checkServerStatus();
-      checkTranslationStatus();
+      checkTranslationStatus({ preserveVisibleState: true });
     }
   }
 
@@ -2915,91 +2968,126 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     });
   }
 
-  function checkTranslationStatus() {
-    if (!settingsPanel) return;
+  function checkTranslationStatus({ preserveVisibleState = false } = {}) {
+    if (!settingsPanel) return Promise.resolve(false);
+    const requestId = ++translationHealthRequestId;
 
     translationHealthError = "";
-    translationHealthPayload = null;
-    renderTranslationSettingsState();
+    if (!preserveVisibleState || !translationHealthPayload) {
+      translationHealthPayload = null;
+      renderTranslationSettingsState();
+    }
 
-    GM_xmlhttpRequest({
-      method: "GET",
-      url: `${API_TRANSLATE_HEALTH_URL}?model=${encodeURIComponent(settings.translateModel)}`,
-      timeout: 5000,
-      onload: (resp) => {
-        if (resp.status !== 200) {
-          translationHealthError = "Translation health check failed.";
-          translationHealthPayload = null;
-          renderTranslationSettingsState();
+    return new Promise((resolve) => {
+      try {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: `${API_TRANSLATE_HEALTH_URL}?model=${encodeURIComponent(settings.translateModel)}`,
+          timeout: 5000,
+          onload: (resp) => {
+            if (requestId !== translationHealthRequestId) {
+              resolve(false);
+              return;
+            }
+            if (resp.status !== 200) {
+              translationHealthError = "Translation health check failed.";
+              translationHealthPayload = null;
+              renderTranslationSettingsState();
+              resolve(false);
+              return;
+            }
+            let payload = null;
+            try {
+              payload = JSON.parse(resp.responseText || "{}");
+            } catch {
+              translationHealthError = "Invalid translation status.";
+              translationHealthPayload = null;
+              renderTranslationSettingsState();
+              resolve(false);
+              return;
+            }
+
+            const fallbackModel = syncInstalledTranslationModels(payload);
+            translationDiscoveryReady = Boolean(fallbackModel);
+            translationHealthError = "";
+            translationHealthPayload = payload;
+            mediatorOnline = true;
+            const selectedSourceState = Array.isArray(payload.sources)
+              ? payload.sources.find((item) => item && item.id === settings.translationSource)
+              : null;
+            if (fallbackModel && fallbackModel !== settings.translateModel) {
+              rememberTranslationModel(fallbackModel);
+              checkTranslationStatus({ preserveVisibleState: true }).then(resolve);
+              return;
+            }
+
+            if (!fallbackModel) {
+              if (
+                selectedSourceState &&
+                selectedSourceState.reachable &&
+                settings.translateModel
+              ) {
+                rememberTranslationModel("");
+              }
+            }
+            if (
+              selectedSourceState &&
+              selectedSourceState.reachable &&
+              translationSourceActionPending.has(settings.translationSource)
+            ) {
+              const sourceName = String(
+                selectedSourceState.name || settings.translationSource
+              );
+              finishTranslationSourceAction(
+                settings.translationSource,
+                `${sourceName} is ready.`,
+                true
+              );
+            }
+            renderTranslationSettingsState();
+            resolve(true);
+          },
+          onerror: () => {
+            if (requestId !== translationHealthRequestId) {
+              resolve(false);
+              return;
+            }
+            translationDiscoveryReady = false;
+            translationHealthError = "Translation status unavailable.";
+            translationHealthPayload = null;
+            renderTranslationSettingsState();
+            resolve(false);
+          },
+          ontimeout: () => {
+            if (requestId !== translationHealthRequestId) {
+              resolve(false);
+              return;
+            }
+            translationDiscoveryReady = false;
+            translationHealthError = "Translation status timed out.";
+            translationHealthPayload = null;
+            renderTranslationSettingsState();
+            resolve(false);
+          },
+        });
+      } catch {
+        if (requestId !== translationHealthRequestId) {
+          resolve(false);
           return;
         }
-        let payload = null;
-        try {
-          payload = JSON.parse(resp.responseText || "{}");
-        } catch {
-          translationHealthError = "Invalid translation status.";
-          translationHealthPayload = null;
-          renderTranslationSettingsState();
-          return;
-        }
-
-        const fallbackModel = syncInstalledTranslationModels(payload);
-        translationDiscoveryReady = Boolean(fallbackModel);
-        translationHealthError = "";
-        translationHealthPayload = payload;
-        mediatorOnline = true;
-        const selectedSourceState = Array.isArray(payload.sources)
-          ? payload.sources.find((item) => item && item.id === settings.translationSource)
-          : null;
-        if (fallbackModel && fallbackModel !== settings.translateModel) {
-          rememberTranslationModel(fallbackModel);
-          checkTranslationStatus();
-          return;
-        }
-
-        if (!fallbackModel) {
-          if (
-            selectedSourceState &&
-            selectedSourceState.reachable &&
-            settings.translateModel
-          ) {
-            rememberTranslationModel("");
-          }
-        }
-        if (
-          selectedSourceState &&
-          selectedSourceState.reachable &&
-          translationSourceActionPending.has(settings.translationSource)
-        ) {
-          const sourceName = String(
-            selectedSourceState.name || settings.translationSource
-          );
-          finishTranslationSourceAction(
-            settings.translationSource,
-            `${sourceName} is ready.`,
-            true
-          );
-        }
-        renderTranslationSettingsState();
-      },
-      onerror: () => {
         translationDiscoveryReady = false;
         translationHealthError = "Translation status unavailable.";
         translationHealthPayload = null;
         renderTranslationSettingsState();
-      },
-      ontimeout: () => {
-        translationDiscoveryReady = false;
-        translationHealthError = "Translation status timed out.";
-        translationHealthPayload = null;
-        renderTranslationSettingsState();
-      },
+        resolve(false);
+      }
     });
   }
 
   async function keepTranslationModelLoaded(btnElement) {
     if (btnElement && btnElement.classList.contains("loading")) return;
     syncSettingsFromPanel();
+    const actionRequestId = ++translationModelActionRequestId;
     const unloadBtn = document.getElementById("tts-model-unload-btn");
     if (btnElement) {
       setButtonHtml(btnElement, "tts-test-btn loading", "\u23F3", "Loading...");
@@ -3012,11 +3100,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         model: settings.translateModel,
         keep_alive: "-1m",
       });
+      if (actionRequestId !== translationModelActionRequestId) return;
       if (btnElement) {
         setButtonHtml(btnElement, "tts-test-btn playing", "\u2705", "Kept loaded");
       }
-      checkTranslationStatus();
+      checkTranslationStatus({ preserveVisibleState: true });
     } catch (err) {
+      if (actionRequestId !== translationModelActionRequestId) return;
       if (btnElement) {
         setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Load failed");
         btnElement.disabled = false;
@@ -3032,6 +3122,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   async function unloadTranslationModel(btnElement) {
     if (btnElement && btnElement.classList.contains("loading")) return;
     syncSettingsFromPanel();
+    const actionRequestId = ++translationModelActionRequestId;
     const keepBtn = document.getElementById("tts-model-keepalive-btn");
     if (btnElement) {
       setButtonHtml(btnElement, "tts-test-btn loading", "\u23F3", "Unloading...");
@@ -3043,6 +3134,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       const result = await requestTranslationModelResidency(API_TRANSLATE_UNLOAD_URL, {
         model: settings.translateModel,
       }, 60000);
+      if (actionRequestId !== translationModelActionRequestId) return;
       if (btnElement) {
         setButtonHtml(
           btnElement,
@@ -3057,8 +3149,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           "#f0c040"
         );
       }
-      checkTranslationStatus();
+      checkTranslationStatus({ preserveVisibleState: true });
     } catch (err) {
+      if (actionRequestId !== translationModelActionRequestId) return;
       if (btnElement) {
         setButtonHtml(btnElement, "tts-test-btn error", "\u274C", "Unload failed");
         btnElement.disabled = false;
@@ -3120,7 +3213,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           "Translation OK"
         );
       }
-      checkTranslationStatus();
+      checkTranslationStatus({ preserveVisibleState: true });
     } catch (err) {
       if (!translationGate.isCurrent(generation)) return;
       if (output) {
