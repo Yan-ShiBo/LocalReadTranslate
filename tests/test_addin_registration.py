@@ -1,6 +1,4 @@
 from xml.etree import ElementTree
-from pathlib import Path
-import uuid
 
 import pytest
 
@@ -14,12 +12,8 @@ from addin_registration import (
 
 
 @pytest.fixture()
-def publish_path():
-    path = Path("test-venv") / f"publish-{uuid.uuid4().hex}.xml"
-    try:
-        yield path
-    finally:
-        path.unlink(missing_ok=True)
+def publish_path(tmp_path):
+    return tmp_path / "publish.xml"
 
 
 def plugin_entries(path):
