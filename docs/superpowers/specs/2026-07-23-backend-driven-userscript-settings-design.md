@@ -1,11 +1,12 @@
 # Backend-driven Userscript Settings Design
 
-> **Iteration 8 note:** This source/model contract now also governs the shared
-> Word/WPS document task pane. Current repository metadata is userscript
-> `1.15.3` / FastAPI `1.7.18`; the
+> **Iteration 9 note:** This source/model contract now also governs the shared
+> Word/WPS document task pane, including the non-writing WPS PDF adapter and its
+> model-assisted formula-selection-to-LaTeX copy action. Current repository metadata is userscript
+> `1.15.3` / FastAPI `1.7.19`; the
 > LaTeX/Office/WPS formula core is recorded in iteration 6; the current
 > installable add-in boundary is recorded in
-> [`../../iteration-8-2026-07-23-office-wps-document-assistant.md`](../../iteration-8-2026-07-23-office-wps-document-assistant.md).
+> [`../../iteration-9-2026-07-23-wps-pdf-addin.md`](../../iteration-9-2026-07-23-wps-pdf-addin.md).
 
 **Status:** Historical release contract for userscript `1.15.2` and FastAPI `1.7.15`. Backend-driven discovery, source-first interaction, and non-blocking health refresh were implemented and verified on 2026-07-23.
 

@@ -1,35 +1,53 @@
-# Microsoft Word / WPS Writer document add-ins
+# Microsoft Word / WPS Writer / WPS PDF add-ins
 
 This directory contains the installable LocalReadTranslate document add-ins.
-Both hosts expose the same source-first document assistant:
+Three host packages reuse the same source-first document assistant:
 
 - **Translate selection** uses only eligible models discovered on the selected
-  Local Ollama or Project Server source. The result can be copied or replace
-  the current selection.
+  Local Ollama or Project Server source. The result can always be copied; Word
+  and WPS Writer can also replace the current selection.
 - **Read selection** uses the API voice/speed catalog and local WAV playback.
   Chinese or formula-bearing text is prepared with the selected discovered
   model; plain English can go directly to Kokoro.
-- **Convert to document formula** turns selected prose plus `$...$` or
-  `$$...$$` LaTeX into editable native Word/WPS equations.
-- **Copy selection as LaTeX** exports the selected native equations and
-  surrounding prose, canonicalizes the equations, and writes plain text only.
+- **Formula & LaTeX in editable documents** turns selected prose plus `$...$`
+  or `$$...$$` LaTeX into editable native Word/WPS Writer equations and copies
+  selected native equations plus prose as canonical plain-text LaTeX.
+- **Formula recognition in WPS PDF** reads a selectable PDF formula or
+  formula-bearing paragraph, sends that text to the explicitly selected
+  discovered model, validates the returned LaTeX, and copies only canonical
+  plain text. It does not write back to the PDF.
+
+| Capability | Word | WPS Writer | WPS PDF |
+|---|---:|---:|---:|
+| Read selected text | Yes | Yes | Yes |
+| Translate and copy | Yes | Yes | Yes |
+| Replace the document selection | Yes | Yes | No |
+| Insert/export editable equations | Yes | Yes | No |
+| Recognize selectable PDF formula to LaTeX | N/A | N/A | Yes, selected model |
 
 The task pane mirrors the userscript layout: Translation is the sole expanded
 primary section; target/model lifecycle controls are under Advanced; Read
-aloud and Formula & LaTeX are separate collapsed sections. Local is the
-default source, and the pane remembers the source, one model per source,
-target language, voice and speed.
+aloud and Formula & LaTeX are separate collapsed sections. Word and WPS Writer
+show native conversion in both directions. WPS PDF shows only **Recognize and
+copy as LaTeX** and hides equation writeback plus translation replacement. The
+pane remembers the source, one model per source, target language, voice and
+speed.
 
 LaTeX is the only external interchange format. DOCX/OMML is a short-lived
 local insertion/export format and is never copied as an image or proprietary
 clipboard object. WPS reverse export uses a random one-shot DOCX directly
 under the current user's temporary directory; the API validates the exact path
 and package before use, and the controller always invokes cleanup afterward.
+These mutation paths are never exposed in WPS PDF. PDF recognition reads the
+selection text directly and does not create a DOCX spool, read the Windows
+clipboard, or synthesize a `Ctrl+C` keystroke.
 
 ## Install and remove
 
-First install the normal LocalReadTranslate environment and Pandoc 3.x. Then
-close Word and WPS Writer and run:
+First install the normal LocalReadTranslate environment. Pandoc 3.x is required
+for editable-document formula conversion but not for WPS PDF translation,
+read-aloud, or model-assisted LaTeX recognition. Save open work, close Word and
+the complete WPS Office process, and run:
 
 ```powershell
 .\install-document-addins.bat
@@ -38,7 +56,8 @@ close Word and WPS Writer and run:
 The installer:
 
 1. registers the exact Office XML manifest for the current user;
-2. safely merges one `LocalReadTranslateFormula` entry into
+2. atomically merges the `LocalReadTranslateFormula` Writer entry and the
+   `LocalReadTranslatePdf` PDF entry into
    `%APPDATA%\kingsoft\wps\jsaddons\publish.xml`, preserving unrelated entries
    and backing up an existing file;
 3. starts the strict loopback add-in host on `127.0.0.1:5443` if the tray app
@@ -46,9 +65,11 @@ The installer:
 
 Reopen the applications after installation. In Word, choose
 **Home → Add-ins → LocalReadTranslate 文档工作台**. In WPS Writer, choose
-**LocalReadTranslate → 阅读与公式**.
+**LocalReadTranslate → 阅读与公式**. In WPS PDF, choose
+**LocalReadTranslate → 阅读与翻译**.
 
-To remove only these two registrations and an installer-owned standalone host:
+To remove only these three registrations and an installer-owned standalone
+host:
 
 ```powershell
 .\uninstall-document-addins.bat
@@ -67,28 +88,36 @@ powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -No
 
 Local requirements:
 
-- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.18` environment;
+- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.19` environment;
 - Pandoc 3.x found through `PANDOC_PATH`, `PATH`, or a standard Windows path;
 - Microsoft Word desktop for the Office add-in;
-- a WPS Writer build with JavaScript add-in support for the WPS add-in.
+- a WPS build with JavaScript add-in support. WPS Writer and WPS PDF were
+  probed on WPS 365 desktop `12.1.0.26895`; PDF compatibility is verified for
+  that build because the public WPS deployment documentation does not list the
+  PDF component type.
 
 ## Runtime architecture
 
 ```text
-Word Office.js adapter ─┐
-                        ├─ shared task pane ─ http://127.0.0.1:5443
-WPS JSAPI adapter ──────┘                         │
-                                                │ same-origin /api proxy
-                                                ▼
-                                   http://127.0.0.1:5000
-                          FastAPI + Pandoc + Ollama routing + Kokoro
+Word Office.js adapter ─────┐
+WPS Writer JSAPI adapter ───┼─ shared task pane ─ http://127.0.0.1:5443
+WPS PDF selection adapter ──┘                         │
+                                                     ├─ same-origin API proxy
+                                                     │
+                                                     ├─ fixed local control relay
+                                                     ▼
+                                        http://127.0.0.1:5000
+                               FastAPI + Pandoc + Ollama routing + Kokoro
 ```
 
 The add-in host is intentionally small:
 
 - it binds only to `127.0.0.1`;
 - it serves an explicit static-file allowlist, not the repository;
-- it proxies only `/api/*` to the loopback FastAPI service;
+- it proxies normal `/api/*` requests only to the loopback FastAPI service;
+- it handles only the exact no-body `/api/control/{start|ollama|remote}`
+  requests locally, requires an add-in-only header, and forwards those fixed
+  actions to the tray-owned URL handler;
 - it disables CORS and adds CSP, `nosniff`, no-referrer, and no-store headers;
 - it never receives or exposes SSH credentials or remote Ollama settings;
 - it allows up to 150 seconds for a bounded upstream request so a cold,
@@ -109,15 +138,18 @@ existing lifecycle rules.
 | Path | Responsibility |
 |---|---|
 | `taskpane/` | Userscript-aligned shared translation/read/formula UI with persisted source-scoped preferences |
-| `shared/localreadtranslate-client.js` | Same-origin formula, translation, read, speech and model-lifecycle API client with source-neutral errors |
+| `shared/localreadtranslate-client.js` | Same-origin formula, translation, read, speech, model-lifecycle and fixed tray-control client with source-neutral errors |
 | `shared/formula-controller.js` | Host-independent conversion and plain-text clipboard contract |
 | `office-word/manifest.xml` | Word task-pane XML manifest |
 | `office-word/office-adapter.js` | Word selection text read/replace, `getOoxml()` export and `insertFileFromBase64(..., "Replace")` insertion |
 | `wps-word/ribbon.xml` | WPS ribbon command |
 | `wps-word/js/ribbon.js` | Creates/toggles one shared WPS task pane |
 | `wps-word/wps-adapter.js` | WPS selection text read/replace, `Range.Copy/Paste` one-shot DOCX export, `finally`-driven cleanup, and `Range.InsertFile` insertion |
-| `../addon_host.py` | Strict loopback static host and narrow API proxy |
-| `../addin_registration.py` | Idempotent WPS `publish.xml` merge/remove |
+| `wps-pdf/ribbon.xml` | WPS PDF read/translate ribbon command |
+| `wps-pdf/js/ribbon.js` | Creates/toggles the PDF task pane without redefining WPS's read-only `Application.ribbonUI` property |
+| `wps-pdf/pdf-adapter.js` | Reads PDF text through `Application.ActiveDocument.Selection.Text()`, exposes model-assisted LaTeX copy, and declares all document-mutation capabilities unavailable |
+| `../addon_host.py` | Strict loopback static host, narrow API proxy and fixed-action tray relay |
+| `../addin_registration.py` | Atomic, idempotent WPS Writer/PDF `publish.xml` merge/remove |
 | `../scripts/install_document_addins.ps1` | Current-user installation |
 | `../scripts/uninstall_document_addins.ps1` | Exact current-user removal |
 
@@ -125,31 +157,39 @@ existing lifecycle rules.
 
 ### Translation and model sources
 
-1. Initialization (or explicit Retry) requests formula health, translation
-   health and the voice catalog once in parallel.
+1. Initialization (or explicit Retry) requests translation health and the
+   voice catalog once in parallel. Word/Writer also request formula health;
+   WPS PDF skips that inapplicable dependency.
 2. The pane keeps Local Ollama and Project Server as explicit source rows while
    the mediator is online. Only the selected reachable source contributes
    options, and only `available_model_options` values are rendered.
 3. Source and model choices do not trigger another discovery request.
    Ordinary translation also reuses the cached snapshot. Only explicit
-   Start/Connect or model keep/unload actions refresh source state.
+   Start/Connect or model keep/unload actions refresh source state. The
+   Start/Connect buttons use the same-origin fixed-action relay so WPS does not
+   have to launch a custom protocol directly from its WebView.
 4. `POST /translate` receives the current selection, exact selected model and
    target language. The returned text stays in the pane until copied or
-   written back with the host adapter.
+   written back with a mutable-document host adapter. WPS PDF intentionally
+   offers copy only.
 5. Preferences are stored per task-pane origin. A saved
    `remote:project-server:qwen3:30b` is restored only if discovery still lists
    that exact model on that source; a stale value is never injected into the
-   selector.
+   selector. On a fresh reachable Project Server with no saved model, the pane
+   prefers exact `qwen3:30b`, then a discovered model no larger than 32B, so a
+   listed 100B+ model is not selected merely because it appears first.
 
 ### Read aloud
 
 1. The pane reads the current document selection only after the user clicks.
+   WPS PDF uses `Application.ActiveDocument.Selection.Text()`; Word and WPS
+   Writer use their existing selection adapters.
 2. Plain English can go directly to `/tts`. CJK or formula-bearing text
    requires the selected discovered model and first calls `/read/prepare`.
 3. `/tts` returns `audio/wav` through the same-origin proxy. The pane creates a
    temporary blob URL, plays it, and revokes it when stopped or replaced.
 
-### LaTeX to native equations
+### LaTeX to native equations (Word and WPS Writer)
 
 1. The task pane reads the current selection only when the user clicks.
 2. `POST /document/latex-fragment` canonicalizes supported wrappers and asks
@@ -158,7 +198,7 @@ existing lifecycle rules.
    path.
 4. The selection becomes native equations that remain editable in the host.
 
-### Native equations to LaTeX
+### Native equations to LaTeX (Word and WPS Writer)
 
 1. Word exports the selection as Flat OPC. WPS uses native
    `Range.Copy()` followed by `Range(0, 0).Paste()` in a temporary document,
@@ -173,8 +213,27 @@ existing lifecycle rules.
 5. Only canonical plain-text LaTeX plus surrounding prose is written to the
    clipboard.
 
-Formula conversion depends on Pandoc, not Ollama. Neither local Ollama nor a
-remote model is required, started, or contacted by these actions.
+### Selectable WPS PDF formulas to LaTeX
+
+1. The button re-reads the current PDF selection through
+   `Application.ActiveDocument.Selection.Text()`. WPS preserves visual
+   top-to-bottom script order as line breaks in selectable formulas.
+2. The shared client posts `{text, html: "", model}` to
+   `/document/pdf-selection-to-latex` through the ordinary loopback proxy.
+   It does not call the Writer-only `Selection.Copy()` method and does not
+   inspect the Windows clipboard.
+3. The selected discovered model reconstructs only formula structure supported
+   by the text and visual line order. The server rejects output with no valid
+   LaTeX and canonicalizes inline/display wrappers before returning it.
+4. The shared controller copies the canonical result as plain text. No PDF
+   content is replaced and no native equation is inserted.
+
+Word/Writer native formula conversion depends on Pandoc, not Ollama. Neither
+local Ollama nor a remote model is required, started, or contacted by those
+actions. WPS PDF recognition is different: it calls only the explicitly
+selected reachable model and never starts local Ollama implicitly. This first
+release supports selectable/vector PDF text; image-only or scanned formulas
+need a future OCR/vision route.
 
 ## Current verification
 
@@ -198,9 +257,48 @@ remote model is required, started, or contacted by these actions.
 - WPS package structure, ribbon callbacks, `Copy/Paste` export, one-shot spool
   validation/cleanup, registration merge/remove, and HTTP assets are covered
   by automated tests.
-- The current assistant core has 20 Node subtests covering the translation,
+- A live WPS PDF compatibility probe on `12.1.0.26895` established that:
+  - a `type="pdf"` `publish.xml` entry is loaded by the PDF component;
+  - WPS requests the package manifest, ribbon, entry page and scripts;
+  - the PDF object model exposes `Application.ActiveDocument.Selection.Text()`;
+  - the Writer adapter fails in PDF because `Application.Selection` is absent,
+    which is why the dedicated PDF adapter is required;
+  - WPS PDF exposes a non-configurable `Application.ribbonUI`, so the PDF
+    ribbon retains its callback handle inside the module instead of assigning
+    that property.
+- The formal `LocalReadTranslatePdf` package was then installed in the same
+  WPS build:
+  - its `publish.xml` and `authaddin.json` entries were enabled and loaded;
+  - the PDF ribbon opened a task pane labelled `WPS PDF`;
+  - the pane read a real selected PDF paragraph while selection replacement
+    and equation writeback stayed hidden;
+  - clicking **朗读选区** started real local audio playback, changed the
+    control to **停止朗读**, and stopped cleanly.
+- After the Project Server recovered, the same installed PDF pane completed a
+  real formula recognition click with exact
+  `remote:project-server:qwen3:30b`:
+  - the pane showed `Project Server / qwen3:30b` even though larger models were
+    installed;
+  - clicking **识别并复制为 LaTeX** re-read a 92-character selected formula;
+  - the pane reported **已复制 1 个公式** and the add-in proxy logged HTTP 200;
+  - the clipboard contained exactly one canonical display formula:
+
+    ```latex
+    $$
+    u_1 = \underbrace{-2.41x_1 + 0.426x_2 + 0.276x_1^2 - \cdots - 0.453x_2^4 - 0.0691}_{18 \text{ terms}},
+    $$
+    ```
+
+  - remote `/api/ps` listed only `qwen3:30b` (`30.5B`, `Q4_K_M`); no 100B+
+    model and no local Ollama were used.
+- The current assistant core has 25 Node subtests covering the translation,
   read/audio, source filtering, preference restore, explicit connection poll,
-  Word/WPS selection replacement, formula controller and WPS ribbon seams.
+  Word/WPS selection replacement, formula controller, WPS Writer ribbon, PDF
+  selection, PDF model recognition, and the 30B-over-122B default rule.
+- The focused Python add-in-host/formula API suite has 27 passing tests,
+  including the explicit `/wps-pdf/*` static allowlist, normal proxying of PDF
+  selections without clipboard access, legacy-console-safe request logging,
+  font-run/plain-line reconstruction prompts, and canonical response checks.
 - The exact add-in proxy path was tested with
   `remote:project-server:qwen3:30b` (never a 100B+ model):
   - selected-text translation returned Simplified Chinese and preserved
@@ -211,12 +309,12 @@ remote model is required, started, or contacted by these actions.
   - the 30B model was explicitly unloaded afterward, Project Server remained
     reachable, and local Ollama remained stopped.
 - Isolated browser checks at 390 px and 280 px found no horizontal overflow.
-  These checks plus the proxy integration do not claim the new
-  translation/read buttons were clicked inside a real Word/WPS document; the
-  host-level UI evidence above remains specific to the formula paths.
+  The WPS PDF read and formula-recognition buttons are now verified in the
+  formal package. The earlier translation/read-preparation API evidence still
+  used the same exact 30B model through the add-in proxy.
 
 See
-[`../docs/iteration-8-2026-07-23-office-wps-document-assistant.md`](../docs/iteration-8-2026-07-23-office-wps-document-assistant.md)
+[`../docs/iteration-9-2026-07-23-wps-pdf-addin.md`](../docs/iteration-9-2026-07-23-wps-pdf-addin.md)
 for the release record and exact evidence.
 
 ## Troubleshooting
@@ -247,17 +345,29 @@ default. Source credentials remain in the tray app. The pane polls only after
 an explicit Start/Connect action and refreshes the list automatically when
 that source becomes ready.
 
+### WPS PDF formula recognition says there is no selection
+
+Select the formula (or the paragraph containing it) in the PDF itself, then
+click **识别并复制为 LaTeX**. The button re-reads the selection at action time,
+so opening or hiding the task pane does not cache old document content. This
+path requires selectable/vector text and one reachable discovered generation
+model. Scanned image-only formulas are not silently sent through text
+recognition and are not supported by the current text-only 30B path.
+
 ### Pandoc is unavailable
 
 Install Pandoc 3.x or set `PANDOC_PATH`, restart only the local FastAPI service,
 and click **Retry**. The formula health endpoint does not expose the executable
 path.
 
-### WPS does not show the ribbon
+### WPS does not show the Writer or PDF ribbon
 
 WPS reads `publish.xml` at startup. Close WPS only after saving the document,
 then reopen it. Confirm the WPS build includes JS add-in support and that
-`http://127.0.0.1:5443/wps-word/ribbon.xml` is reachable.
+`http://127.0.0.1:5443/wps-word/ribbon.xml` and
+`http://127.0.0.1:5443/wps-pdf/ribbon.xml` are reachable. Writer and PDF are
+separate WPS component registrations; opening a Writer document cannot prove
+that the PDF entry loaded.
 
 Host API references:
 
@@ -266,3 +376,10 @@ Host API references:
 - [WPS add-in deployment](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/wps-integration-mode/wps-addin-development/wps-addin-development-instructions)
 - [WPS task panes](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/addin-api/TaskPane/task-pane-overview)
 - [WPS Range.InsertFile](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Range/member/InsertFile)
+- [WPS ActivePDF selection APIs](https://open.wps.cn/documents/app-integration-dev/docs-center/online-preview-edit/client/PDF/ActivePDF)
+- [WPS Writer `Selection.Copy()`](https://open.wps.cn/documents/app-integration-dev/wps365/client/wpsoffice/jsapi/wps/Selection/member/Copy)
+
+The PDF API documents `GetTextSelection()` and `GetSelectionPicture()` but no
+PDF `Copy()` method. The similarly named `Selection.Copy()` page is a Writer
+API, which is why the PDF add-in reads selection text directly instead of
+calling or emulating that method.

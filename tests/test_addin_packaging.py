@@ -51,6 +51,24 @@ def test_wps_package_has_official_entrypoints_and_one_formula_button():
     assert "./js/ribbon.js" in main
 
 
+def test_wps_pdf_package_has_pdf_entrypoints_and_read_translate_button():
+    plugin = ElementTree.parse("addons/wps-pdf/manifest.xml").getroot()
+    assert plugin.tag == "JsPlugin"
+    assert plugin.findtext("Name") == "LocalReadTranslatePdf"
+
+    ribbon = ElementTree.parse("addons/wps-pdf/ribbon.xml").getroot()
+    namespace = {"r": WPS_RIBBON_NAMESPACE}
+    buttons = ribbon.findall(".//r:button", namespace)
+    assert len(buttons) == 1
+    assert buttons[0].attrib["id"] == "localReadTranslateShowPdfPane"
+    assert buttons[0].attrib["onAction"] == "OnAction"
+
+    index = Path("addons/wps-pdf/index.html").read_text(encoding="utf-8")
+    main = Path("addons/wps-pdf/main.js").read_text(encoding="utf-8")
+    assert "./main.js" in index
+    assert "./js/ribbon.js" in main
+
+
 def test_installers_use_narrow_current_user_registration_targets():
     install = Path("scripts/install_document_addins.ps1").read_text(
         encoding="utf-8"
@@ -61,5 +79,7 @@ def test_installers_use_narrow_current_user_registration_targets():
     assert "HKCU:\\Software\\Microsoft\\Office\\16.0\\WEF\\Developer" in install
     assert "74d95f3f-f8d0-4a33-95d8-2f0b637df535" in install
     assert "publish.xml" in install
+    assert "WPS PDF" in install
+    assert "MainWindowHandle -ne 0" in install
     assert "Remove-ItemProperty" in uninstall
     assert "setup_addin_certificate" not in install

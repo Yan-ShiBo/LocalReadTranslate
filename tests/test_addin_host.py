@@ -43,6 +43,27 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(result)
             return
+        if self.path == "/document/pdf-selection-to-latex":
+            result = json.dumps(
+                {
+                    "latex": "$x_{t+1}$",
+                    "formula_count": 1,
+                    "inline_formula_count": 1,
+                    "display_formula_count": 0,
+                    "warnings": [],
+                    "model": payload["model"],
+                    "recognizer": "ollama-pdf-selection",
+                    "elapsed": 0.1,
+                    "received_text": payload["text"],
+                    "received_html": payload["html"],
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(result)))
+            self.end_headers()
+            self.wfile.write(result)
+            return
         result = json.dumps(
             {"canonical_latex": payload["text"], "formula_count": 1}
         ).encode("utf-8")
@@ -69,10 +90,13 @@ def upstream_server():
 @pytest.fixture()
 def addin_server(upstream_server):
     upstream_port = upstream_server.server_address[1]
+    control_actions = []
     server = addon_host.create_server(
         port=0,
         api_base_url=f"http://127.0.0.1:{upstream_port}",
+        control_dispatcher=control_actions.append,
     )
+    server.test_control_actions = control_actions
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -130,6 +154,24 @@ def test_health_and_static_assets_are_explicitly_served(addin_server):
     assert b"read-button" in payload
     assert b"translate-button" in payload
 
+    status, headers, payload = request(
+        addin_server,
+        "GET",
+        "/wps-pdf/manifest.xml",
+    )
+    assert status == 200
+    assert "xml" in headers["Content-Type"]
+    assert b"LocalReadTranslatePdf" in payload
+
+    status, headers, payload = request(
+        addin_server,
+        "GET",
+        "/wps-pdf/pdf-adapter.js",
+    )
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert b"createWpsPdfAdapter" in payload
+
     status, _headers, payload = request(
         addin_server,
         "GET",
@@ -175,6 +217,105 @@ def test_get_and_json_post_are_proxied_under_api_only(addin_server):
         body=b"{}",
         headers={"Content-Type": "application/json", "Content-Length": "2"},
     )[0] == 405
+
+
+def test_control_actions_use_a_fixed_allowlist_and_require_the_addin_header(
+    addin_server,
+):
+    status, _headers, payload = request(
+        addin_server,
+        "POST",
+        "/api/control/remote",
+        headers={
+            addon_host.CONTROL_ACTION_HEADER: "1",
+            "Content-Length": "0",
+        },
+    )
+    assert status == 202
+    assert json.loads(payload) == {"status": "requested", "action": "remote"}
+    assert addin_server.test_control_actions == ["remote"]
+
+    assert request(
+        addin_server,
+        "POST",
+        "/api/control/ollama",
+        headers={"Content-Length": "0"},
+    )[0] == 403
+    assert request(
+        addin_server,
+        "POST",
+        "/api/control/shutdown",
+        headers={
+            addon_host.CONTROL_ACTION_HEADER: "1",
+            "Content-Length": "0",
+        },
+    )[0] == 404
+    assert request(
+        addin_server,
+        "POST",
+        "/api/control/start?command=anything",
+        headers={
+            addon_host.CONTROL_ACTION_HEADER: "1",
+            "Content-Length": "0",
+        },
+    )[0] == 404
+    assert request(
+        addin_server,
+        "POST",
+        "/api/control/start",
+        body=b"{}",
+        headers={
+            addon_host.CONTROL_ACTION_HEADER: "1",
+            "Content-Length": "2",
+        },
+    )[0] == 400
+    assert addin_server.test_control_actions == ["remote"]
+
+
+def test_wps_pdf_formula_request_proxies_selected_text_without_clipboard_access(
+    addin_server,
+):
+    body = json.dumps(
+        {
+            "text": "x\r\n2\r\n1",
+            "html": "",
+            "model": "remote:project-server:qwen3:30b",
+        }
+    ).encode("utf-8")
+    status, _headers, payload = request(
+        addin_server,
+        "POST",
+        "/api/document/pdf-selection-to-latex",
+        body=body,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        },
+    )
+
+    assert status == 200
+    result = json.loads(payload)
+    assert result["latex"] == "$x_{t+1}$"
+    assert result["model"] == "remote:project-server:qwen3:30b"
+    assert result["received_text"] == "x\r\n2\r\n1"
+    assert result["received_html"] == ""
+
+    assert request(
+        addin_server,
+        "POST",
+        "/api/addin/pdf-selection-to-latex",
+        body=body,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        },
+    )[0] == 404
+
+
+def test_console_log_text_is_safe_for_legacy_windows_encodings():
+    assert addon_host._console_safe_text("bad \N{GRINNING FACE}", "ascii") == (
+        r"bad \U0001f600"
+    )
 
 
 def test_proxy_rejects_non_json_and_oversize_lengths(addin_server):

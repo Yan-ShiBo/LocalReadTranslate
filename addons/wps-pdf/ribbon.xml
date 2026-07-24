@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="localReadTranslatePdfTab" label="LocalReadTranslate">
+        <group id="localReadTranslatePdfGroup" label="PDF 助手">
+          <button
+            id="localReadTranslateShowPdfPane"
+            label="阅读与翻译"
+            screentip="打开 PDF 阅读与翻译工作台"
+            supertip="朗读或翻译当前 PDF 文本选区，也可识别公式并复制为 LaTeX；PDF 不写回公式。"
+            onAction="OnAction"
+            getEnabled="OnGetEnabled"
+            getImage="GetImage"
+            size="large"
+            visible="true"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

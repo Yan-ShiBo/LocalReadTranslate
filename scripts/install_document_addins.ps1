@@ -120,7 +120,8 @@ if (-not $NoStart -and -not (Test-AddinHost)) {
     Write-Host "[OK] The local loopback add-in host is already running."
 }
 
-$RunningHosts = Get-Process -Name WINWORD, wps -ErrorAction SilentlyContinue
+$RunningHosts = Get-Process -Name WINWORD, wps -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 }
 if ($RunningHosts) {
     Write-Warning "Word/WPS is already open. Close and reopen it once to load the new registration."
 }
@@ -129,3 +130,4 @@ Write-Host ""
 Write-Host "Document add-in installation completed."
 Write-Host "Microsoft Word: Home > Add-ins > LocalReadTranslate Formula Workbench"
 Write-Host "WPS Writer: LocalReadTranslate > LaTeX Formula"
+Write-Host "WPS PDF: LocalReadTranslate > Read and Translate"

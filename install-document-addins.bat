@@ -12,6 +12,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo [OK] Installation completed. Reopen Word and WPS Writer once.
+echo [OK] Installation completed. Reopen Word and WPS Office once.
 pause
 exit /b 0

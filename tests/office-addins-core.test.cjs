@@ -16,6 +16,9 @@ const {
   createWpsWriterAdapter,
 } = require("../addons/wps-word/wps-adapter.js");
 const {
+  createWpsPdfAdapter,
+} = require("../addons/wps-pdf/pdf-adapter.js");
+const {
   createClipboardWriter,
   createTaskPaneApp,
   detectHostHint,
@@ -29,6 +32,14 @@ const {
   TASKPANE_URL,
   toggleFormulaTaskPane,
 } = require("../addons/wps-word/js/ribbon.js");
+const {
+  PDF_BUTTON_ID,
+  PDF_ICON_URL,
+  PDF_TASKPANE_URL,
+  OnAddinLoad: onPdfAddinLoad,
+  getRibbonUI: getPdfRibbonUI,
+  togglePdfTaskPane,
+} = require("../addons/wps-pdf/js/ribbon.js");
 
 
 test("shared client calls native formula endpoints without inventing formats", async () => {
@@ -54,6 +65,10 @@ test("shared client calls native formula endpoints without inventing formats", a
     source_format: "flat-opc",
     content: "<pkg:package/>",
   });
+  await client.recognizePdfSelection(
+    "xt+1 = xt",
+    "remote:project-server:qwen3:30b"
+  );
 
   assert.equal(
     requests[0].url,
@@ -65,6 +80,15 @@ test("shared client calls native formula endpoints without inventing formats", a
   assert.deepEqual(JSON.parse(requests[1].init.body), {
     source_format: "flat-opc",
     content: "<pkg:package/>",
+  });
+  assert.equal(
+    requests[2].url,
+    "https://localhost:3210/api/document/pdf-selection-to-latex"
+  );
+  assert.deepEqual(JSON.parse(requests[2].init.body), {
+    text: "xt+1 = xt",
+    html: "",
+    model: "remote:project-server:qwen3:30b",
   });
 });
 
@@ -136,6 +160,7 @@ test("shared client exposes translation, read preparation, voices, and speech au
 
   await client.getTranslateHealth();
   await client.getVoices();
+  await client.openControlAction("remote");
   const translated = await client.translate({
     text: "Hello",
     model: "qwen3:8b",
@@ -161,6 +186,7 @@ test("shared client exposes translation, read preparation, voices, and speech au
     [
       "/api/translate/health",
       "/api/voices",
+      "/api/control/remote",
       "/api/translate",
       "/api/read/prepare",
       "/api/tts",
@@ -168,17 +194,20 @@ test("shared client exposes translation, read preparation, voices, and speech au
       "/api/translate/model/unload",
     ]
   );
-  assert.deepEqual(JSON.parse(requests[2].init.body), {
+  assert.equal(requests[2].init.method, "POST");
+  assert.equal(requests[2].init.headers["X-LocalReadTranslate-Addin"], "1");
+  assert.equal(requests[2].init.body, undefined);
+  assert.deepEqual(JSON.parse(requests[3].init.body), {
     text: "Hello",
     model: "qwen3:8b",
     target_language: "Simplified Chinese",
   });
-  assert.equal(requests[4].init.headers.Accept, "audio/wav");
-  assert.deepEqual(JSON.parse(requests[5].init.body), {
+  assert.equal(requests[5].init.headers.Accept, "audio/wav");
+  assert.deepEqual(JSON.parse(requests[6].init.body), {
     model: "qwen3:8b",
     keep_alive: -1,
   });
-  assert.deepEqual(JSON.parse(requests[6].init.body), {
+  assert.deepEqual(JSON.parse(requests[7].init.body), {
     model: "qwen3:8b",
   });
 });
@@ -265,6 +294,40 @@ test("formula controller cleans up a WPS spool when conversion fails", async () 
     /DOCX payload is not a valid package/
   );
   assert.equal(cleanupCalls, 1);
+});
+
+test("formula controller recognizes a WPS PDF text selection with the chosen model", async () => {
+  const clipboard = [];
+  const adapter = {
+    async exportSelectionForLatex() {
+      return {
+        source_format: "wps-pdf-selection",
+        content: "xt+1 = xt",
+      };
+    },
+  };
+  const client = {
+    async recognizePdfSelection(text, model) {
+      assert.equal(text, "xt+1 = xt");
+      assert.equal(model, "remote:project-server:qwen3:30b");
+      return {
+        latex: "$x_{t+1}=x_t$",
+        formula_count: 1,
+      };
+    },
+  };
+
+  const result = await copySelectionAsLatex({
+    adapter,
+    client,
+    model: "remote:project-server:qwen3:30b",
+    async writeClipboard(value) {
+      clipboard.push(value);
+    },
+  });
+
+  assert.equal(result.formula_count, 1);
+  assert.deepEqual(clipboard, ["$x_{t+1}=x_t$"]);
 });
 
 test("Office adapter reads OOXML and inserts generated DOCX at the selection", async () => {
@@ -413,6 +476,7 @@ test("WPS adapter exports selection as DOCX and inserts a generated fragment", a
 test("task pane host hint and formula strip summary stay deterministic", () => {
   assert.equal(detectHostHint("?host=office"), "office");
   assert.equal(detectHostHint("?host=wps"), "wps");
+  assert.equal(detectHostHint("?host=wps-pdf"), "wps-pdf");
   assert.equal(detectHostHint("?host=unknown"), "");
   assert.deepEqual(
     summarizeLatexSelection("正文 $x$，然后 $$y^2$$ 与 \\(z\\)。"),
@@ -508,6 +572,47 @@ test("assistant source view exposes only models discovered on the selected reach
   );
 });
 
+test("assistant source view defaults to qwen3 30b instead of a listed 100b model", () => {
+  const view = deriveAssistantSourceView(
+    {
+      sources: [
+        {
+          id: "project-server",
+          name: "Project Server",
+          kind: "remote",
+          configured: true,
+          reachable: true,
+          models: [],
+        },
+      ],
+      available_model_options: [
+        {
+          value: "remote:project-server:qwen3.5:122b",
+          label: "qwen3.5:122b",
+          source: "project-server",
+          model: "qwen3.5:122b",
+        },
+        {
+          value: "remote:project-server:deepseek-r1:32b",
+          label: "deepseek-r1:32b",
+          source: "project-server",
+          model: "deepseek-r1:32b",
+        },
+        {
+          value: "remote:project-server:qwen3:30b",
+          label: "qwen3:30b",
+          source: "project-server",
+          model: "qwen3:30b",
+        },
+      ],
+    },
+    "project-server",
+    ""
+  );
+
+  assert.equal(view.selectedModel, "remote:project-server:qwen3:30b");
+});
+
 test("assistant read preparation is required only for CJK or formula-bearing text", () => {
   assert.equal(needsReadPreparation("A plain English paragraph."), false);
   assert.equal(needsReadPreparation("需要朗读的中文"), true);
@@ -593,7 +698,9 @@ function fakeTaskPaneDocument() {
     "formula-count",
     "inline-count",
     "display-count",
+    "formula-legend",
     "selection-note",
+    "formula-details",
     "convert-button",
     "copy-button",
     "assistant-source-list",
@@ -640,6 +747,123 @@ function fakeTaskPaneDocument() {
   };
   return { document, elements, listeners };
 }
+
+test("WPS PDF adapter reads the nested selection without requiring a PDF copy API", async () => {
+  let reads = 0;
+  const app = {
+    ActiveDocument: {
+      Selection: {
+        Text() {
+          reads += 1;
+          return "Selected PDF text";
+        },
+      },
+    },
+  };
+
+  const adapter = createWpsPdfAdapter(app);
+
+  assert.equal(await adapter.readSelectionText(), "Selected PDF text");
+  assert.deepEqual(await adapter.exportSelectionForLatex(), {
+    source_format: "wps-pdf-selection",
+    content: "Selected PDF text",
+  });
+  assert.equal(reads, 2);
+  assert.deepEqual(adapter.capabilities, {
+    formulaTools: true,
+    convertFormula: false,
+    copyFormula: true,
+    requiresFormulaHealth: false,
+    formulaRecognition: true,
+    replaceSelectionText: false,
+  });
+  assert.equal(adapter.replaceSelectionWithText, undefined);
+  assert.equal(adapter.replaceSelectionWithFragment, undefined);
+});
+
+test("WPS PDF task pane exposes model-assisted LaTeX copy while hiding mutation controls", async () => {
+  const { document, elements } = fakeTaskPaneDocument();
+  let latexHealthCalls = 0;
+  const adapter = {
+    capabilities: {
+      formulaTools: true,
+      convertFormula: false,
+      copyFormula: true,
+      requiresFormulaHealth: false,
+      formulaRecognition: true,
+      replaceSelectionText: false,
+    },
+    async readSelectionText() {
+      return "A selected PDF paragraph.";
+    },
+  };
+  const app = createTaskPaneApp({
+    document,
+    hostHint: "wps-pdf",
+    wpsApplication: {},
+    wpsPdfAdapterFactory() {
+      return adapter;
+    },
+    wpsAdapterFactory() {
+      throw new Error("Writer should not be selected");
+    },
+    officeAdapterFactory() {
+      throw new Error("Office should not be selected");
+    },
+    clientFactory() {
+      return {
+        async getLatexHealth() {
+          latexHealthCalls += 1;
+          throw new Error("PDF must not discover an inapplicable formula service");
+        },
+        async getTranslateHealth() {
+          return {
+            sources: [
+              {
+                id: "local",
+                name: "Local Ollama",
+                kind: "local",
+                configured: true,
+                reachable: true,
+                models: [],
+              },
+            ],
+            available_model_options: [
+              {
+                value: "qwen3:8b",
+                label: "qwen3:8b",
+                source: "local",
+                model: "qwen3:8b",
+              },
+            ],
+          };
+        },
+        async getVoices() {
+          return {
+            default_voice: "af_bella",
+            default_speed: 0.8,
+            speeds: [0.8],
+            groups: [],
+          };
+        },
+      };
+    },
+    controller: {},
+  });
+
+  await app.initialize();
+
+  assert.equal(elements["host-name"].textContent, "WPS PDF");
+  assert.equal(elements["formula-details"].hidden, false);
+  assert.equal(elements["convert-button"].hidden, true);
+  assert.equal(elements["copy-button"].hidden, false);
+  assert.equal(elements["copy-button"].disabled, false);
+  assert.equal(elements["copy-button"].textContent, "识别并复制为 LaTeX");
+  assert.equal(elements["replace-translation-button"].hidden, true);
+  assert.equal(elements["translate-button"].disabled, false);
+  assert.equal(elements["read-button"].disabled, false);
+  assert.equal(latexHealthCalls, 0);
+});
 
 test("task pane checks formula health once, then actions reuse that state", async () => {
   const { document, elements } = fakeTaskPaneDocument();
@@ -1188,7 +1412,7 @@ test("task pane refreshes discovery only after an explicit source connection act
   assert.equal(healthChecks, 1);
   assert.equal(elements["source-action-button"].textContent, "连接服务器");
 
-  assert.equal(app.runSourceAction(), true);
+  assert.equal(await app.runSourceAction(), true);
   assert.deepEqual(opened, ["localreadtranslate://remote"]);
   assert.equal(healthChecks, 1);
   assert.equal(timers[0].delay, 0);
@@ -1278,4 +1502,52 @@ test("WPS ribbon creates and toggles one shared task pane", () => {
     globalThis.Application = previousApplication;
   }
   assert.equal(BUTTON_ID, "localReadTranslateShowFormulaPane");
+});
+
+test("WPS PDF ribbon creates and toggles one PDF task pane without redefining Application", () => {
+  const storage = new Map();
+  const panes = new Map();
+  const app = {
+    ActiveDocument: { Selection: { Text() { return ""; } } },
+    PluginStorage: {
+      getItem(key) {
+        return storage.get(key);
+      },
+      setItem(key, value) {
+        storage.set(key, value);
+      },
+      removeItem(key) {
+        storage.delete(key);
+      },
+    },
+    CreateTaskPane(url) {
+      assert.equal(url, PDF_TASKPANE_URL);
+      const pane = { ID: 84, Visible: false };
+      panes.set(84, pane);
+      return pane;
+    },
+    GetTaskPane(id) {
+      return panes.get(id);
+    },
+  };
+  Object.defineProperty(app, "ribbonUI", {
+    value: "WPS-owned read-only handle",
+    writable: false,
+    configurable: false,
+  });
+  const previousApplication = globalThis.Application;
+  globalThis.Application = app;
+  try {
+    assert.equal(onPdfAddinLoad({ source: "callback" }), true);
+    assert.deepEqual(getPdfRibbonUI(), { source: "callback" });
+    assert.equal(app.ribbonUI, "WPS-owned read-only handle");
+    assert.equal(togglePdfTaskPane(), true);
+    assert.equal(panes.get(84).Visible, true);
+    assert.equal(togglePdfTaskPane(), true);
+    assert.equal(panes.get(84).Visible, false);
+  } finally {
+    globalThis.Application = previousApplication;
+  }
+  assert.equal(PDF_BUTTON_ID, "localReadTranslateShowPdfPane");
+  assert.equal(PDF_ICON_URL, "/assets/icon-32.png");
 });

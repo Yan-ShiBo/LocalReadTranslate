@@ -122,7 +122,7 @@
         </div>
       </details>
 
-      <details class="settings-details formula-details">
+      <details id="formula-details" class="settings-details formula-details">
         <summary>
           <span>公式与 LaTeX</span>
           <span id="formula-count" class="formula-total">—</span>
@@ -135,7 +135,7 @@
           >
             <span class="empty-strip">切回文档选择一段内容</span>
           </div>
-          <div class="formula-legend" aria-label="公式计数">
+          <div id="formula-legend" class="formula-legend" aria-label="公式计数">
             <span><i class="legend-mark inline"></i>行内 <b id="inline-count">0</b></span>
             <span><i class="legend-mark display"></i>独立 <b id="display-count">0</b></span>
           </div>
@@ -171,6 +171,7 @@
     <script src="/shared/formula-controller.js"></script>
     <script src="/office-word/office-adapter.js"></script>
     <script src="/wps-word/wps-adapter.js"></script>
+    <script src="/wps-pdf/pdf-adapter.js"></script>
     <script src="/taskpane/taskpane.js"></script>
   </body>
 </html>

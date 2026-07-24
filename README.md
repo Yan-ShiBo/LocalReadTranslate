@@ -20,7 +20,7 @@
 - **Backend-driven source choice** — While the mediator is online, Local Ollama and Project Server remain explicit choices; the selected source shows either its one truthful recovery action or only its discovered generation models
 - **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
 - **Copy selection as canonical LaTeX** — Copy selected prose without translation, preserve paragraph breaks, and normalize detected inline/display MathJax, MathML, and KaTeX formulas to `$...$` / `$$...$$`
-- **Installable Word/WPS document add-ins** — The shared task pane brings the userscript's source-first translation and local read-aloud workflow into Word/WPS, while retaining bidirectional native-equation/LaTeX conversion
+- **Installable Word/WPS document add-ins** — The shared task pane brings source-first translation and local read-aloud into Word, WPS Writer and WPS PDF; editable Word/Writer documents retain bidirectional native-equation/LaTeX conversion, while selectable WPS PDF formulas can be recognized and copied as canonical LaTeX with the chosen model
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
 - **Target-language guard** — Chinese targets that return all-English output are retried once with a strict same-model instruction; a second non-compliant result is reported as failure
@@ -59,16 +59,19 @@
 
 The userscript never receives SSH credentials or talks directly to Ollama. The local API is the single browser boundary; the tray app owns process startup, SSH/API configuration and tunnel lifecycle.
 
-Microsoft Word and WPS Writer use a second strict loopback host on
+Microsoft Word, WPS Writer and WPS PDF use a second strict loopback host on
 `127.0.0.1:5443`. It serves only the allowlisted add-in files and proxies
 same-origin `/api/*` requests to FastAPI. Translation, read preparation and
 speech use the same discovered-source contract as the userscript. The add-ins
 send only the selected document text; choosing a remote model intentionally
 forwards that selection to the tray-configured server through FastAPI. LaTeX
 is the only external formula interchange format; DOCX/OMML is used only for
-inserting or reading native editable equations inside the document. For WPS
-reverse conversion, a randomly named one-shot DOCX is saved directly under
-the current user's temporary directory. The API accepts only that exact
+inserting or reading native editable equations inside Word and WPS Writer.
+WPS PDF remains read-only for this add-in: it can translate, copy and read
+selected text and can recognize selectable formulas into canonical LaTeX, but
+does not expose selection replacement or equation writeback. For WPS Writer
+reverse conversion, a randomly named one-shot DOCX is saved directly
+under the current user's temporary directory. The API accepts only that exact
 directory and filename pattern, validates the DOCX limits, and the controller
 invokes spool cleanup after both successful and failed conversions.
 
@@ -186,9 +189,10 @@ Editing the repository file does not update a copy already installed in Tampermo
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
-## Installable Microsoft Word / WPS Writer document add-ins
+## Installable Microsoft Word / WPS Writer / WPS PDF add-ins
 
-Close Word and WPS Writer, then install both current-user add-ins:
+Save open documents and close Word and the complete WPS Office process, then
+install all current-user add-ins:
 
 ```powershell
 .\install-document-addins.bat
@@ -196,14 +200,16 @@ Close Word and WPS Writer, then install both current-user add-ins:
 
 Reopen the applications. In Word, choose
 **Home → Add-ins → LocalReadTranslate 文档工作台**. In WPS Writer, choose
-**LocalReadTranslate → 阅读与公式**.
+**LocalReadTranslate → 阅读与公式**. In WPS PDF, choose
+**LocalReadTranslate → 阅读与翻译**.
 
 The shared task pane follows the userscript's layout and state rules:
 
 - **Translation** is the only expanded primary section. Select **Local
   Ollama** or **Project Server**, then choose only a generation model actually
   discovered on that reachable source. Translate the current selection, copy
-  the result, or replace the selection in the document.
+  the result, or replace the selection in editable Word/Writer documents.
+  WPS PDF keeps the copy action and hides replacement.
 - **Advanced** contains the target language and only the model residency
   actions that are currently applicable.
 - **Read aloud** uses the API voice catalog and plays local WAV audio. Plain
@@ -211,24 +217,40 @@ The shared task pane follows the userscript's layout and state rules:
   `/read/prepare` with the currently selected discovered model before Kokoro
   TTS.
 - **Formula & LaTeX** converts mixed prose plus `$...$` / `$$...$$` into
-  editable native Word/WPS equations, or copies selected native equations and
-  prose as canonical plain-text LaTeX.
+  editable native equations in Word and WPS Writer, and copies selected native
+  equations plus prose as canonical plain-text LaTeX. WPS PDF exposes only
+  **Recognize and copy as LaTeX**: it reads the selectable PDF text and its
+  visual line breaks, asks the explicitly selected discovered model to restore
+  the formula, validates/canonicalizes the result, and copies plain-text LaTeX.
+  PDF equation writeback remains hidden.
 
-Local is the default source. Source, per-source model, target language, voice
-and speed are remembered in the task pane. Initialization (or an explicit
-retry) discovers formula, translation and voice capabilities once in
-parallel. Normal translation, read and formula actions reuse that cached
-state, so clicking them does not flash **Checking translation sources...**.
+Source, per-source model, target language, voice and speed are remembered in
+the task pane. Initialization (or an explicit retry) discovers the applicable
+capabilities once in parallel: Word/Writer include native-formula health,
+while WPS PDF requests only translation and voice health because PDF formula
+recognition uses the selected Ollama model. Normal translation, read and
+formula actions reuse that cached state, so clicking them does not flash
+**Checking translation sources...**. On a fresh reachable Project Server
+without a saved choice, the pane prefers exact `qwen3:30b`, then a discovered
+model no larger than 32B, rather than blindly choosing a listed 100B+ model.
 An explicit **Start/Connect** action alone polls source health and refreshes
-the real model list when the source becomes reachable. Formula conversion does
-not use Ollama, start local Ollama, or change the remote tunnel.
+the real model list when the source becomes reachable. Because WPS WebView does
+not reliably launch a custom URL scheme, the add-in sends that click to a
+same-origin loopback control endpoint; the host accepts only the fixed
+`start`, `ollama`, and `remote` actions and forwards them to the tray-owned
+`localreadtranslate://` handler. No server address, credential, model name, or
+command is accepted by that endpoint. Word/Writer native formula conversion
+does not use Ollama, start local Ollama, or change the remote tunnel. WPS PDF
+recognition contacts only the explicitly selected reachable model and never
+starts local Ollama implicitly.
 
-The installer registers the exact Office manifest, safely merges one WPS
-`publish.xml` item while preserving unrelated add-ins, and starts the strict
-`127.0.0.1:5443` host if needed. It deliberately does not modify the Windows
-certificate trust store. The default HTTP endpoint is for local desktop
-development only; `addon_host.py` can use caller-supplied trusted TLS
-certificate/key files for another deployment.
+The installer registers the exact Office manifest, atomically merges separate
+WPS Writer (`type="wps"`) and WPS PDF (`type="pdf"`) `publish.xml` items while
+preserving unrelated add-ins, and starts the strict `127.0.0.1:5443` host if
+needed. It deliberately does not modify the Windows certificate trust store.
+The default HTTP endpoint is for local desktop development only;
+`addon_host.py` can use caller-supplied trusted TLS certificate/key files for
+another deployment.
 
 To remove only LocalReadTranslate's registrations and an installer-owned
 standalone add-in host:
@@ -247,28 +269,51 @@ the selected result reported two formulas and wrote exactly
 `WPS 测试：$x^{2} + y^{2} = z^{2}$，以及 $\frac{a}{b}$。`
 once, with no duplicate paragraph.
 
-The expanded document-assistant path was also exercised through the exact
+The expanded document-assistant API path was also exercised through the exact
 add-in proxy (`127.0.0.1:5443/api/*`) with
 `remote:project-server:qwen3:30b`: selected-text translation returned
 Simplified Chinese while preserving `$x^2 + y^2 = z^2$`; read preparation
 returned English formula speech; and local TTS returned a valid 307,244-byte
 RIFF/WAV response. The 30B model was then explicitly unloaded, the project
-server remained reachable, and local Ollama remained stopped. Browser layout
-checks at 390 px and 280 px found no horizontal overflow. This API/proxy
-evidence does not claim that the new translation/read buttons were clicked in
-a real Word/WPS document; the prior native-formula button evidence remains the
-current host-level UI verification.
+server remained reachable at that time, and local Ollama remained stopped.
+Browser layout checks at 390 px and 280 px found no horizontal overflow.
+
+The formal WPS PDF package was then installed and exercised in WPS 365 desktop
+`12.1.0.26895`: the `type="pdf"` entry was enabled, its ribbon and
+**阅读与翻译** task pane appeared, the pane identified `WPS PDF`, and the
+dedicated adapter read real PDF selections through
+`Application.ActiveDocument.Selection.Text()`. Selection replacement and PDF
+equation writeback remained absent. Clicking **朗读选区** played the selected
+text through local TTS, changed the control to **停止朗读**, and stopped
+cleanly.
+
+After the Project Server became reachable again, the real WPS PDF
+**识别并复制为 LaTeX** button was exercised with the exact discovered
+`remote:project-server:qwen3:30b` model. A selected 92-character formula with
+stacked scripts and an 18-term underbrace produced:
+
+```latex
+$$
+u_1 = \underbrace{-2.41x_1 + 0.426x_2 + 0.276x_1^2 - \cdots - 0.453x_2^4 - 0.0691}_{18 \text{ terms}},
+$$
+```
+
+The pane reported **已复制 1 个公式**, the add-in proxy returned HTTP 200,
+and the remote `/api/ps` snapshot contained only `qwen3:30b`; no 100B+ model
+or local-Ollama fallback was used. This path intentionally does not rely on
+the Writer-only `Selection.Copy()` API or simulated `Ctrl+C`. Image-only
+scanned formulas still require a future vision/OCR path.
 
 See [`addons/README.md`](addons/README.md) for installation and troubleshooting,
 and
-[`docs/iteration-8-2026-07-23-office-wps-document-assistant.md`](docs/iteration-8-2026-07-23-office-wps-document-assistant.md)
+[`docs/iteration-9-2026-07-23-wps-pdf-addin.md`](docs/iteration-9-2026-07-23-wps-pdf-addin.md)
 for the exact release evidence.
 
 ## Tampermonkey Development and Publishing
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.3` (FastAPI `1.7.18`).
+The current repository metadata version is `1.15.3` (FastAPI `1.7.19`).
 
 For each release:
 
@@ -299,7 +344,7 @@ browser script and built-in test page are generated from this catalog.
 | `server.py` | FastAPI server with Kokoro TTS inference |
 | `document_formula.py` | Canonical LaTeX parser plus validated Pandoc DOCX/OMML conversion |
 | `addons/` | Installable Word/WPS manifests, ribbon, shared document-assistant task pane, controller and host adapters |
-| `addon_host.py` | Strict `127.0.0.1:5443` add-in asset host and same-origin API proxy |
+| `addon_host.py` | Strict `127.0.0.1:5443` add-in asset host, same-origin API proxy, and fixed-action tray relay |
 | `addin_registration.py` | Idempotent WPS `publish.xml` registration merge/remove |
 | `audio_encoding.py` | Bundled FFmpeg helpers for OGG/Opus and WebM/Opus |
 | `tray_app.py` | System tray application (background mode) |
@@ -318,7 +363,8 @@ browser script and built-in test page are generated from this catalog.
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
 | `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
-| `docs/iteration-8-2026-07-23-office-wps-document-assistant.md` | Current Word/WPS read, translate and formula add-in release record |
+| `docs/iteration-9-2026-07-23-wps-pdf-addin.md` | Current WPS PDF read/translate/formula-to-LaTeX add-in release record |
+| `docs/iteration-8-2026-07-23-office-wps-document-assistant.md` | Historical Word/WPS read, translate and formula add-in release record |
 | `docs/iteration-7-2026-07-23-installable-office-wps-addins.md` | Historical installable formula add-in release record |
 | `docs/iteration-6-2026-07-23-office-wps-latex-interchange.md` | Historical formula interchange-core release record |
 | `docs/iteration-5-2026-07-23.md` | Historical backend-driven translation/settings release record |
@@ -410,6 +456,23 @@ size, ZIP entry count, expanded size, and required DOCX structure are then
 validated. The response is plain canonical LaTeX plus formula counts, and is
 the only copy representation used by the add-in controller.
 
+### `POST /document/pdf-selection-to-latex`
+
+```json
+{
+  "text": "u1 = -2.41x1 + ...",
+  "html": "",
+  "model": "remote:project-server:qwen3:30b"
+}
+```
+
+Reconstructs formulas from a selectable WPS PDF text selection with the
+explicitly chosen discovered model. The service treats the selection as
+untrusted data, validates and canonicalizes the model output, rejects a result
+with no LaTeX formula, and returns only canonical text plus formula counts.
+`html` is reserved for optional font-run metadata; the current WPS PDF adapter
+uses the direct selection text and does not read the Windows clipboard.
+
 ### `GET /translate/health?model=translategemma:4b`
 
 Checks translation sources without starting a translation. A plain model name selects local Ollama; `remote:<source-id>:<model>` selects a tray-configured remote source. Compatibility fields still describe the selected model, while `sources[]` independently reports each configured source's safe ID/name/kind, reachability and models with `running`, `pinned` and `usable_for_translation`. It never exposes remote URLs, hosts, ports or credentials. `available_model_options` is the flattened selector list and excludes non-generation models.
@@ -464,10 +527,11 @@ git diff --check
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
 The current document add-in release record is in
-[`docs/iteration-8-2026-07-23-office-wps-document-assistant.md`](docs/iteration-8-2026-07-23-office-wps-document-assistant.md).
-Iteration 7 remains the installable formula-shell record, iteration 6 remains
-the formula-engine record, iteration 5 remains the source/model-settings
-record, and earlier iterations remain as history.
+[`docs/iteration-9-2026-07-23-wps-pdf-addin.md`](docs/iteration-9-2026-07-23-wps-pdf-addin.md).
+Iteration 8 remains the shared document-assistant record, iteration 7 remains
+the installable formula-shell record, iteration 6 remains the formula-engine
+record, iteration 5 remains the source/model-settings record, and earlier
+iterations remain as history.
 
 ## License
 

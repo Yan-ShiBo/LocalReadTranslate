@@ -21,7 +21,7 @@
     const value = String(search || "");
     try {
       const host = new URLSearchParams(value).get("host");
-      return host === "office" || host === "wps" ? host : "";
+      return ["office", "wps", "wps-pdf"].includes(host) ? host : "";
     } catch (_error) {
       return "";
     }
@@ -116,6 +116,37 @@
       voice,
       speed: Number.isFinite(speed) && speed > 0 ? speed : 0.8,
     };
+  }
+
+  function assistantModelSizeBillions(option) {
+    const model = String(
+      option && (option.model || option.value) || ""
+    ).trim();
+    const matches = [...model.matchAll(/(\d+(?:\.\d+)?)\s*b(?:\b|[_-])/gi)];
+    if (!matches.length) return Number.NaN;
+    const value = Number(matches[matches.length - 1][1]);
+    return Number.isFinite(value) ? value : Number.NaN;
+  }
+
+  function chooseDefaultAssistantModel(modelOptions) {
+    const options = Array.isArray(modelOptions) ? modelOptions : [];
+    const qwen30b = options.find((option) =>
+      /(?:^|[:/])qwen3:30b$/i.test(String(option && option.value || "")) ||
+      /^qwen3:30b$/i.test(String(option && option.model || ""))
+    );
+    if (qwen30b) return qwen30b.value;
+
+    const moderate = options
+      .map((option, index) => ({
+        option,
+        index,
+        size: assistantModelSizeBillions(option),
+      }))
+      .filter((item) => Number.isFinite(item.size) && item.size <= 32)
+      .sort((left, right) => right.size - left.size || left.index - right.index);
+    return moderate[0] && moderate[0].option.value ||
+      options[0] && options[0].value ||
+      "";
   }
 
   function deriveAssistantSourceView(
@@ -222,7 +253,7 @@
     const requestedModel = String(selectedModel || "").trim();
     const selected = modelOptions.some((option) => option.value === requestedModel)
       ? requestedModel
-      : modelOptions[0] && modelOptions[0].value || "";
+      : chooseDefaultAssistantModel(modelOptions);
     if (!selected) {
       return {
         mode: "no-model",
@@ -330,7 +361,9 @@
       formulaCount: requiredElement(documentObject, "formula-count"),
       inlineCount: requiredElement(documentObject, "inline-count"),
       displayCount: requiredElement(documentObject, "display-count"),
+      formulaLegend: requiredElement(documentObject, "formula-legend"),
       selectionNote: requiredElement(documentObject, "selection-note"),
+      formulaDetails: requiredElement(documentObject, "formula-details"),
       convertButton: requiredElement(documentObject, "convert-button"),
       copyButton: requiredElement(documentObject, "copy-button"),
       assistantSourceList: requiredElement(documentObject, "assistant-source-list"),
@@ -410,6 +443,14 @@
       sourceActionDeadline: 0,
       sourceActionTimer: null,
       busy: false,
+      capabilities: {
+        formulaTools: true,
+        convertFormula: true,
+        copyFormula: true,
+        requiresFormulaHealth: true,
+        formulaRecognition: false,
+        replaceSelectionText: true,
+      },
     };
     elements.targetLanguage.value = preferences.targetLanguage;
     const createObjectUrl =
@@ -471,10 +512,28 @@
     }
 
     function updateButtons() {
-      const formulaEnabled = state.serviceReady && state.adapter && !state.busy;
+      const nativeFormulaReady =
+        state.capabilities.formulaTools &&
+        state.capabilities.requiresFormulaHealth &&
+        state.serviceReady &&
+        state.adapter &&
+        !state.busy;
       const documentReady = state.apiReady && state.adapter && !state.busy;
-      elements.convertButton.disabled = !formulaEnabled;
-      elements.copyButton.disabled = !formulaEnabled;
+      const recognitionReady =
+        state.capabilities.formulaRecognition &&
+        documentReady &&
+        state.assistantView &&
+        state.assistantView.mode === "ready" &&
+        state.selectedModel;
+      elements.convertButton.disabled = !(
+        state.capabilities.convertFormula && nativeFormulaReady
+      );
+      elements.copyButton.disabled = !(
+        state.capabilities.copyFormula &&
+        (state.capabilities.formulaRecognition
+          ? recognitionReady
+          : nativeFormulaReady)
+      );
       elements.readButton.disabled = !(documentReady && state.ttsReady);
       elements.translateButton.disabled = !(
         documentReady &&
@@ -485,7 +544,10 @@
       const hasTranslation = Boolean(state.translationText);
       elements.copyTranslationButton.disabled = state.busy || !hasTranslation;
       elements.replaceTranslationButton.disabled =
-        state.busy || !hasTranslation || !state.adapter;
+        state.busy ||
+        !hasTranslation ||
+        !state.adapter ||
+        !state.capabilities.replaceSelectionText;
       elements.sourceActionButton.disabled =
         state.busy || state.sourceActionPending;
       elements.modelSelect.disabled = state.busy;
@@ -766,11 +828,25 @@
       updateButtons();
     }
 
-    function invokeProtocol(url) {
+    async function invokeProtocol(url) {
       const protocolUrl = String(url || "").trim();
       if (!protocolUrl) return false;
       if (typeof options.openProtocol === "function") {
-        options.openProtocol(protocolUrl);
+        await options.openProtocol(protocolUrl);
+        return true;
+      }
+      const controlActions = {
+        "localreadtranslate://start": "start",
+        "localreadtranslate://ollama": "ollama",
+        "localreadtranslate://remote": "remote",
+      };
+      const controlAction = controlActions[protocolUrl];
+      if (
+        controlAction &&
+        state.client &&
+        typeof state.client.openControlAction === "function"
+      ) {
+        await state.client.openControlAction(controlAction);
         return true;
       }
       const link = documentObject.createElement("a");
@@ -836,15 +912,38 @@
       }
     }
 
+    function renderRecognitionSelection(selected) {
+      const text = String(selected || "").trim();
+      elements.preview.textContent = "";
+      elements.inlineCount.textContent = "0";
+      elements.displayCount.textContent = "0";
+      elements.formulaCount.textContent = text ? "AI" : "—";
+      elements.preview.className = "formula-strip is-empty";
+      const message = documentObject.createElement("span");
+      message.className = "empty-strip";
+      message.textContent = text
+        ? `已选 ${text.length} 个字符；点击后识别公式`
+        : "切回 PDF 选择公式或含公式的段落";
+      elements.preview.appendChild(message);
+    }
+
     async function refreshSelectionPreview(force = false) {
       if (!state.adapter || (state.busy && !force)) return;
       try {
         const selected = await state.adapter.readSelectionText();
-        renderSelectionSummary(summarizeLatexSelection(selected));
+        if (state.capabilities.formulaRecognition) {
+          renderRecognitionSelection(selected);
+        } else {
+          renderSelectionSummary(summarizeLatexSelection(selected));
+        }
       } catch (_error) {
-        renderSelectionSummary(
-          { inline: 0, display: 0, total: 0, hasText: false }
-        );
+        if (state.capabilities.formulaRecognition) {
+          renderRecognitionSelection("");
+        } else {
+          renderSelectionSummary(
+            { inline: 0, display: 0, total: 0, hasText: false }
+          );
+        }
       }
     }
 
@@ -872,7 +971,44 @@
         elements.hostName.textContent = "WPS Writer";
         return options.wpsAdapterFactory(options.wpsApplication);
       }
+      if (hint === "wps-pdf") {
+        state.host = "wps-pdf";
+        elements.hostName.textContent = "WPS PDF";
+        return options.wpsPdfAdapterFactory(options.wpsApplication);
+      }
       throw new Error("无法识别当前文档宿主");
+    }
+
+    function applyAdapterCapabilities(adapter) {
+      const declared =
+        adapter && adapter.capabilities && typeof adapter.capabilities === "object"
+          ? adapter.capabilities
+          : {};
+      state.capabilities = {
+        formulaTools: declared.formulaTools !== false,
+        convertFormula: declared.convertFormula !== false,
+        copyFormula: declared.copyFormula !== false,
+        requiresFormulaHealth: declared.requiresFormulaHealth !== false,
+        formulaRecognition: declared.formulaRecognition === true,
+        replaceSelectionText: declared.replaceSelectionText !== false,
+      };
+      elements.formulaDetails.hidden = !state.capabilities.formulaTools;
+      elements.convertButton.hidden =
+        !state.capabilities.formulaTools ||
+        !state.capabilities.convertFormula;
+      elements.copyButton.hidden =
+        !state.capabilities.formulaTools ||
+        !state.capabilities.copyFormula;
+      elements.copyButton.textContent = state.capabilities.formulaRecognition
+        ? "识别并复制为 LaTeX"
+        : "复制选区为 LaTeX";
+      elements.formulaLegend.hidden = state.capabilities.formulaRecognition;
+      elements.selectionNote.textContent = state.capabilities.formulaRecognition
+        ? "识别会读取 WPS PDF 选区文本及其视觉换行，并使用当前模型恢复规范 LaTeX。"
+        : "执行时会重新读取选区；复制原生公式会统一输出为 LaTeX 纯文本。";
+      elements.replaceTranslationButton.hidden =
+        !state.capabilities.replaceSelectionText;
+      updateButtons();
     }
 
     async function checkService() {
@@ -883,13 +1019,19 @@
       state.assistantHealth = null;
       state.assistantHealthError = "";
       updateButtons();
+      const latexPromise = state.capabilities.requiresFormulaHealth
+        ? state.client.getLatexHealth()
+        : Promise.resolve({ available: false, skipped: true });
       const [latexResult, translationResult, voicesResult] =
         await Promise.allSettled([
-          state.client.getLatexHealth(),
+          latexPromise,
           state.client.getTranslateHealth(),
           state.client.getVoices(),
         ]);
-      const reachable = [latexResult, translationResult, voicesResult].some(
+      const relevantResults = state.capabilities.requiresFormulaHealth
+        ? [latexResult, translationResult, voicesResult]
+        : [translationResult, voicesResult];
+      const reachable = relevantResults.some(
         (result) => result.status === "fulfilled"
       );
       if (!reachable) {
@@ -910,7 +1052,10 @@
       }
 
       state.apiReady = true;
-      if (latexResult.status === "fulfilled") {
+      if (
+        state.capabilities.requiresFormulaHealth &&
+        latexResult.status === "fulfilled"
+      ) {
         const health = latexResult.value;
         state.serviceReady = Boolean(health && health.available === true);
       }
@@ -927,7 +1072,16 @@
       renderAssistantSources();
 
       const capabilities = [];
-      if (state.serviceReady) capabilities.push("公式");
+      if (state.capabilities.requiresFormulaHealth && state.serviceReady) {
+        capabilities.push("公式");
+      }
+      if (
+        state.capabilities.formulaRecognition &&
+        state.assistantView &&
+        state.assistantView.mode === "ready"
+      ) {
+        capabilities.push("公式识别");
+      }
       if (state.ttsReady) capabilities.push("朗读");
       if (state.assistantView && state.assistantView.mode === "ready") {
         capabilities.push("翻译");
@@ -936,7 +1090,7 @@
         ? `${capabilities.join("、")}可用`
         : "服务已连接，但当前能力不可用";
       const partial =
-        !state.serviceReady ||
+        (state.capabilities.requiresFormulaHealth && !state.serviceReady) ||
         !state.ttsReady ||
         translationResult.status !== "fulfilled";
       setService(partial ? "error" : "ready", detail, partial);
@@ -946,11 +1100,23 @@
         "来源只在初始化或主动重试时发现；普通操作直接复用当前状态。"
       );
       updateButtons();
-      return state.serviceReady;
+      return state.capabilities.requiresFormulaHealth
+        ? state.serviceReady
+        : state.apiReady;
     }
 
     async function runAction(kind) {
-      if (!state.serviceReady || state.busy) return null;
+      const actionReady = kind === "convert"
+        ? state.capabilities.convertFormula && state.serviceReady
+        : state.capabilities.formulaRecognition
+          ? (
+              state.apiReady &&
+              state.assistantView &&
+              state.assistantView.mode === "ready" &&
+              state.selectedModel
+            )
+          : state.serviceReady;
+      if (!actionReady || state.busy) return null;
       setBusy(true);
       try {
         if (kind === "convert") {
@@ -974,17 +1140,28 @@
           return result;
         }
 
-        setOperation("working", "正在统一为 LaTeX", "导出当前选区并写入纯文本剪贴板…");
+        setOperation(
+          "working",
+          state.capabilities.formulaRecognition
+            ? "正在识别公式"
+            : "正在统一为 LaTeX",
+          state.capabilities.formulaRecognition
+            ? "读取 WPS PDF 选区文本，并由当前模型恢复 LaTeX…"
+            : "导出当前选区并写入纯文本剪贴板…"
+        );
         const result = await state.controller.copySelectionAsLatex({
           adapter: state.adapter,
           client: state.client,
+          model: state.selectedModel,
           writeClipboard: options.writeClipboard,
         });
         const formulaCount = Number(result.formula_count || 0);
         setOperation(
           "success",
           `已复制 ${formulaCount} 个公式`,
-          "剪贴板中只有规范化 LaTeX 与原段落文本。"
+          state.capabilities.formulaRecognition
+            ? `已使用 ${result.model || state.selectedModel} 识别；剪贴板中只有规范 LaTeX 与原段落文本。`
+            : "剪贴板中只有规范化 LaTeX 与原段落文本。"
         );
         return result;
       } catch (error) {
@@ -992,7 +1169,7 @@
         if (status === 0 || status === 502) {
           state.serviceReady = false;
           setService("error", "本地翻译服务已断开", true);
-        } else if (status === 503) {
+        } else if (status === 503 && !state.capabilities.formulaRecognition) {
           state.serviceReady = false;
           setService("error", "Pandoc 公式转换器不可用", true);
         }
@@ -1246,11 +1423,11 @@
       return false;
     }
 
-    function runSourceAction() {
+    async function runSourceAction() {
       if (state.sourceActionPending) return false;
       const url = elements.sourceActionButton.dataset.protocolUrl;
       if (!url) return false;
-      const opened = invokeProtocol(url);
+      const opened = await invokeProtocol(url);
       if (!opened) return false;
       state.sourceActionPending = true;
       state.sourceActionSource =
@@ -1304,6 +1481,7 @@
       setBusy(true);
       try {
         state.adapter = await resolveAdapter();
+        applyAdapterCapabilities(state.adapter);
         state.client = options.clientFactory({ baseUrl: "/api" });
         await checkService();
         await refreshSelectionPreview(true);
@@ -1340,15 +1518,13 @@
       runAssistantAction("translate").catch(() => undefined);
     });
     elements.sourceActionButton.addEventListener("click", () => {
-      try {
-        runSourceAction();
-      } catch (error) {
+      runSourceAction().catch((error) => {
         setOperation(
           "error",
           "无法打开本地控制",
           error && error.message ? error.message : "请从托盘程序完成操作。"
         );
-      }
+      });
     });
     elements.modelSelect.addEventListener("change", (event) => {
       selectModel(event && event.target && event.target.value);
@@ -1444,7 +1620,8 @@
     const controller = rootObject.LocalReadTranslateFormulaController;
     const officeApi = rootObject.LocalReadTranslateOfficeWord;
     const wpsApi = rootObject.LocalReadTranslateWpsWord;
-    if (!clientApi || !controller || !officeApi || !wpsApi) {
+    const wpsPdfApi = rootObject.LocalReadTranslateWpsPdf;
+    if (!clientApi || !controller || !officeApi || !wpsApi || !wpsPdfApi) {
       throw new Error("文档工作台依赖未完整加载");
     }
     const app = createTaskPaneApp({
@@ -1457,6 +1634,7 @@
       clientFactory: clientApi.createClient,
       officeAdapterFactory: officeApi.createOfficeWordAdapter,
       wpsAdapterFactory: wpsApi.createWpsWriterAdapter,
+      wpsPdfAdapterFactory: wpsPdfApi.createWpsPdfAdapter,
       writeClipboard: createClipboardWriter(
         documentObject,
         rootObject.navigator
@@ -1496,6 +1674,7 @@
     createTaskPaneApp,
     detectHostHint,
     deriveAssistantSourceView,
+    chooseDefaultAssistantModel,
     loadOfficeRuntime,
     needsReadPreparation,
     normalizeAssistantPreferences,

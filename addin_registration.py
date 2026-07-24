@@ -18,6 +18,14 @@ from xml.etree import ElementTree
 WPS_PLUGIN_NAME = "LocalReadTranslateFormula"
 WPS_PLUGIN_TYPE = "wps"
 WPS_PLUGIN_URL = "http://localhost:5443/wps-word/"
+WPS_PDF_PLUGIN_NAME = "LocalReadTranslatePdf"
+WPS_PDF_PLUGIN_TYPE = "pdf"
+WPS_PDF_PLUGIN_URL = "http://localhost:5443/wps-pdf/"
+
+WPS_DOCUMENT_PLUGINS = (
+    (WPS_PLUGIN_NAME, WPS_PLUGIN_TYPE, WPS_PLUGIN_URL),
+    (WPS_PDF_PLUGIN_NAME, WPS_PDF_PLUGIN_TYPE, WPS_PDF_PLUGIN_URL),
+)
 
 
 class AddinRegistrationError(RuntimeError):
@@ -70,18 +78,13 @@ def _write_publish_xml(path: Path, root: ElementTree.Element) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def install_wps_plugin(
-    path: Path,
+def _merge_wps_plugin(
+    root: ElementTree.Element,
     *,
-    name: str = WPS_PLUGIN_NAME,
-    url: str = WPS_PLUGIN_URL,
+    name: str,
+    plugin_type: str,
+    url: str,
 ) -> bool:
-    """Install or refresh one WPS online plugin entry.
-
-    Returns ``True`` when the XML file changed.
-    """
-    publish_path = Path(path)
-    root = _parse_publish_xml(publish_path)
     matches = [
         element
         for element in list(root)
@@ -93,7 +96,7 @@ def install_wps_plugin(
     ]
     desired = {
         "name": name,
-        "type": WPS_PLUGIN_TYPE,
+        "type": plugin_type,
         "url": url,
         "debug": "",
         "enable": "enable_dev",
@@ -120,8 +123,52 @@ def install_wps_plugin(
         for element in matches:
             root.remove(element)
     root.insert(insert_at, ElementTree.Element("jspluginonline", desired))
+    return True
+
+
+def install_wps_plugin(
+    path: Path,
+    *,
+    name: str = WPS_PLUGIN_NAME,
+    plugin_type: str = WPS_PLUGIN_TYPE,
+    url: str = WPS_PLUGIN_URL,
+) -> bool:
+    """Install or refresh one WPS online plugin entry.
+
+    Returns ``True`` when the XML file changed.
+    """
+    publish_path = Path(path)
+    root = _parse_publish_xml(publish_path)
+    changed = _merge_wps_plugin(
+        root,
+        name=name,
+        plugin_type=plugin_type,
+        url=url,
+    )
+    if not changed:
+        return False
     _write_publish_xml(publish_path, root)
     return True
+
+
+def install_wps_plugins(path: Path) -> bool:
+    """Atomically install the Writer and PDF entries used by this project."""
+    publish_path = Path(path)
+    root = _parse_publish_xml(publish_path)
+    changed = False
+    for name, plugin_type, url in WPS_DOCUMENT_PLUGINS:
+        changed = (
+            _merge_wps_plugin(
+                root,
+                name=name,
+                plugin_type=plugin_type,
+                url=url,
+            )
+            or changed
+        )
+    if changed:
+        _write_publish_xml(publish_path, root)
+    return changed
 
 
 def uninstall_wps_plugin(
@@ -148,6 +195,27 @@ def uninstall_wps_plugin(
     return True
 
 
+def uninstall_wps_plugins(path: Path) -> bool:
+    """Remove only this project's Writer and PDF entries."""
+    publish_path = Path(path)
+    if not publish_path.exists():
+        return False
+    root = _parse_publish_xml(publish_path)
+    names = {name for name, _plugin_type, _url in WPS_DOCUMENT_PLUGINS}
+    matches = [
+        element
+        for element in list(root)
+        if element.tag == "jspluginonline"
+        and element.attrib.get("name") in names
+    ]
+    if not matches:
+        return False
+    for element in matches:
+        root.remove(element)
+    _write_publish_xml(publish_path, root)
+    return True
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -156,6 +224,7 @@ def parse_args(argv=None):
         child.add_argument("--path", type=Path, default=None)
         child.add_argument("--name", default=WPS_PLUGIN_NAME)
         if command == "install-wps":
+            child.add_argument("--type", default=WPS_PLUGIN_TYPE)
             child.add_argument("--url", default=WPS_PLUGIN_URL)
     return parser.parse_args(argv)
 
@@ -164,11 +233,32 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     path = args.path or default_wps_publish_path()
     if args.command == "install-wps":
-        changed = install_wps_plugin(path, name=args.name, url=args.url)
-        print(f"WPS add-in {'registered' if changed else 'already registered'}: {path}")
+        if (
+            args.name == WPS_PLUGIN_NAME
+            and args.type == WPS_PLUGIN_TYPE
+            and args.url == WPS_PLUGIN_URL
+        ):
+            changed = install_wps_plugins(path)
+        else:
+            changed = install_wps_plugin(
+                path,
+                name=args.name,
+                plugin_type=args.type,
+                url=args.url,
+            )
+        print(
+            f"WPS add-in(s) "
+            f"{'registered' if changed else 'already registered'}: {path}"
+        )
         return 0
-    changed = uninstall_wps_plugin(path, name=args.name)
-    print(f"WPS add-in {'removed' if changed else 'was not registered'}: {path}")
+    if args.name == WPS_PLUGIN_NAME:
+        changed = uninstall_wps_plugins(path)
+    else:
+        changed = uninstall_wps_plugin(path, name=args.name)
+    print(
+        f"WPS add-in(s) "
+        f"{'removed' if changed else 'were not registered'}: {path}"
+    )
     return 0
 
 

@@ -85,6 +85,17 @@
       });
     }
 
+    function openControlAction(action) {
+      const normalized = String(action || "").trim();
+      if (!["start", "ollama", "remote"].includes(normalized)) {
+        return Promise.reject(new Error("Unsupported local control action"));
+      }
+      return requestJson(`/control/${normalized}`, {
+        method: "POST",
+        headers: { "X-LocalReadTranslate-Addin": "1" },
+      });
+    }
+
     return Object.freeze({
       getLatexHealth() {
         return requestJson("/document/latex/health");
@@ -95,6 +106,7 @@
       getVoices() {
         return requestJson("/voices");
       },
+      openControlAction,
       createLatexFragment(text) {
         return postJson("/document/latex-fragment", {
           text: String(text || ""),
@@ -109,6 +121,21 @@
         return postJson("/document/native-to-latex", {
           source_format: source.source_format,
           content: source.content,
+        });
+      },
+      recognizePdfSelection(text, model) {
+        const selectedText = String(text || "").trim();
+        const selectedModel = String(model || "").trim();
+        if (!selectedText) {
+          return Promise.reject(new Error("A WPS PDF selection is required"));
+        }
+        if (!selectedModel) {
+          return Promise.reject(new Error("A discovered formula recognition model is required"));
+        }
+        return postJson("/document/pdf-selection-to-latex", {
+          text: selectedText,
+          html: "",
+          model: selectedModel,
         });
       },
       translate(payload) {

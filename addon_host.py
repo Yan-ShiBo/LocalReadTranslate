@@ -12,6 +12,7 @@ import argparse
 import base64
 import json
 import mimetypes
+import os
 import ssl
 import sys
 import urllib.error
@@ -32,6 +33,12 @@ MAX_REQUEST_BYTES = 12 * 1024 * 1024
 # minute. Match the userscript's long-running translation allowance while
 # keeping the add-in proxy bounded.
 UPSTREAM_TIMEOUT_SECONDS = 150
+CONTROL_ACTION_HEADER = "X-LocalReadTranslate-Addin"
+CONTROL_ACTIONS = {
+    "start": "localreadtranslate://start",
+    "ollama": "localreadtranslate://ollama",
+    "remote": "localreadtranslate://remote",
+}
 
 # A tiny valid PNG is embedded so the Office manifest does not depend on a
 # generated binary file in the repository.  The task pane itself uses text and
@@ -58,6 +65,12 @@ STATIC_ROUTES = {
     "/wps-word/ribbon.xml": ADDONS_DIR / "wps-word" / "ribbon.xml",
     "/wps-word/js/ribbon.js": ADDONS_DIR / "wps-word" / "js" / "ribbon.js",
     "/wps-word/wps-adapter.js": ADDONS_DIR / "wps-word" / "wps-adapter.js",
+    "/wps-pdf/index.html": ADDONS_DIR / "wps-pdf" / "index.html",
+    "/wps-pdf/manifest.xml": ADDONS_DIR / "wps-pdf" / "manifest.xml",
+    "/wps-pdf/main.js": ADDONS_DIR / "wps-pdf" / "main.js",
+    "/wps-pdf/ribbon.xml": ADDONS_DIR / "wps-pdf" / "ribbon.xml",
+    "/wps-pdf/js/ribbon.js": ADDONS_DIR / "wps-pdf" / "js" / "ribbon.js",
+    "/wps-pdf/pdf-adapter.js": ADDONS_DIR / "wps-pdf" / "pdf-adapter.js",
 }
 
 
@@ -77,15 +90,44 @@ def normalized_api_base_url(value: str) -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def dispatch_control_action(action: str) -> None:
+    """Open one fixed tray-owned action through the registered URL handler."""
+    protocol_url = CONTROL_ACTIONS.get(str(action or ""))
+    if protocol_url is None:
+        raise ValueError("Unsupported add-in control action")
+    try:
+        startfile = os.startfile
+    except AttributeError as error:
+        raise OSError("Add-in control actions require Windows") from error
+    startfile(protocol_url)
+
+
+def _console_safe_text(value: str, encoding: str | None) -> str:
+    """Make malformed-request diagnostics printable on legacy Windows consoles."""
+    selected_encoding = encoding or "utf-8"
+    return str(value).encode(
+        selected_encoding,
+        errors="backslashreplace",
+    ).decode(selected_encoding)
+
+
 class AddinHostServer(ThreadingHTTPServer):
     """Threaded loopback server with immutable routing configuration."""
 
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, server_address, handler_class, *, api_base_url: str):
+    def __init__(
+        self,
+        server_address,
+        handler_class,
+        *,
+        api_base_url: str,
+        control_dispatcher=None,
+    ):
         super().__init__(server_address, handler_class)
         self.api_base_url = normalized_api_base_url(api_base_url)
+        self.control_dispatcher = control_dispatcher or dispatch_control_action
 
 
 class AddinHostHandler(BaseHTTPRequestHandler):
@@ -94,9 +136,14 @@ class AddinHostHandler(BaseHTTPRequestHandler):
     server_version = "LocalReadTranslateAddinHost/1.0"
 
     def log_message(self, format_string, *args):  # noqa: A003 - stdlib signature
-        print(
+        message = (
             f"[ADDIN {self.log_date_time_string()}] "
-            f"{self.address_string()} {format_string % args}",
+            f"{self.address_string()} {format_string % args}"
+        )
+        stream = sys.stderr
+        print(
+            _console_safe_text(message, getattr(stream, "encoding", None)),
+            file=stream,
             flush=True,
         )
 
@@ -121,10 +168,20 @@ class AddinHostHandler(BaseHTTPRequestHandler):
         if path == "/wps-word/" or path == "/wps-word":
             self._serve_static("/wps-word/index.html")
             return
+        if path == "/wps-pdf/" or path == "/wps-pdf":
+            self._serve_static("/wps-pdf/index.html")
+            return
         self._serve_static(path)
 
     def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler contract
-        path = urlsplit(self.path).path
+        parsed_target = urlsplit(self.path)
+        path = parsed_target.path
+        if path.startswith("/api/addin/"):
+            self.send_error(HTTPStatus.NOT_FOUND, "Unknown add-in action")
+            return
+        if path.startswith("/api/control/"):
+            self._dispatch_control_action(parsed_target)
+            return
         if not path.startswith("/api/"):
             self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "POST is API-only")
             return
@@ -150,6 +207,47 @@ class AddinHostHandler(BaseHTTPRequestHandler):
         }:
             content_type = f"{content_type}; charset=utf-8"
         self._send_bytes(HTTPStatus.OK, content, content_type)
+
+    def _dispatch_control_action(self, parsed_target):
+        action = parsed_target.path.removeprefix("/api/control/")
+        if (
+            not action
+            or "/" in action
+            or parsed_target.query
+            or parsed_target.fragment
+        ):
+            self.send_error(HTTPStatus.NOT_FOUND, "Unknown add-in control action")
+            return
+        if action not in CONTROL_ACTIONS:
+            self.send_error(HTTPStatus.NOT_FOUND, "Unknown add-in control action")
+            return
+        if self.headers.get(CONTROL_ACTION_HEADER) != "1":
+            self.send_error(HTTPStatus.FORBIDDEN, "Add-in control header is required")
+            return
+        if self.headers.get("Transfer-Encoding"):
+            self.send_error(HTTPStatus.BAD_REQUEST, "Request body is not accepted")
+            return
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Invalid Content-Length")
+            return
+        if content_length != 0:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Request body is not accepted")
+            return
+        try:
+            self.server.control_dispatcher(action)
+        except (OSError, RuntimeError):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"detail": "Cannot open the local tray control"},
+            )
+            return
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {"status": "requested", "action": action},
+        )
 
     def _read_request_body(self) -> bytes:
         raw_length = self.headers.get("Content-Length", "")
@@ -266,6 +364,7 @@ def create_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     api_base_url: str = DEFAULT_API_BASE_URL,
+    control_dispatcher=None,
 ) -> AddinHostServer:
     if host != DEFAULT_HOST:
         raise ValueError("The add-in host must bind to 127.0.0.1")
@@ -276,6 +375,7 @@ def create_server(
         (host, int(port)),
         AddinHostHandler,
         api_base_url=api_base_url,
+        control_dispatcher=control_dispatcher,
     )
 
 

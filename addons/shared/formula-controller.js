@@ -44,11 +44,27 @@
       ? options.writeClipboard
       : defaultWriteClipboard;
     requireMethod(adapter, "exportSelectionForLatex");
-    requireMethod(client, "nativeToLatex");
 
     const nativeSource = await adapter.exportSelectionForLatex();
     try {
-      const result = await client.nativeToLatex(nativeSource);
+      let result;
+      if (
+        nativeSource &&
+        nativeSource.source_format === "wps-pdf-selection"
+      ) {
+        requireMethod(client, "recognizePdfSelection");
+        const model = String(options && options.model || "").trim();
+        if (!model) {
+          throw new Error("Choose a discovered model before recognizing formulas");
+        }
+        result = await client.recognizePdfSelection(
+          nativeSource.content,
+          model
+        );
+      } else {
+        requireMethod(client, "nativeToLatex");
+        result = await client.nativeToLatex(nativeSource);
+      }
       const latex = String(result && result.latex || "").trim();
       if (!latex) throw new Error("The selected content did not produce LaTeX");
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<JsPlugin>
+  <ApiVersion>1.0.0</ApiVersion>
+  <Name>LocalReadTranslatePdf</Name>
+  <Description>在 WPS PDF 中朗读、翻译，并把可选择的公式识别为 LaTeX</Description>
+</JsPlugin>
