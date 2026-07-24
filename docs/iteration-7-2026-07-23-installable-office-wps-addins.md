@@ -1,10 +1,10 @@
 # Iteration 7：可安装的 Microsoft Word / WPS Writer 公式加载项
 
-> **Iteration 9 后续说明：** 本文保留 FastAPI `1.7.17` 的可安装公式加载项、
+> **Iteration 10 后续说明：** 本文保留 FastAPI `1.7.17` 的可安装公式加载项、
 > Word/WPS 公式按钮实机证据与兼容修复。当前 FastAPI `1.7.19` 已在同一任务窗格中
 > 加入与网页端同构的来源优先翻译和本地朗读，并为 WPS PDF 增加模型辅助公式
 > LaTeX 复制；现行边界见
-> [`iteration-9-2026-07-23-wps-pdf-addin.md`](iteration-9-2026-07-23-wps-pdf-addin.md)。
+> [`iteration-10-2026-07-24-document-formula-translation-read-parity.md`](iteration-10-2026-07-24-document-formula-translation-read-parity.md)。
 
 **状态：** userscript `1.15.3` 不变；FastAPI 升级为 `1.7.17`。共享任务窗格、
 Office XML manifest、WPS ribbon/package、回环宿主、安装/卸载脚本，以及 Word 与

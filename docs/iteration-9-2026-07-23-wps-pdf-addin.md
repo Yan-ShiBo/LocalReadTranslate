@@ -1,5 +1,10 @@
 # Iteration 9：WPS 365 PDF 阅读、翻译与公式 LaTeX 复制加载项
 
+> **Iteration 10 后续说明：** 本文保留 WPS PDF 安装、对象模型和 30B
+> 公式识别实机证据。现行的“翻译前统一 LaTeX、译文保留 LaTeX、公式渐进朗读”
+> 契约见
+> [`iteration-10-2026-07-24-document-formula-translation-read-parity.md`](iteration-10-2026-07-24-document-formula-translation-read-parity.md)。
+
 **状态：** userscript 保持 `1.15.3`，FastAPI 升级为 `1.7.19`。已完成独立
 `pdf` 包、只读宿主适配器、Writer/PDF 原子注册、
 静态白名单、能力感知任务窗格、模型辅助公式识别和自动化回归。WPS 365

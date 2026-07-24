@@ -28,7 +28,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - 目标语言和当前可执行的模型常驻/卸载操作收进 **Advanced**；声音与语速收进 **Read aloud**
 - 模型已退出但仍有 pin 时显示 **Remove keep-alive**，只清 pin、不重新加载；卸载只有在运行列表确认模型消失时才报告成功，仍驻留会显示 `still_running`
 - 英文会尽量原样保留，中文会翻成英文；英文含公式的朗读会优先开始正文，公式在后台变成英文口语描述
-- MathJax/MathML/LaTeX 会优先提取语义公式；翻译结果会把公式渲染为带上下标的易读公式，而不是显示原始 LaTeX 代码
+- MathJax/MathML/LaTeX 会优先提取语义公式；翻译卡会把公式渲染为带上下标的易读形式，但点击译文卡的 `Copy` 会复制规范 `$...$` / `$$...$$` LaTeX，不会把渲染后的口语或丢失结构的纯文本写进剪贴板
 - 翻译请求可附带附近正文作为参考上下文，只用于术语和指代消歧；真正翻译和输出的只有选中内容；选择远程模型时该上下文也会发送到对应服务器
 - 上下文长度会按模型大小自动裁剪：4B 模型翻译和公式朗读不参考上下文，9B/14B/更大模型会逐级保留更多上下文
 - `qwen3:14b`、QwQ、DeepSeek-R1 等推理模型会通过 Ollama `think: false` 关闭思考过程，降低翻译和朗读准备延迟
@@ -41,7 +41,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.15.3`（FastAPI `1.7.19`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.4`（FastAPI `1.7.19`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
 
 1. 按项目 README 完成环境安装，并至少启动本地 FastAPI 服务。
 2. `Read` 需要 Kokoro TTS 环境；Kokoro 会在第一次朗读时按需加载，不会因仅启动 API 或仅使用远程翻译而占用本地 GPU。

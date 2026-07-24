@@ -3,8 +3,9 @@
 > **Iteration 7 后续说明：** 本文保留 FastAPI `1.7.16` 的公式引擎与宿主适配器
 > 原型历史。Office manifest、WPS 注册、共享任务窗格、严格回环宿主和安装器已经在
 > FastAPI `1.7.17` 中实现。当前 FastAPI `1.7.19` 的文档助手边界见
-> [`iteration-9-2026-07-23-wps-pdf-addin.md`](iteration-9-2026-07-23-wps-pdf-addin.md)，
-> iteration 8 保存共享文档助手记录，iteration 7 继续保存公式按钮实机证据。
+> [`iteration-10-2026-07-24-document-formula-translation-read-parity.md`](iteration-10-2026-07-24-document-formula-translation-read-parity.md)，
+> iteration 9 保存 WPS PDF 安装与识别证据，iteration 8 保存共享文档助手记录，
+> iteration 7 继续保存公式按钮实机证据。
 
 **状态：** userscript `1.15.3` / FastAPI `1.7.16` 的公式交换核心、Word/WPS
 宿主适配器原型、自动化测试与文档已经完成。50 个公式已在 Microsoft Word 16.0

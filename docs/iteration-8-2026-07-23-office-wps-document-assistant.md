@@ -1,5 +1,10 @@
 # Iteration 8：Word / WPS 选区翻译、朗读与公式文档助手
 
+> **Iteration 10 后续说明：** 本文保留首次共享文档助手的实现记录。现行的译文
+> LaTeX 和渐进公式朗读契约见
+> [`iteration-10-2026-07-24-document-formula-translation-read-parity.md`](iteration-10-2026-07-24-document-formula-translation-read-parity.md)；
+> WPS PDF 安装与识别证据保留在 iteration 9。
+
 **状态：** userscript 继续为 `1.15.3`；FastAPI 升级为 `1.7.18`；Office
 manifest 升级为 `1.1.0.0`。Word/WPS 共用任务窗格已经加入选区翻译、本地朗读、
 译文复制/替换和来源感知模型管理，同时完整保留 iteration 7 的双向公式/LaTeX

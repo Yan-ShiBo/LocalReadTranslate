@@ -16,6 +16,11 @@
     "Japanese",
     "Korean",
   ];
+  const bundledReadingCore =
+    root && root.LocalReadTranslateReadingCore ||
+    (typeof module !== "undefined" && module.exports
+      ? require("../shared/reading-core.js")
+      : null);
 
   function detectHostHint(search) {
     const value = String(search || "");
@@ -351,6 +356,10 @@
   function createTaskPaneApp(options = {}) {
     const documentObject = options.document;
     if (!documentObject) throw new Error("A task pane document is required");
+    const readingCore = options.readingCore || bundledReadingCore;
+    if (!readingCore) {
+      throw new Error("Document reading core is required");
+    }
 
     const elements = {
       hostName: requiredElement(documentObject, "host-name"),
@@ -438,6 +447,9 @@
       translationText: "",
       audioUrl: "",
       audioPlaying: false,
+      readingActive: false,
+      readGeneration: 0,
+      cancelPlayback: null,
       sourceActionPending: false,
       sourceActionSource: "",
       sourceActionDeadline: 0,
@@ -519,6 +531,11 @@
         state.adapter &&
         !state.busy;
       const documentReady = state.apiReady && state.adapter && !state.busy;
+      const readReady =
+        state.apiReady &&
+        state.adapter &&
+        state.ttsReady &&
+        (!state.busy || state.readingActive);
       const recognitionReady =
         state.capabilities.formulaRecognition &&
         documentReady &&
@@ -534,7 +551,7 @@
           ? recognitionReady
           : nativeFormulaReady)
       );
-      elements.readButton.disabled = !(documentReady && state.ttsReady);
+      elements.readButton.disabled = !readReady;
       elements.translateButton.disabled = !(
         documentReady &&
         state.assistantView &&
@@ -802,9 +819,9 @@
     }
 
     function renderTranslationResult(payload) {
-      const translated = String(
+      const translated = readingCore.normalizeCopyTextWithLatex(
         payload && payload.translated_text || ""
-      ).trim();
+      );
       state.translationText = translated;
       elements.translationResult.hidden = !translated;
       elements.translationText.textContent = translated;
@@ -818,6 +835,39 @@
           `${state.assistantView.activeSourceName} · ${model}${timing}`;
       }
       updateButtons();
+    }
+
+    async function prepareSelectionForAssistant(selectedText) {
+      const source = String(selectedText || "").trim();
+      const normalized = readingCore.normalizeCopyTextWithLatex(source);
+      const alreadyLatex = readingCore
+        .splitLatexSegments(normalized)
+        .some((segment) => segment.type === "latex");
+      if (alreadyLatex || !readingCore.looksFormulaBearingSelection(source)) {
+        return normalized;
+      }
+      if (
+        !state.controller ||
+        typeof state.controller.selectionAsLatex !== "function"
+      ) {
+        return normalized;
+      }
+
+      try {
+        const result = await state.controller.selectionAsLatex({
+          adapter: state.adapter,
+          client: state.client,
+          model: state.selectedModel,
+        });
+        return readingCore.normalizeCopyTextWithLatex(
+          result && result.latex || source
+        );
+      } catch (error) {
+        if (Number(error && error.status || 0) === 422) {
+          return normalized;
+        }
+        throw error;
+      }
     }
 
     function clearTranslationResult() {
@@ -1184,7 +1234,7 @@
       }
     }
 
-    function stopSpeech(updateStatus = true) {
+    function releaseSpeechAudio() {
       if (typeof elements.speechAudio.pause === "function") {
         elements.speechAudio.pause();
       }
@@ -1199,6 +1249,15 @@
       if (state.audioUrl) revokeObjectUrl(state.audioUrl);
       state.audioUrl = "";
       state.audioPlaying = false;
+    }
+
+    function stopSpeech(updateStatus = true) {
+      state.readGeneration += 1;
+      const cancelPlayback = state.cancelPlayback;
+      state.cancelPlayback = null;
+      if (typeof cancelPlayback === "function") cancelPlayback();
+      releaseSpeechAudio();
+      state.readingActive = false;
       elements.readButtonLabel.textContent = "朗读选区";
       if (updateStatus) {
         setOperation("idle", "已停止朗读", "可以重新选择内容后再次朗读。");
@@ -1206,12 +1265,154 @@
       updateButtons();
     }
 
+    async function playSpeechBlobAndWait(audioBlob, generation) {
+      if (typeof options.playAudioBlob === "function") {
+        state.audioPlaying = true;
+        const played = await options.playAudioBlob(audioBlob, {
+          generation,
+          voice: state.voice,
+          speed: state.speed,
+        });
+        state.audioPlaying = false;
+        return played !== false && generation === state.readGeneration;
+      }
+      if (!createObjectUrl) {
+        throw new Error("当前文档宿主不支持音频播放。");
+      }
+
+      releaseSpeechAudio();
+      state.audioUrl = createObjectUrl(audioBlob);
+      elements.speechAudio.src = state.audioUrl;
+      state.audioPlaying = true;
+
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const removeListeners = () => {
+          if (typeof elements.speechAudio.removeEventListener === "function") {
+            elements.speechAudio.removeEventListener("ended", handleEnded);
+            elements.speechAudio.removeEventListener("error", handleError);
+          }
+        };
+        const finish = (played, error = null) => {
+          if (settled) return;
+          settled = true;
+          removeListeners();
+          if (state.cancelPlayback === handleCancel) {
+            state.cancelPlayback = null;
+          }
+          releaseSpeechAudio();
+          if (error) reject(error);
+          else resolve(played);
+        };
+        const handleEnded = () => finish(true);
+        const handleError = () =>
+          finish(false, new Error("音频播放失败，请重试或更换朗读声音。"));
+        const handleCancel = () => finish(false);
+        state.cancelPlayback = handleCancel;
+        elements.speechAudio.addEventListener("ended", handleEnded);
+        elements.speechAudio.addEventListener("error", handleError);
+        Promise.resolve(elements.speechAudio.play()).catch(handleError);
+      });
+    }
+
+    async function playProgressiveReadPlan(sourceText, plan, generation) {
+      const localVerbalizations = plan.formulas.map((formula) =>
+        readingCore.fallbackFormulaSpeech(formula)
+      );
+      const useLocalFormulaRules =
+        readingCore.isSmallOllamaModel(state.selectedModel) &&
+        localVerbalizations.every(
+          (value) => value && value !== "formula omitted"
+        );
+      let verbalizationsPromise;
+      if (useLocalFormulaRules) {
+        verbalizationsPromise = Promise.resolve(localVerbalizations);
+      } else {
+        try {
+          const verbalizationRequest = state.client.verbalizeFormulas({
+            formulas: plan.formulas,
+            context: sourceText.slice(0, 4000),
+            model: state.selectedModel,
+          });
+          verbalizationsPromise = Promise.resolve(verbalizationRequest)
+            .then((payload) =>
+              Array.isArray(payload && payload.verbalizations)
+                ? payload.verbalizations
+                : []
+            )
+            .catch(() => []);
+        } catch (_error) {
+          verbalizationsPromise = Promise.resolve([]);
+        }
+      }
+
+      state.readingActive = true;
+      elements.readButtonLabel.textContent = "停止朗读";
+      updateButtons();
+      const playedSegments = [];
+
+      for (const segment of plan.segments) {
+        if (generation !== state.readGeneration) break;
+        let speechText = "";
+        if (segment.type === "formula") {
+          setOperation(
+            "working",
+            "正在准备公式朗读",
+            "正文可先播放；当前公式读法正在后台生成。"
+          );
+          const verbalizations = await verbalizationsPromise;
+          if (generation !== state.readGeneration) break;
+          speechText = readingCore.normalizeFormulaSpeech(
+            verbalizations[segment.index],
+            segment.formula
+          );
+        } else {
+          speechText = String(segment.text || "").trim();
+        }
+        if (!speechText) continue;
+
+        setOperation(
+          "working",
+          "正在朗读",
+          segment.type === "formula"
+            ? "正在按网页端规则朗读公式。"
+            : "公式读法正在后台准备，正文按原顺序播放。"
+        );
+        const audioBlob = await state.client.synthesizeSpeech({
+          text: speechText,
+          voice: state.voice,
+          speed: state.speed,
+        });
+        if (generation !== state.readGeneration) break;
+        const played = await playSpeechBlobAndWait(audioBlob, generation);
+        if (!played || generation !== state.readGeneration) break;
+        playedSegments.push({
+          type: segment.type,
+          text: speechText,
+          audio: audioBlob,
+        });
+      }
+
+      if (generation === state.readGeneration) {
+        state.readingActive = false;
+        state.audioPlaying = false;
+        elements.readButtonLabel.textContent = "朗读选区";
+        setOperation("success", "朗读完成", "可以重新选择内容后继续。");
+        updateButtons();
+      }
+      return {
+        text: plan.text,
+        formulas: plan.formulas.slice(),
+        segments: playedSegments,
+      };
+    }
+
     async function runAssistantAction(kind) {
-      if (state.busy || !state.apiReady || !state.adapter) return null;
-      if (kind === "read" && state.audioPlaying) {
+      if (kind === "read" && (state.readingActive || state.audioPlaying)) {
         stopSpeech();
         return null;
       }
+      if (state.busy || !state.apiReady || !state.adapter) return null;
       if (
         kind === "translate" &&
         (!state.assistantView ||
@@ -1223,10 +1424,29 @@
 
       setBusy(true);
       try {
-        const selected = String(
+        const rawSelection = String(
           await state.adapter.readSelectionText()
         ).trim();
-        if (!selected) throw new Error("请先在文档中选择一段内容。");
+        if (!rawSelection) throw new Error("请先在文档中选择一段内容。");
+        const normalizedSelection =
+          readingCore.normalizeCopyTextWithLatex(rawSelection);
+        const needsFormulaRecovery =
+          readingCore.looksFormulaBearingSelection(rawSelection) &&
+          !readingCore
+            .splitLatexSegments(normalizedSelection)
+            .some((segment) => segment.type === "latex");
+        if (needsFormulaRecovery) {
+          setOperation(
+            "working",
+            state.capabilities.formulaRecognition
+              ? "正在识别选区公式"
+              : "正在读取文档公式",
+            state.capabilities.formulaRecognition
+              ? "使用当前模型把 WPS PDF 公式恢复为 LaTeX…"
+              : "把原生文档公式统一为 LaTeX…"
+          );
+        }
+        const selected = await prepareSelectionForAssistant(rawSelection);
 
         if (kind === "translate") {
           setOperation(
@@ -1254,6 +1474,31 @@
         if (!state.ttsReady) {
           throw new Error("朗读服务当前不可用；请点击“重试”。");
         }
+        const progressivePlan =
+          readingCore.prepareProgressiveReadPlan(selected);
+        if (
+          readingCore.shouldUseProgressiveReadPlan(
+            selected,
+            progressivePlan
+          )
+        ) {
+          if (!state.selectedModel) {
+            const action = state.assistantView && state.assistantView.action;
+            throw new Error(
+              action
+                ? `公式朗读需要文本模型；请先${action.label}。`
+                : "公式朗读需要一个已发现的文本生成模型。"
+            );
+          }
+          const generation = state.readGeneration + 1;
+          state.readGeneration = generation;
+          return await playProgressiveReadPlan(
+            selected,
+            progressivePlan,
+            generation
+          );
+        }
+
         setOperation("working", "正在准备朗读", "清理正文与公式后生成语音…");
         let readableText = selected.replace(/\s+/g, " ").trim();
         if (state.selectedModel) {
@@ -1281,7 +1526,7 @@
           voice: state.voice,
           speed: state.speed,
         });
-        stopSpeech(false);
+        releaseSpeechAudio();
         state.audioUrl = createObjectUrl(audioBlob);
         elements.speechAudio.src = state.audioUrl;
         await elements.speechAudio.play();
@@ -1294,6 +1539,12 @@
         );
         return { text: readableText, audio: audioBlob };
       } catch (error) {
+        if (kind === "read") {
+          state.readingActive = false;
+          state.cancelPlayback = null;
+          releaseSpeechAudio();
+          elements.readButtonLabel.textContent = "朗读选区";
+        }
         if (Number(error && error.status || 0) === 0 && error && error.status === 0) {
           state.apiReady = false;
           state.ttsReady = false;
@@ -1567,11 +1818,12 @@
       runModelAction("unload").catch(() => undefined);
     });
     elements.speechAudio.addEventListener("ended", () => {
+      if (state.readingActive) return;
       stopSpeech(false);
       setOperation("success", "朗读完成", "可以重新选择内容后继续。");
     });
     elements.speechAudio.addEventListener("error", () => {
-      if (!state.audioPlaying) return;
+      if (!state.audioPlaying || state.readingActive) return;
       stopSpeech(false);
       setOperation("error", "音频播放失败", "请重试或更换朗读声音。");
     });
@@ -1621,7 +1873,15 @@
     const officeApi = rootObject.LocalReadTranslateOfficeWord;
     const wpsApi = rootObject.LocalReadTranslateWpsWord;
     const wpsPdfApi = rootObject.LocalReadTranslateWpsPdf;
-    if (!clientApi || !controller || !officeApi || !wpsApi || !wpsPdfApi) {
+    const readingCore = rootObject.LocalReadTranslateReadingCore;
+    if (
+      !clientApi ||
+      !controller ||
+      !officeApi ||
+      !wpsApi ||
+      !wpsPdfApi ||
+      !readingCore
+    ) {
       throw new Error("文档工作台依赖未完整加载");
     }
     const app = createTaskPaneApp({
@@ -1635,6 +1895,7 @@
       officeAdapterFactory: officeApi.createOfficeWordAdapter,
       wpsAdapterFactory: wpsApi.createWpsWriterAdapter,
       wpsPdfAdapterFactory: wpsPdfApi.createWpsPdfAdapter,
+      readingCore,
       writeClipboard: createClipboardWriter(
         documentObject,
         rootObject.navigator

@@ -144,6 +144,24 @@
       prepareRead(payload) {
         return postJson("/read/prepare", payload || {});
       },
+      verbalizeFormulas(payload) {
+        const formulas = payload && Array.isArray(payload.formulas)
+          ? payload.formulas.map((formula) => String(formula || "").trim())
+            .filter(Boolean)
+          : [];
+        const model = String(payload && payload.model || "").trim();
+        if (!formulas.length) return Promise.resolve({ verbalizations: [] });
+        if (!model) {
+          return Promise.reject(
+            new Error("A discovered formula verbalization model is required")
+          );
+        }
+        return postJson("/formula/verbalize", {
+          formulas,
+          context: String(payload && payload.context || "").slice(0, 4000),
+          model,
+        });
+      },
       keepModelLoaded(model, keepAlive = -1) {
         return postJson("/translate/model/keepalive", {
           model: String(model || ""),

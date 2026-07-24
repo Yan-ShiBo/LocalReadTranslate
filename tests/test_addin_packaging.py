@@ -69,6 +69,14 @@ def test_wps_pdf_package_has_pdf_entrypoints_and_read_translate_button():
     assert "./js/ribbon.js" in main
 
 
+def test_taskpane_loads_the_shared_formula_reading_core():
+    taskpane = Path("addons/taskpane/taskpane.html").read_text(encoding="utf-8")
+    assert '<script src="/shared/reading-core.js"></script>' in taskpane
+    assert taskpane.index("/shared/reading-core.js") < taskpane.index(
+        "/taskpane/taskpane.js"
+    )
+
+
 def test_installers_use_narrow_current_user_registration_targets():
     install = Path("scripts/install_document_addins.ps1").read_text(
         encoding="utf-8"

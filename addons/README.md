@@ -4,11 +4,16 @@ This directory contains the installable LocalReadTranslate document add-ins.
 Three host packages reuse the same source-first document assistant:
 
 - **Translate selection** uses only eligible models discovered on the selected
-  Local Ollama or Project Server source. The result can always be copied; Word
-  and WPS Writer can also replace the current selection.
+  Local Ollama or Project Server source. Formula-bearing selections are
+  canonicalized to LaTeX first: Word/Writer export native equations, while WPS
+  PDF uses the selected model to reconstruct formula structure. The result
+  keeps `$...$` / `$$...$$` when copied; Word and WPS Writer can also replace
+  the current selection.
 - **Read selection** uses the API voice/speed catalog and local WAV playback.
-  Chinese or formula-bearing text is prepared with the selected discovered
-  model; plain English can go directly to Kokoro.
+  Plain English can go directly to Kokoro. English plus formulas uses the same
+  progressive queue as the userscript: prose starts while formula
+  verbalization runs in the background, then each formula is spoken in place.
+  CJK/formula content keeps the `/read/prepare` path.
 - **Formula & LaTeX in editable documents** turns selected prose plus `$...$`
   or `$$...$$` LaTeX into editable native Word/WPS Writer equations and copies
   selected native equations plus prose as canonical plain-text LaTeX.
@@ -140,6 +145,7 @@ existing lifecycle rules.
 | `taskpane/` | Userscript-aligned shared translation/read/formula UI with persisted source-scoped preferences |
 | `shared/localreadtranslate-client.js` | Same-origin formula, translation, read, speech, model-lifecycle and fixed tray-control client with source-neutral errors |
 | `shared/formula-controller.js` | Host-independent conversion and plain-text clipboard contract |
+| `shared/reading-core.js` | Userscript-parity LaTeX normalization, read cleanup, progressive segmentation and conservative formula speech rules |
 | `office-word/manifest.xml` | Word task-pane XML manifest |
 | `office-word/office-adapter.js` | Word selection text read/replace, `getOoxml()` export and `insertFileFromBase64(..., "Replace")` insertion |
 | `wps-word/ribbon.xml` | WPS ribbon command |
@@ -168,11 +174,16 @@ existing lifecycle rules.
    Start/Connect or model keep/unload actions refresh source state. The
    Start/Connect buttons use the same-origin fixed-action relay so WPS does not
    have to launch a custom protocol directly from its WebView.
-4. `POST /translate` receives the current selection, exact selected model and
-   target language. The returned text stays in the pane until copied or
-   written back with a mutable-document host adapter. WPS PDF intentionally
-   offers copy only.
-5. Preferences are stored per task-pane origin. A saved
+4. Before `POST /translate`, canonical LaTeX already present in the selection
+   is normalized. Formula-like Word/Writer selections use native export, and
+   WPS PDF selections use `/document/pdf-selection-to-latex` with the exact
+   selected model. A 422 “no formula” response falls back to the original
+   prose instead of fabricating math.
+5. `POST /translate` receives that canonical selection, the exact selected
+   model and target language. Returned formula wrappers are normalized to
+   `$...$` / `$$...$$`; this same canonical text drives display, copy and
+   mutable-document replacement. WPS PDF intentionally offers copy only.
+6. Preferences are stored per task-pane origin. A saved
    `remote:project-server:qwen3:30b` is restored only if discovery still lists
    that exact model on that source; a stale value is never injected into the
    selector. On a fresh reachable Project Server with no saved model, the pane
@@ -184,10 +195,18 @@ existing lifecycle rules.
 1. The pane reads the current document selection only after the user clicks.
    WPS PDF uses `Application.ActiveDocument.Selection.Text()`; Word and WPS
    Writer use their existing selection adapters.
-2. Plain English can go directly to `/tts`. CJK or formula-bearing text
-   requires the selected discovered model and first calls `/read/prepare`.
-3. `/tts` returns `audio/wav` through the same-origin proxy. The pane creates a
-   temporary blob URL, plays it, and revokes it when stopped or replaced.
+2. The same preflight used by translation converts a detected native or PDF
+   formula selection into canonical LaTeX before read planning.
+3. Plain English can go directly to `/tts`. English plus LaTeX uses
+   `prepareProgressiveReadPlan`: `/formula/verbalize` starts in the background,
+   prose chunks are synthesized immediately, and the queue waits only when it
+   reaches a formula whose speech is not ready. Small models may use the same
+   conservative local rules as the userscript.
+4. CJK/formula content outside the progressive English path requires the
+   selected discovered model and calls `/read/prepare`.
+5. Every queued `/tts` response is played in source order. Its temporary blob
+   URL is revoked after the segment, and **Stop read aloud** invalidates the
+   active generation so late TTS/formula responses cannot resume playback.
 
 ### LaTeX to native equations (Word and WPS Writer)
 
@@ -291,10 +310,11 @@ need a future OCR/vision route.
 
   - remote `/api/ps` listed only `qwen3:30b` (`30.5B`, `Q4_K_M`); no 100B+
     model and no local Ollama were used.
-- The current assistant core has 25 Node subtests covering the translation,
+- The current assistant core has 27 Node subtests covering the translation,
   read/audio, source filtering, preference restore, explicit connection poll,
   Word/WPS selection replacement, formula controller, WPS Writer ribbon, PDF
-  selection, PDF model recognition, and the 30B-over-122B default rule.
+  selection, PDF model recognition, canonical LaTeX translation, userscript-
+  parity progressive formula reading, and the 30B-over-122B default rule.
 - The focused Python add-in-host/formula API suite has 27 passing tests,
   including the explicit `/wps-pdf/*` static allowlist, normal proxying of PDF
   selections without clipboard access, legacy-console-safe request logging,
@@ -308,6 +328,17 @@ need a future OCR/vision route.
   - `/tts` returned `200 audio/wav`, 307,244 bytes and a `RIFF` header;
   - the 30B model was explicitly unloaded afterward, Project Server remained
     reachable, and local Ollama remained stopped.
+- Iteration 10 reloaded the add-in host and repeated the flow in the installed
+  WPS PDF pane with a real prose-plus-display-formula selection:
+  - the Chinese translation result retained canonical `$...$` LaTeX for
+    `p(x,c)`, `uSAC(x)`, `\min c`, and the inequality;
+  - **Read selection** changed to **Stop reading**, played prose and formula in
+    document order, then returned to the idle label;
+  - the complete regression finished at `77/77` Node tests (27 add-in and 50
+    userscript), plus `264` Python tests and `17` Python subtests.
+  - the exact 30B model was unloaded after verification; its final state was
+    not running or pinned, Project Server stayed reachable, and local Ollama
+    stayed offline.
 - Isolated browser checks at 390 px and 280 px found no horizontal overflow.
   The WPS PDF read and formula-recognition buttons are now verified in the
   formal package. The earlier translation/read-preparation API evidence still

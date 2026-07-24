@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.3
+// @version      1.15.4
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -4864,7 +4864,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
-      copyTextToClipboard(body.textContent).then(() => {
+      const copyText = KokoroTTSCore.normalizeCopyTextWithLatex(
+        payload.translated_text || ""
+      );
+      copyTextToClipboard(copyText).then(() => {
         copyBtn.textContent = "Copied";
         setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
       }).catch(() => {

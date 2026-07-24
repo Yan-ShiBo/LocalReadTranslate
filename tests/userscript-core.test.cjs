@@ -35,6 +35,22 @@ test("userscript avoids Trusted Types blocked HTML sinks", () => {
   assert.doesNotMatch(source, /\bcreateContextualFragment\b/);
 });
 
+test("translation-card copy uses canonical LaTeX instead of rendered text", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+
+  assert.doesNotMatch(
+    source,
+    /copyTextToClipboard\(body\.textContent\)/
+  );
+  assert.match(
+    source,
+    /normalizeCopyTextWithLatex\(\s*payload\.translated_text \|\| ""\s*\)/
+  );
+});
+
 
 test("starting a new request aborts the previous generation", () => {
   const { createRequestGate } = require("../tts-userscript.js");

@@ -38,11 +38,8 @@
     return fragment;
   }
 
-  async function copySelectionAsLatex(options) {
+  async function selectionAsLatex(options) {
     const { adapter, client } = options || {};
-    const writeClipboard = options && options.writeClipboard
-      ? options.writeClipboard
-      : defaultWriteClipboard;
     requireMethod(adapter, "exportSelectionForLatex");
 
     const nativeSource = await adapter.exportSelectionForLatex();
@@ -67,9 +64,6 @@
       }
       const latex = String(result && result.latex || "").trim();
       if (!latex) throw new Error("The selected content did not produce LaTeX");
-
-      // LaTeX is deliberately the only externally copied representation.
-      await writeClipboard(latex);
       return { ...result, latex };
     } finally {
       if (nativeSource && typeof nativeSource.cleanup === "function") {
@@ -78,9 +72,21 @@
     }
   }
 
+  async function copySelectionAsLatex(options) {
+    const writeClipboard = options && options.writeClipboard
+      ? options.writeClipboard
+      : defaultWriteClipboard;
+    const result = await selectionAsLatex(options);
+
+    // LaTeX is deliberately the only externally copied representation.
+    await writeClipboard(result.latex);
+    return result;
+  }
+
   return {
     convertSelectedLatex,
     copySelectionAsLatex,
     defaultWriteClipboard,
+    selectionAsLatex,
   };
 });

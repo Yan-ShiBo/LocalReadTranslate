@@ -207,15 +207,21 @@ The shared task pane follows the userscript's layout and state rules:
 
 - **Translation** is the only expanded primary section. Select **Local
   Ollama** or **Project Server**, then choose only a generation model actually
-  discovered on that reachable source. Translate the current selection, copy
-  the result, or replace the selection in editable Word/Writer documents.
-  WPS PDF keeps the copy action and hides replacement.
+  discovered on that reachable source. Before translation, existing LaTeX is
+  canonicalized; native Word/Writer equations are exported as LaTeX when the
+  selection is formula-bearing, and formula-like WPS PDF selections are
+  reconstructed with the selected model. Translation results keep formulas as
+  `$...$` / `$$...$$` when copied or written back. WPS PDF keeps the copy
+  action and hides replacement.
 - **Advanced** contains the target language and only the model residency
   actions that are currently applicable.
 - **Read aloud** uses the API voice catalog and plays local WAV audio. Plain
-  English can be read without Ollama; Chinese or formula-bearing text uses
-  `/read/prepare` with the currently selected discovered model before Kokoro
-  TTS.
+  English can be read without Ollama. English with formulas follows the
+  userscript's progressive queue: prose starts first while `/formula/verbalize`
+  prepares formula speech in the background, then each formula is read in its
+  original position. CJK/formula selections use `/read/prepare`; document/PDF
+  formulas are first normalized through the same LaTeX path used by
+  translation.
 - **Formula & LaTeX** converts mixed prose plus `$...$` / `$$...$$` into
   editable native equations in Word and WPS Writer, and copies selected native
   equations plus prose as canonical plain-text LaTeX. WPS PDF exposes only
@@ -306,14 +312,16 @@ scanned formulas still require a future vision/OCR path.
 
 See [`addons/README.md`](addons/README.md) for installation and troubleshooting,
 and
-[`docs/iteration-9-2026-07-23-wps-pdf-addin.md`](docs/iteration-9-2026-07-23-wps-pdf-addin.md)
-for the exact release evidence.
+[`docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md`](docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md)
+for the current formula translation/read contract. The WPS PDF installation
+and formula-recognition evidence remains in
+[`iteration 9`](docs/iteration-9-2026-07-23-wps-pdf-addin.md).
 
 ## Tampermonkey Development and Publishing
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.3` (FastAPI `1.7.19`).
+The current repository metadata version is `1.15.4` (FastAPI `1.7.19`).
 
 For each release:
 
@@ -363,7 +371,8 @@ browser script and built-in test page are generated from this catalog.
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
 | `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
-| `docs/iteration-9-2026-07-23-wps-pdf-addin.md` | Current WPS PDF read/translate/formula-to-LaTeX add-in release record |
+| `docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md` | Current document formula translation/read parity release record |
+| `docs/iteration-9-2026-07-23-wps-pdf-addin.md` | Historical WPS PDF read/translate/formula-to-LaTeX add-in release record |
 | `docs/iteration-8-2026-07-23-office-wps-document-assistant.md` | Historical Word/WPS read, translate and formula add-in release record |
 | `docs/iteration-7-2026-07-23-installable-office-wps-addins.md` | Historical installable formula add-in release record |
 | `docs/iteration-6-2026-07-23-office-wps-latex-interchange.md` | Historical formula interchange-core release record |
@@ -526,10 +535,16 @@ git diff --check
 ```
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
+Iteration 10 completed with `264` Python tests plus `17` Python subtests and
+`77/77` Node tests (27 document add-in, 50 userscript). A live WPS PDF
+prose-plus-display-formula selection also preserved `$...$` in the Chinese
+translation and completed progressive read aloud with the exact
+`remote:project-server:qwen3:30b` model.
 The current document add-in release record is in
-[`docs/iteration-9-2026-07-23-wps-pdf-addin.md`](docs/iteration-9-2026-07-23-wps-pdf-addin.md).
-Iteration 8 remains the shared document-assistant record, iteration 7 remains
-the installable formula-shell record, iteration 6 remains the formula-engine
+[`docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md`](docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md).
+Iteration 9 remains the WPS PDF installation/recognition record, iteration 8
+remains the shared document-assistant record, iteration 7 remains the
+installable formula-shell record, iteration 6 remains the formula-engine
 record, iteration 5 remains the source/model-settings record, and earlier
 iterations remain as history.
 

@@ -57,6 +57,7 @@ STATIC_ROUTES = {
         ADDONS_DIR / "shared" / "localreadtranslate-client.js"
     ),
     "/shared/formula-controller.js": ADDONS_DIR / "shared" / "formula-controller.js",
+    "/shared/reading-core.js": ADDONS_DIR / "shared" / "reading-core.js",
     "/office-word/office-adapter.js": ADDONS_DIR / "office-word" / "office-adapter.js",
     "/office-word/manifest.xml": ADDONS_DIR / "office-word" / "manifest.xml",
     "/wps-word/index.html": ADDONS_DIR / "wps-word" / "index.html",

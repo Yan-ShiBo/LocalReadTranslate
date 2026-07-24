@@ -8,7 +8,10 @@ const {
 const {
   convertSelectedLatex,
   copySelectionAsLatex,
+  selectionAsLatex,
 } = require("../addons/shared/formula-controller.js");
+const ReadingCore = require("../addons/shared/reading-core.js");
+const WebReadingCore = require("../tts-userscript.js");
 const {
   createOfficeWordAdapter,
 } = require("../addons/office-word/office-adapter.js");
@@ -134,6 +137,10 @@ test("shared client exposes translation, read preparation, voices, and speech au
           prepared_text: "Readable English.",
           model: "qwen3:8b",
         },
+        "/api/formula/verbalize": {
+          verbalizations: ["x squared"],
+          model: "qwen3:8b",
+        },
         "/api/translate/model/keepalive": {
           model: "qwen3:8b",
           model_running: true,
@@ -170,6 +177,11 @@ test("shared client exposes translation, read preparation, voices, and speech au
     text: "论文 $x^2$",
     model: "qwen3:8b",
   });
+  const verbalized = await client.verbalizeFormulas({
+    formulas: ["x^2"],
+    context: "The result is $x^2$.",
+    model: "qwen3:8b",
+  });
   const speech = await client.synthesizeSpeech({
     text: "Readable English.",
     voice: "af_bella",
@@ -180,6 +192,7 @@ test("shared client exposes translation, read preparation, voices, and speech au
 
   assert.equal(translated.translated_text, "你好");
   assert.equal(prepared.prepared_text, "Readable English.");
+  assert.deepEqual(verbalized.verbalizations, ["x squared"]);
   assert.equal(speech, audioBlob);
   assert.deepEqual(
     requests.map((request) => new URL(request.url).pathname),
@@ -189,6 +202,7 @@ test("shared client exposes translation, read preparation, voices, and speech au
       "/api/control/remote",
       "/api/translate",
       "/api/read/prepare",
+      "/api/formula/verbalize",
       "/api/tts",
       "/api/translate/model/keepalive",
       "/api/translate/model/unload",
@@ -202,12 +216,17 @@ test("shared client exposes translation, read preparation, voices, and speech au
     model: "qwen3:8b",
     target_language: "Simplified Chinese",
   });
-  assert.equal(requests[5].init.headers.Accept, "audio/wav");
-  assert.deepEqual(JSON.parse(requests[6].init.body), {
+  assert.deepEqual(JSON.parse(requests[5].init.body), {
+    formulas: ["x^2"],
+    context: "The result is $x^2$.",
+    model: "qwen3:8b",
+  });
+  assert.equal(requests[6].init.headers.Accept, "audio/wav");
+  assert.deepEqual(JSON.parse(requests[7].init.body), {
     model: "qwen3:8b",
     keep_alive: -1,
   });
-  assert.deepEqual(JSON.parse(requests[7].init.body), {
+  assert.deepEqual(JSON.parse(requests[8].init.body), {
     model: "qwen3:8b",
   });
 });
@@ -618,6 +637,40 @@ test("assistant read preparation is required only for CJK or formula-bearing tex
   assert.equal(needsReadPreparation("需要朗读的中文"), true);
   assert.equal(needsReadPreparation("The result is $x^2$."), true);
   assert.equal(needsReadPreparation("Display: \\[x+y\\]."), true);
+});
+
+test("document reading core stays behaviorally aligned with the userscript", () => {
+  const fixtures = [
+    "The result is $x^2$, followed by $\\frac{a}{b}$.",
+    "Before.\n\n$$\\sum_{i=1}^{n} x_i$$\n\nAfter.",
+    "中文说明与 $x+y$ 公式。",
+    "A link [paper](https://example.com) and `code`.",
+  ];
+
+  for (const fixture of fixtures) {
+    assert.equal(
+      ReadingCore.normalizeCopyTextWithLatex(fixture),
+      WebReadingCore.normalizeCopyTextWithLatex(fixture)
+    );
+    assert.deepEqual(
+      ReadingCore.prepareProgressiveReadPlan(fixture),
+      WebReadingCore.prepareProgressiveReadPlan(fixture)
+    );
+    assert.deepEqual(
+      ReadingCore.prepareTextForRead(fixture),
+      WebReadingCore.prepareTextForRead(fixture)
+    );
+  }
+  assert.equal(
+    ReadingCore.verbalizeSimpleFormula("\\frac{a}{b}"),
+    WebReadingCore.verbalizeSimpleFormula("\\frac{a}{b}")
+  );
+  assert.equal(ReadingCore.looksFormulaBearingSelection("x"), true);
+  assert.equal(ReadingCore.looksFormulaBearingSelection("f(x)"), true);
+  assert.equal(
+    ReadingCore.looksFormulaBearingSelection("A plain English paragraph."),
+    false
+  );
 });
 
 test("assistant preferences preserve one discovered-model choice per source", () => {
@@ -1121,6 +1174,170 @@ test("task pane translates and reads with cached backend discovery", async () =>
   assert.equal(translationChecks, 1);
   assert.equal(elements["speech-audio"].src, "blob:assistant-audio");
   assert.equal(elements["speech-audio"].paused, false);
+});
+
+test("WPS PDF translation and read aloud preserve LaTeX and queue formula speech like the userscript", async () => {
+  const { document, elements } = fakeTaskPaneDocument();
+  const events = [];
+  const clipboard = [];
+  let recognitionCalls = 0;
+  let resolveFormula;
+  const adapter = {
+    capabilities: {
+      formulaTools: true,
+      convertFormula: false,
+      copyFormula: true,
+      requiresFormulaHealth: false,
+      formulaRecognition: true,
+      replaceSelectionText: false,
+    },
+    async readSelectionText() {
+      return "The dynamics are xt+1 = xt + ut.";
+    },
+    async exportSelectionForLatex() {
+      return {
+        source_format: "wps-pdf-selection",
+        content: "The dynamics are xt+1 = xt + ut.",
+      };
+    },
+  };
+  const client = {
+    async getTranslateHealth() {
+      return {
+        sources: [
+          {
+            id: "project-server",
+            name: "Project Server",
+            kind: "remote",
+            configured: true,
+            reachable: true,
+            models: [],
+          },
+        ],
+        available_model_options: [
+          {
+            value: "remote:project-server:qwen3:30b",
+            label: "qwen3:30b",
+            source: "project-server",
+            model: "qwen3:30b",
+          },
+        ],
+      };
+    },
+    async getVoices() {
+      return {
+        default_voice: "af_bella",
+        default_speed: 0.8,
+        speeds: [0.8],
+        groups: [],
+      };
+    },
+    async recognizePdfSelection(text, model) {
+      recognitionCalls += 1;
+      assert.equal(text, "The dynamics are xt+1 = xt + ut.");
+      assert.equal(model, "remote:project-server:qwen3:30b");
+      return {
+        latex: "The dynamics are $x_{t+1}=x_t+u_t$.",
+        formula_count: 1,
+        model,
+      };
+    },
+    async translate(payload) {
+      assert.equal(
+        payload.text,
+        "The dynamics are $x_{t+1}=x_t+u_t$."
+      );
+      return {
+        translated_text: "动力学为 \\(x_{t+1}=x_t+u_t\\)。",
+        model: payload.model,
+      };
+    },
+    verbalizeFormulas(payload) {
+      events.push(["verbalize", payload]);
+      return new Promise((resolve) => {
+        resolveFormula = resolve;
+      });
+    },
+    async synthesizeSpeech(payload) {
+      events.push(["tts", payload.text]);
+      return new Blob([payload.text], { type: "audio/wav" });
+    },
+  };
+  const app = createTaskPaneApp({
+    document,
+    hostHint: "wps-pdf",
+    wpsApplication: {},
+    wpsPdfAdapterFactory() {
+      return adapter;
+    },
+    wpsAdapterFactory() {
+      throw new Error("Writer should not be selected");
+    },
+    officeAdapterFactory() {
+      throw new Error("Office should not be selected");
+    },
+    clientFactory() {
+      return client;
+    },
+    controller: {
+      selectionAsLatex,
+      async copySelectionAsLatex() {
+        return {
+          latex: "The dynamics are $x_{t+1}=x_t+u_t$.",
+          formula_count: 1,
+        };
+      },
+    },
+    async writeClipboard(value) {
+      clipboard.push(value);
+    },
+    async playAudioBlob(_blob) {
+      events.push(["play"]);
+      if (resolveFormula) {
+        const resolve = resolveFormula;
+        resolveFormula = null;
+        resolve({
+          verbalizations: [
+            "x sub t plus one equals x sub t plus u sub t",
+          ],
+        });
+      }
+      return true;
+    },
+  });
+
+  await app.initialize();
+  app.selectSource("project-server");
+  await app.runAssistantAction("translate");
+
+  assert.equal(recognitionCalls, 1);
+  assert.equal(
+    elements["translation-text"].textContent,
+    "动力学为 $x_{t+1}=x_t+u_t$。"
+  );
+  await app.copyTranslation();
+  assert.deepEqual(clipboard, ["动力学为 $x_{t+1}=x_t+u_t$。"]);
+
+  const readResult = await app.runAssistantAction("read");
+  assert.equal(recognitionCalls, 2);
+  assert.deepEqual(
+    events.map((event) => event[0]),
+    ["verbalize", "tts", "play", "tts", "play"]
+  );
+  assert.equal(events[0][1].model, "remote:project-server:qwen3:30b");
+  assert.deepEqual(events[0][1].formulas, ["x_{t+1}=x_t+u_t"]);
+  assert.deepEqual(
+    events.filter((event) => event[0] === "tts").map((event) => event[1]),
+    [
+      "The dynamics are",
+      "x sub t plus one equals x sub t plus u sub t",
+    ]
+  );
+  assert.deepEqual(
+    readResult.segments.map((segment) => segment.type),
+    ["text", "formula"]
+  );
+  assert.equal(elements["operation-title"].textContent, "朗读完成");
 });
 
 test("task pane keeps plain-English read aloud available when translation discovery fails", async () => {

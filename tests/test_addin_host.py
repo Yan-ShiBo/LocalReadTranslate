@@ -157,6 +157,15 @@ def test_health_and_static_assets_are_explicitly_served(addin_server):
     status, headers, payload = request(
         addin_server,
         "GET",
+        "/shared/reading-core.js",
+    )
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert b"prepareProgressiveReadPlan" in payload
+
+    status, headers, payload = request(
+        addin_server,
+        "GET",
         "/wps-pdf/manifest.xml",
     )
     assert status == 200
