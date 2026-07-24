@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.4
+// @version      1.15.5
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -1476,6 +1476,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   function appendLabeledControl(parent, labelText, control) {
     const label = document.createElement("label");
     label.textContent = labelText;
+    if (control.id) label.htmlFor = control.id;
     parent.appendChild(label);
     parent.appendChild(control);
     return control;
@@ -2076,314 +2077,654 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     .tts-settings-panel .tts-status-dot.checking { background: #f0c040; }
     .tts-settings-panel .tts-status-dot.warning { background: #f0c040; }
 
-    /* ── Backend-driven compact settings ── */
+    /* ── Host-resistant compact settings ── */
     .tts-settings-gear {
-      background: #8292ff;
-      box-shadow: 0 6px 18px rgba(16, 18, 27, 0.34);
-      transition: opacity 0.16s ease, transform 0.16s ease;
+      position: fixed !important;
+      right: 20px !important;
+      bottom: 20px !important;
+      z-index: 2147483646 !important;
+      display: flex !important;
+      width: 40px !important;
+      height: 40px !important;
+      min-width: 40px !important;
+      min-height: 40px !important;
+      align-items: center !important;
+      justify-content: center !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      border-radius: 50% !important;
+      background: #7f95ff !important;
+      color: #ffffff !important;
+      font-family: "Segoe UI Symbol", "Segoe UI", sans-serif !important;
+      font-size: 17px !important;
+      font-weight: 400 !important;
+      line-height: 1 !important;
+      letter-spacing: normal !important;
+      text-transform: none !important;
+      box-shadow: 0 6px 18px rgba(16, 18, 27, 0.34) !important;
+      appearance: none !important;
+      -webkit-appearance: none !important;
+      cursor: pointer !important;
+      transition: opacity 0.16s ease, transform 0.16s ease !important;
     }
 
     .tts-settings-gear:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 8px 22px rgba(16, 18, 27, 0.42);
+      transform: translateY(-1px) !important;
+      box-shadow: 0 8px 22px rgba(16, 18, 27, 0.42) !important;
     }
 
-    .tts-settings-gear.active { background: #7182f2; }
+    .tts-settings-gear.active { background: #7087f4 !important; }
 
-    .tts-settings-panel {
-      width: 390px;
-      max-width: calc(100vw - 32px);
-      max-height: calc(100vh - 104px);
-      overflow-y: auto;
-      box-sizing: border-box;
-      padding: 16px;
-      border: 1px solid #2b3043;
-      border-radius: 14px;
-      background: #10121b;
-      color: #eef1fa;
-      font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif;
-      box-shadow: 0 18px 48px rgba(5, 7, 14, 0.46);
+    #local-read-translate-settings,
+    #local-read-translate-settings * {
+      box-sizing: border-box !important;
     }
 
-    .tts-settings-panel[hidden],
-    .tts-settings-panel [hidden] { display: none !important; }
-
-    .tts-settings-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 14px;
+    #local-read-translate-settings {
+      --lrt-panel: #0f1420;
+      --lrt-surface: #161d2b;
+      --lrt-surface-hover: #1b2435;
+      --lrt-line: #2a3548;
+      --lrt-line-strong: #40506a;
+      --lrt-text: #edf3fc;
+      --lrt-muted: #94a2b9;
+      --lrt-accent: #8197ff;
+      --lrt-accent-soft: rgba(129, 151, 255, 0.13);
+      --lrt-success: #64d2a3;
+      --lrt-warning: #e2bd6b;
+      --lrt-danger: #ff92a3;
+      position: fixed !important;
+      right: 16px !important;
+      bottom: 66px !important;
+      z-index: 2147483646 !important;
+      display: block !important;
+      width: 420px !important;
+      max-width: calc(100vw - 24px) !important;
+      max-height: min(680px, calc(100dvh - 92px)) !important;
+      margin: 0 !important;
+      padding: 14px !important;
+      overflow-x: hidden !important;
+      overflow-y: auto !important;
+      border: 1px solid var(--lrt-line) !important;
+      border-radius: 16px !important;
+      background: var(--lrt-panel) !important;
+      color: var(--lrt-text) !important;
+      color-scheme: dark !important;
+      font-family: "Microsoft YaHei UI", "Segoe UI Variable Text", "Segoe UI", sans-serif !important;
+      font-size: 13px !important;
+      font-weight: 400 !important;
+      line-height: 1.4 !important;
+      text-align: left !important;
+      text-transform: none !important;
+      letter-spacing: normal !important;
+      box-shadow: 0 22px 58px rgba(3, 7, 15, 0.54) !important;
+      isolation: isolate !important;
+      animation: tts-panel-in 0.2s ease-out !important;
     }
 
-    .tts-settings-panel .tts-settings-header h3 {
-      margin: 0;
-      color: #eef1fa;
-      background: none;
-      -webkit-background-clip: initial;
-      -webkit-text-fill-color: currentColor;
-      font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
-      font-size: 15px;
-      letter-spacing: -0.01em;
+    #local-read-translate-settings :is(button, select, input, summary) {
+      font: inherit !important;
+      line-height: 1.2 !important;
+      letter-spacing: normal !important;
+      text-transform: none !important;
     }
 
-    .tts-settings-state {
-      flex: 0 0 auto;
-      padding: 4px 8px;
-      border: 1px solid #353b52;
-      border-radius: 999px;
-      color: #9aa3b8;
-      background: #191c2a;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
+    #local-read-translate-settings :is(label, details) {
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+      color: inherit !important;
+      font-family: inherit !important;
+      letter-spacing: normal !important;
+      text-transform: none !important;
+      box-shadow: none !important;
     }
 
-    .tts-settings-state.ready {
-      border-color: rgba(85, 201, 143, 0.38);
-      color: #7edbad;
+    #local-read-translate-settings[hidden],
+    #local-read-translate-settings [hidden] {
+      display: none !important;
     }
 
-    .tts-settings-state.offline,
-    .tts-settings-state.source-offline { color: #ff9cac; }
-    .tts-settings-state.unavailable { color: #ff9cac; }
-    .tts-settings-state.no-model,
-    .tts-settings-state.checking { color: #eacb7c; }
-
-    .tts-settings-section {
-      padding: 14px;
-      border: 1px solid #292e41;
-      border-radius: 12px;
-      background: #151824;
+    #local-read-translate-settings .tts-settings-header {
+      display: flex !important;
+      align-items: center !important;
+      gap: 9px !important;
+      margin: 0 0 12px !important;
+      padding: 1px 2px 11px !important;
+      border-bottom: 1px solid var(--lrt-line) !important;
     }
 
-    .tts-settings-section h4 {
-      margin: 0 0 10px;
-      color: #eef1fa;
-      font-size: 12px;
-      font-weight: 700;
+    #local-read-translate-settings .tts-settings-header::before {
+      width: 3px !important;
+      height: 18px !important;
+      flex: 0 0 auto !important;
+      border-radius: 2px !important;
+      background: var(--lrt-accent) !important;
+      content: "" !important;
     }
 
-    .tts-source-picker {
-      display: grid;
-      gap: 7px;
+    #local-read-translate-settings .tts-settings-header h3 {
+      min-width: 0 !important;
+      margin: 0 auto 0 0 !important;
+      padding: 0 !important;
+      overflow: hidden !important;
+      color: var(--lrt-text) !important;
+      background: none !important;
+      -webkit-background-clip: initial !important;
+      -webkit-text-fill-color: currentColor !important;
+      font-family: "Segoe UI Variable Display", "Microsoft YaHei UI", "Segoe UI", sans-serif !important;
+      font-size: 15px !important;
+      font-weight: 700 !important;
+      line-height: 1.2 !important;
+      letter-spacing: -0.015em !important;
+      text-overflow: ellipsis !important;
+      white-space: nowrap !important;
     }
 
-    .tts-source-option {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: stretch;
-      gap: 7px;
+    #local-read-translate-settings .tts-settings-state {
+      flex: 0 0 auto !important;
+      margin: 0 !important;
+      padding: 3px 7px !important;
+      border: 1px solid var(--lrt-line-strong) !important;
+      border-radius: 999px !important;
+      background: transparent !important;
+      color: var(--lrt-muted) !important;
+      font-size: 9px !important;
+      font-weight: 750 !important;
+      line-height: 1.25 !important;
+      letter-spacing: 0.06em !important;
+      text-transform: uppercase !important;
     }
 
-    .tts-source-choice,
-    .tts-source-action {
-      box-sizing: border-box;
-      min-height: 46px;
-      border: 1px solid #2f354a;
-      border-radius: 9px;
-      background: #191c2a;
-      color: #eef1fa;
-      font: inherit;
-      cursor: pointer;
+    #local-read-translate-settings .tts-settings-state.ready {
+      border-color: rgba(100, 210, 163, 0.48) !important;
+      color: var(--lrt-success) !important;
     }
 
-    .tts-source-choice {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
-      align-items: center;
-      gap: 9px;
-      width: 100%;
-      padding: 8px 10px;
-      text-align: left;
+    #local-read-translate-settings .tts-settings-state.offline,
+    #local-read-translate-settings .tts-settings-state.source-offline,
+    #local-read-translate-settings .tts-settings-state.unavailable {
+      color: var(--lrt-danger) !important;
     }
 
-    .tts-source-choice:hover,
-    .tts-source-action:hover { border-color: #4a557c; }
-
-    .tts-source-option.selected .tts-source-choice {
-      border-color: rgba(130, 146, 255, 0.72);
-      background: rgba(130, 146, 255, 0.11);
-      box-shadow: inset 2px 0 #8292ff;
+    #local-read-translate-settings .tts-settings-state.no-model,
+    #local-read-translate-settings .tts-settings-state.checking {
+      color: var(--lrt-warning) !important;
     }
 
-    .tts-source-marker {
-      width: 8px;
-      height: 8px;
-      border: 2px solid #697188;
-      border-radius: 50%;
+    #local-read-translate-settings .tts-settings-section {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) 128px;
+      gap: 9px 8px !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+      background: transparent !important;
     }
 
-    .tts-source-option.selected .tts-source-marker {
-      border-color: #aab4ff;
-      background: #8292ff;
+    #local-read-translate-settings .tts-settings-section h4 {
+      grid-column: 1 / -1 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      color: var(--lrt-muted) !important;
+      font-size: 10px !important;
+      font-weight: 750 !important;
+      line-height: 1.2 !important;
+      letter-spacing: 0.12em !important;
+      text-transform: uppercase !important;
     }
 
-    .tts-source-copy {
-      display: grid;
-      min-width: 0;
-      gap: 2px;
+    #local-read-translate-settings .tts-source-picker {
+      display: grid !important;
+      grid-column: 1 / -1 !important;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px !important;
+      margin: 0 !important;
+      padding: 0 !important;
     }
 
-    .tts-source-name {
-      overflow: hidden;
-      font-size: 12px;
-      font-weight: 700;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    #local-read-translate-settings .tts-source-option {
+      display: grid !important;
+      min-width: 0 !important;
+      grid-template-columns: minmax(0, 1fr) auto !important;
+      align-items: stretch !important;
+      gap: 5px !important;
+      margin: 0 !important;
+      padding: 0 !important;
     }
 
-    .tts-source-status {
-      color: #9aa3b8;
-      font-size: 10px;
+    #local-read-translate-settings .tts-source-choice,
+    #local-read-translate-settings .tts-source-action,
+    #local-read-translate-settings .tts-test-btn {
+      appearance: none !important;
+      -webkit-appearance: none !important;
+      min-width: 0 !important;
+      margin: 0 !important;
+      border: 1px solid var(--lrt-line) !important;
+      border-radius: 8px !important;
+      background: var(--lrt-surface) !important;
+      color: var(--lrt-text) !important;
+      box-shadow: none !important;
+      cursor: pointer !important;
     }
 
-    .tts-source-option.reachable .tts-source-status { color: #7edbad; }
-
-    .tts-source-action {
-      min-width: 70px;
-      padding: 8px 10px;
-      border-color: rgba(130, 146, 255, 0.5);
-      color: #bdc7ff;
-      font-size: 11px;
-      font-weight: 700;
+    #local-read-translate-settings .tts-source-choice {
+      display: grid !important;
+      width: 100% !important;
+      min-height: 48px !important;
+      grid-template-columns: auto minmax(0, 1fr) !important;
+      align-items: center !important;
+      gap: 6px !important;
+      padding: 7px !important;
+      text-align: left !important;
     }
 
-    .tts-source-action:disabled { cursor: wait; opacity: 0.7; }
-
-    .tts-source-rail {
-      position: relative;
-      margin-top: 9px;
-      padding: 9px 10px 9px 15px;
-      border-left: 2px solid #8292ff;
-      border-radius: 0 8px 8px 0;
-      background: #191c2a;
+    #local-read-translate-settings .tts-source-choice:hover,
+    #local-read-translate-settings .tts-source-action:hover,
+    #local-read-translate-settings .tts-test-btn:hover:not(:disabled) {
+      border-color: var(--lrt-line-strong) !important;
+      background: var(--lrt-surface-hover) !important;
     }
 
-    .tts-source-rail .tts-settings-status {
-      min-height: 0;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      color: #eef1fa;
-      font-size: 12px;
+    #local-read-translate-settings .tts-source-option.selected .tts-source-choice {
+      border-color: var(--lrt-accent) !important;
+      background: var(--lrt-accent-soft) !important;
+      box-shadow: inset 0 0 0 1px rgba(129, 151, 255, 0.16) !important;
     }
 
-    .tts-source-message {
-      margin: 0;
-      color: #9aa3b8;
-      font-size: 11px;
-      line-height: 1.4;
+    #local-read-translate-settings .tts-source-marker {
+      display: block !important;
+      width: 7px !important;
+      height: 7px !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 2px solid #6f7d94 !important;
+      border-radius: 50% !important;
+      background: transparent !important;
     }
 
-    .tts-settings-field { margin-top: 12px; }
-
-    .tts-settings-panel label {
-      margin: 0 0 5px;
-      color: #9aa3b8;
-      font-size: 11px;
-      font-weight: 600;
+    #local-read-translate-settings .tts-source-option.selected .tts-source-marker {
+      border-color: #b6c2ff !important;
+      background: var(--lrt-accent) !important;
     }
 
-    .tts-settings-panel select {
-      box-sizing: border-box;
-      min-height: 36px;
-      padding: 8px 10px;
-      border: 1px solid #343a50;
-      border-radius: 8px;
-      background: #191c2a;
-      color: #eef1fa;
-      font-size: 12px;
+    #local-read-translate-settings .tts-source-copy {
+      display: grid !important;
+      min-width: 0 !important;
+      gap: 2px !important;
+      margin: 0 !important;
+      padding: 0 !important;
     }
 
-    #tts-translate-model-select {
-      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-      font-size: 11px;
+    #local-read-translate-settings .tts-source-name {
+      display: block !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      overflow: hidden !important;
+      color: var(--lrt-text) !important;
+      font-size: 11.5px !important;
+      font-weight: 700 !important;
+      line-height: 1.25 !important;
+      text-overflow: ellipsis !important;
+      white-space: nowrap !important;
     }
 
-    .tts-settings-panel select:focus-visible,
-    .tts-settings-panel button:focus-visible,
-    .tts-settings-panel summary:focus-visible {
-      outline: 2px solid #8292ff;
-      outline-offset: 2px;
+    #local-read-translate-settings .tts-source-status {
+      display: block !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      color: var(--lrt-muted) !important;
+      font-size: 10px !important;
+      font-weight: 500 !important;
+      line-height: 1.25 !important;
     }
 
-    .tts-primary-actions {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      margin-top: 12px;
+    #local-read-translate-settings .tts-source-option.reachable .tts-source-status {
+      color: var(--lrt-success) !important;
     }
 
-    .tts-settings-panel .tts-test-btn {
-      min-height: 36px;
-      margin-top: 0;
-      border-color: rgba(130, 146, 255, 0.38);
-      background: rgba(130, 146, 255, 0.12);
-      color: #bdc7ff;
-      transition: background-color 0.16s ease, border-color 0.16s ease;
+    #local-read-translate-settings .tts-source-action {
+      min-width: 48px !important;
+      min-height: 48px !important;
+      padding: 0 5px !important;
+      border-color: rgba(129, 151, 255, 0.48) !important;
+      color: #c6d0ff !important;
+      font-size: 9.5px !important;
+      font-weight: 700 !important;
     }
 
-    .tts-settings-panel .tts-test-btn:hover:not(:disabled) {
-      border-color: rgba(130, 146, 255, 0.62);
-      background: rgba(130, 146, 255, 0.2);
+    #local-read-translate-settings .tts-source-action:disabled {
+      cursor: wait !important;
+      opacity: 0.65 !important;
     }
 
-    .tts-settings-panel .tts-test-output {
-      min-height: 0;
-      margin-top: 10px;
-      border-color: #292e41;
-      background: #10121b;
-      color: #cbd2e4;
+    #local-read-translate-settings .tts-source-rail {
+      display: flex !important;
+      min-height: 18px !important;
+      grid-column: 1 / -1 !important;
+      align-items: flex-start !important;
+      gap: 7px !important;
+      margin: 0 !important;
+      padding: 0 2px !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+      background: transparent !important;
     }
 
-    .tts-settings-details {
-      margin-top: 10px;
-      border: 1px solid #292e41;
-      border-radius: 10px;
-      background: #151824;
+    #local-read-translate-settings .tts-source-rail::before {
+      width: 6px !important;
+      height: 6px !important;
+      flex: 0 0 auto !important;
+      margin-top: 5px !important;
+      border-radius: 50% !important;
+      background: var(--lrt-warning) !important;
+      content: "" !important;
     }
 
-    .tts-settings-details summary {
-      padding: 11px 12px;
-      color: #cbd2e4;
-      font-size: 12px;
-      font-weight: 650;
-      cursor: pointer;
-      user-select: none;
+    #local-read-translate-settings .tts-source-message {
+      margin: 0 !important;
+      padding: 0 !important;
+      color: var(--lrt-muted) !important;
+      font-size: 10.5px !important;
+      font-weight: 400 !important;
+      line-height: 1.4 !important;
     }
 
-    .tts-settings-details[open] summary { border-bottom: 1px solid #292e41; }
-
-    .tts-settings-details-body { padding: 12px; }
-
-    .tts-settings-details-body .tts-settings-status {
-      min-height: 0;
-      margin-bottom: 10px;
-      border-color: #292e41;
-      background: #191c2a;
+    #local-read-translate-settings .tts-settings-field {
+      display: grid !important;
+      min-width: 0 !important;
+      align-content: end !important;
+      gap: 4px !important;
+      margin: 0 !important;
+      padding: 0 !important;
     }
 
-    .tts-settings-panel .tts-model-actions {
-      grid-template-columns: 1fr;
-      margin-top: 10px;
+    #local-read-translate-settings label {
+      display: block !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+      color: var(--lrt-muted) !important;
+      font-size: 10px !important;
+      font-weight: 650 !important;
+      line-height: 1.2 !important;
+      letter-spacing: normal !important;
+      text-transform: none !important;
     }
 
-    @media (max-width: 440px) {
-      .tts-settings-panel {
-        right: 12px;
-        bottom: 64px;
-        width: calc(100vw - 24px);
-        max-width: none;
+    #local-read-translate-settings select {
+      appearance: none !important;
+      -webkit-appearance: none !important;
+      display: block !important;
+      width: 100% !important;
+      min-width: 0 !important;
+      height: 36px !important;
+      min-height: 36px !important;
+      margin: 0 !important;
+      padding: 0 29px 0 10px !important;
+      border: 1px solid var(--lrt-line) !important;
+      border-radius: 8px !important;
+      background-color: var(--lrt-surface) !important;
+      background-image:
+        linear-gradient(45deg, transparent 50%, #8998b0 50%),
+        linear-gradient(135deg, #8998b0 50%, transparent 50%) !important;
+      background-position:
+        calc(100% - 14px) 15px,
+        calc(100% - 10px) 15px !important;
+      background-repeat: no-repeat !important;
+      background-size: 4px 4px, 4px 4px !important;
+      color: var(--lrt-text) !important;
+      font-size: 11.5px !important;
+      font-weight: 500 !important;
+      line-height: 34px !important;
+      outline: none !important;
+      box-shadow: none !important;
+      cursor: pointer !important;
+    }
+
+    #local-read-translate-settings select option,
+    #local-read-translate-settings select optgroup {
+      background: var(--lrt-surface) !important;
+      color: var(--lrt-text) !important;
+    }
+
+    #local-read-translate-settings #tts-translate-model-select {
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace !important;
+      font-size: 10.5px !important;
+    }
+
+    #local-read-translate-settings .tts-primary-actions {
+      display: grid !important;
+      align-self: end !important;
+      gap: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+
+    #local-read-translate-settings .tts-test-btn {
+      display: inline-flex !important;
+      width: 100% !important;
+      min-height: 36px !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 0 !important;
+      padding: 0 11px !important;
+      color: #cbd4ff !important;
+      font-size: 11px !important;
+      font-weight: 700 !important;
+      line-height: 1.2 !important;
+      transition: background-color 0.14s ease, border-color 0.14s ease !important;
+    }
+
+    #local-read-translate-settings #tts-translate-test-btn,
+    #local-read-translate-settings #tts-start-local-service-btn {
+      border-color: var(--lrt-accent) !important;
+      background: var(--lrt-accent) !important;
+      color: #0c1323 !important;
+    }
+
+    #local-read-translate-settings #tts-translate-test-btn:hover:not(:disabled),
+    #local-read-translate-settings #tts-start-local-service-btn:hover:not(:disabled) {
+      border-color: #9dadff !important;
+      background: #9dadff !important;
+    }
+
+    #local-read-translate-settings .tts-test-btn:disabled {
+      cursor: not-allowed !important;
+      opacity: 0.52 !important;
+    }
+
+    #local-read-translate-settings .tts-test-btn.loading {
+      border-color: var(--lrt-warning) !important;
+      background: rgba(226, 189, 107, 0.14) !important;
+      color: #f1d79c !important;
+    }
+
+    #local-read-translate-settings .tts-test-btn.playing {
+      border-color: var(--lrt-success) !important;
+      background: rgba(100, 210, 163, 0.14) !important;
+      color: #a8e8ce !important;
+    }
+
+    #local-read-translate-settings .tts-test-btn.error {
+      border-color: var(--lrt-danger) !important;
+      background: rgba(255, 146, 163, 0.12) !important;
+      color: #ffc0ca !important;
+    }
+
+    #local-read-translate-settings .tts-test-btn .tts-icon {
+      display: none !important;
+    }
+
+    #local-read-translate-settings .tts-test-output {
+      grid-column: 1 / -1 !important;
+      min-height: 20px !important;
+      max-height: 96px !important;
+      margin: 0 !important;
+      padding: 7px 2px 0 !important;
+      overflow: auto !important;
+      border: 0 !important;
+      border-top: 1px solid var(--lrt-line) !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+      color: var(--lrt-muted) !important;
+      font-size: 10.5px !important;
+      font-weight: 400 !important;
+      line-height: 1.45 !important;
+      white-space: pre-wrap !important;
+      word-break: break-word !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details {
+      margin: 11px 0 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      border-top: 1px solid var(--lrt-line) !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details summary {
+      display: flex !important;
+      min-height: 40px !important;
+      align-items: center !important;
+      margin: 0 !important;
+      padding: 0 3px !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+      color: #cbd5e7 !important;
+      font-size: 11px !important;
+      font-weight: 700 !important;
+      letter-spacing: normal !important;
+      text-transform: none !important;
+      list-style: none !important;
+      outline: none !important;
+      box-shadow: none !important;
+      cursor: pointer !important;
+      user-select: none !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details summary::-webkit-details-marker {
+      display: none !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details summary::after {
+      width: 6px !important;
+      height: 6px !important;
+      margin-left: auto !important;
+      border-right: 1.5px solid var(--lrt-muted) !important;
+      border-bottom: 1.5px solid var(--lrt-muted) !important;
+      content: "" !important;
+      transform: rotate(45deg) translateY(-1px) !important;
+      transition: transform 0.14s ease !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details[open] summary {
+      border: 0 !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details[open] summary::after {
+      transform: rotate(225deg) translate(-1px, -1px) !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details-body {
+      display: grid !important;
+      grid-template-columns: 98px minmax(0, 1fr) !important;
+      align-items: center !important;
+      gap: 8px !important;
+      margin: 0 !important;
+      padding: 0 3px 11px !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details-body .tts-settings-status {
+      display: flex !important;
+      min-height: 0 !important;
+      grid-column: 1 / -1 !important;
+      align-items: center !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      background: transparent !important;
+      color: var(--lrt-muted) !important;
+      font-size: 10.5px !important;
+      line-height: 1.35 !important;
+    }
+
+    #local-read-translate-settings .tts-status-dot {
+      width: 7px !important;
+      height: 7px !important;
+      margin: 0 6px 0 0 !important;
+      border-radius: 50% !important;
+    }
+
+    #local-read-translate-settings .tts-model-actions {
+      display: grid !important;
+      grid-column: 1 / -1 !important;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px !important;
+      margin: 1px 0 0 !important;
+      padding: 0 !important;
+    }
+
+    #local-read-translate-settings .tts-settings-details-body > .tts-test-btn {
+      grid-column: 1 / -1 !important;
+    }
+
+    #local-read-translate-settings :is(select, button, summary):focus-visible {
+      outline: 2px solid var(--lrt-accent) !important;
+      outline-offset: 2px !important;
+    }
+
+    #local-read-translate-settings[hidden],
+    #local-read-translate-settings [hidden][hidden] {
+      display: none !important;
+    }
+
+    @media (max-width: 520px) {
+      #local-read-translate-settings {
+        right: 12px !important;
+        bottom: 62px !important;
+        width: calc(100% - 24px) !important;
+        max-width: none !important;
       }
-      .tts-settings-gear { right: 12px; bottom: 12px; }
+
+      .tts-settings-gear {
+        right: 12px !important;
+        bottom: 12px !important;
+      }
+    }
+
+    @media (max-width: 350px) {
+      #local-read-translate-settings .tts-settings-section {
+        grid-template-columns: minmax(0, 1fr) !important;
+      }
+
+      #local-read-translate-settings .tts-source-picker {
+        grid-template-columns: minmax(0, 1fr) !important;
+      }
+
+      #local-read-translate-settings .tts-primary-actions {
+        grid-column: 1 / -1 !important;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .tts-settings-panel { animation: none; }
+      #local-read-translate-settings {
+        animation: none !important;
+      }
+
       .tts-settings-gear,
-      .tts-settings-panel .tts-test-btn { transition: none; }
+      #local-read-translate-settings .tts-test-btn,
+      #local-read-translate-settings .tts-settings-details summary::after {
+        transition: none !important;
+      }
     }
   `);
 
@@ -2393,6 +2734,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   function createSettingsPanel() {
     const panel = document.createElement("div");
+    panel.id = "local-read-translate-settings";
     panel.className = "tts-settings-panel";
 
     const header = document.createElement("div");
@@ -3292,6 +3634,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     toggleSettings();
   });
   document.body.appendChild(gearBtn);
+  if (
+    window.__LOCAL_READ_TRANSLATE_VISUAL_FIXTURE__ === true &&
+    /^(?:127\.0\.0\.1|localhost)$/i.test(window.location.hostname)
+  ) {
+    toggleSettings();
+  }
 
   // ════════════════════════════════════════════════════════
   //  Core logic

@@ -182,6 +182,7 @@ Editing the repository file does not update a copy already installed in Tampermo
    - **Start local service** appears only while the mediator itself is offline and opens `localreadtranslate://start`; model, translation-test, Advanced and Read aloud controls stay hidden in that state;
    - a failed translation-health request becomes an explicit **Unavailable** state rather than leaving a contradictory **Checking** badge;
    - background refresh after a translation test, source/model switch, or residency action keeps the last valid source view visible instead of flashing **Checking translation sources...**; changing source, model, or target language clears the now-stale test result;
+   - the settings surface is isolated from aggressive page-level form styles, keeps both sources on one compact rail, places the selected model and translation test on one work row, and uses flat Advanced/Read aloud dividers instead of nested cards;
    - target language and applicable model residency actions are under **Advanced**; voice/speed controls are under **Read aloud**;
    - remote credentials and connection lifecycle remain in the tray app's `Remote Service` dialog, never in the webpage.
 
@@ -321,7 +322,7 @@ and formula-recognition evidence remains in
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.4` (FastAPI `1.7.19`).
+The current repository metadata version is `1.15.5` (FastAPI `1.7.19`).
 
 For each release:
 
@@ -371,6 +372,8 @@ browser script and built-in test page are generated from this catalog.
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
 | `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
+| `tests/fixtures/userscript-settings-hostile.html` | Hostile page-style visual regression fixture for the userscript settings panel |
+| `docs/iteration-11-2026-07-24-userscript-settings-visual-repair.md` | Current userscript settings visual-isolation release record |
 | `docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md` | Current document formula translation/read parity release record |
 | `docs/iteration-9-2026-07-23-wps-pdf-addin.md` | Historical WPS PDF read/translate/formula-to-LaTeX add-in release record |
 | `docs/iteration-8-2026-07-23-office-wps-document-assistant.md` | Historical Word/WPS read, translate and formula add-in release record |

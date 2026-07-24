@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocalReadTranslate hostile-style visual fixture</title>
+  <style>
+    :root {
+      color: #172033;
+      background: #e9edf4;
+      font-family: Georgia, serif;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 48px;
+      background:
+        linear-gradient(120deg, rgba(87, 112, 148, 0.16), transparent 45%),
+        #e9edf4;
+    }
+
+    main {
+      max-width: 760px;
+      padding: 36px;
+      border: 4px solid #9e2747;
+      background: white;
+    }
+
+    /*
+     * This deliberately simulates pages that aggressively restyle every form
+     * control after a userscript has been injected.
+     */
+    button,
+    select,
+    input,
+    label,
+    details,
+    summary {
+      margin: 14px !important;
+      padding: 16px !important;
+      border: 5px dashed #9e2747 !important;
+      border-radius: 0 !important;
+      background: #fff2c9 !important;
+      color: #762038 !important;
+      font-family: Georgia, serif !important;
+      font-size: 20px !important;
+      font-weight: 800 !important;
+      line-height: 2 !important;
+      letter-spacing: 0.08em !important;
+      text-transform: uppercase !important;
+      appearance: auto !important;
+      -webkit-appearance: auto !important;
+    }
+  </style>
+  <script>
+    window.__LOCAL_READ_TRANSLATE_VISUAL_FIXTURE__ = true;
+    const remoteModel = "remote:project-server:qwen3:30b";
+    const savedSettings = {
+      settingsVersion: 4,
+      voice: "af_bella",
+      speed: 0.8,
+      translationSource: "project-server",
+      translationModels: {
+        "project-server": remoteModel,
+      },
+      translateModel: remoteModel,
+      targetLanguage: "Simplified Chinese",
+    };
+
+    window.GM_addStyle = (cssText) => {
+      const style = document.createElement("style");
+      style.textContent = cssText;
+      document.head.appendChild(style);
+    };
+    window.GM_getValue = (_key, fallback) => ({ ...fallback, ...savedSettings });
+    window.GM_setValue = () => {};
+    window.GM_setClipboard = () => {};
+    window.GM_xmlhttpRequest = (options) => {
+      const isTranslationHealth = options.url.includes("/translate/health");
+      const payload = isTranslationHealth
+        ? {
+            available_model_options: [
+              {
+                value: remoteModel,
+                label: "Project Server / qwen3:30b",
+                source: "project-server",
+                source_name: "Project Server",
+                model: "qwen3:30b",
+              },
+            ],
+            sources: [
+              {
+                id: "local",
+                name: "Local Ollama",
+                kind: "local",
+                reachable: false,
+                models: [],
+              },
+              {
+                id: "project-server",
+                name: "Project Server",
+                kind: "remote",
+                reachable: true,
+                models: [
+                  {
+                    value: remoteModel,
+                    name: "qwen3:30b",
+                    running: true,
+                    pinned: false,
+                    usable_for_translation: true,
+                  },
+                ],
+              },
+            ],
+          }
+        : {
+            service: "kokoro-tts",
+            ready: true,
+            api_ready: true,
+          };
+      const timer = window.setTimeout(() => {
+        options.onload?.({
+          status: 200,
+          responseText: JSON.stringify(payload),
+          response: payload,
+        });
+      }, 30);
+      return {
+        abort() {
+          window.clearTimeout(timer);
+        },
+      };
+    };
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Host page styling</h1>
+    <p>
+      The red and cream form style belongs to the host page. The userscript
+      panel must remain compact and visually independent from it.
+    </p>
+    <label for="host-select">Host select</label>
+    <select id="host-select">
+      <option>Host page option</option>
+    </select>
+  </main>
+
+  <script src="/tts-userscript.js"></script>
+  <script>
+    window.setTimeout(() => {
+      const advanced = document.getElementById("tts-advanced-settings");
+      if (advanced) advanced.open = true;
+    }, 80);
+  </script>
+</body>
+</html>

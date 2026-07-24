@@ -1056,6 +1056,40 @@ test("settings expose fixed source actions without exposing connection details",
   assert.doesNotMatch(source, /ssh_password|private_key|identity_file|auth_password/i);
 });
 
+test("settings panel keeps a compact host-resistant control surface", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+
+  assert.match(source, /panel\.id = "local-read-translate-settings";/);
+  assert.match(source, /label\.htmlFor = control\.id;/);
+  assert.match(
+    source,
+    /#local-read-translate-settings\s*\{[\s\S]*?color-scheme:\s*dark\s*!important;/
+  );
+  assert.match(
+    source,
+    /#local-read-translate-settings :is\(button, select, input, summary\)\s*\{[\s\S]*?font:\s*inherit\s*!important;/
+  );
+  assert.match(
+    source,
+    /#local-read-translate-settings \.tts-source-picker\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/
+  );
+  assert.match(
+    source,
+    /#local-read-translate-settings \.tts-settings-section\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s*128px;/
+  );
+  assert.match(
+    source,
+    /#local-read-translate-settings \.tts-model-actions\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/
+  );
+  assert.match(
+    source,
+    /window\.__LOCAL_READ_TRANSLATE_VISUAL_FIXTURE__ === true[\s\S]*?\^\(\?:127\\\.0\\\.0\\\.1\|localhost\)\$/
+  );
+});
+
 test("settings messages do not reference removed local-model actions", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "..", "tts-userscript.js"),
