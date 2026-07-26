@@ -3,7 +3,9 @@
 > **Iteration 11 note:** This source/model contract now also governs the shared
 > Word/WPS document task pane, including the non-writing WPS PDF adapter and its
 > model-assisted formula-selection-to-LaTeX copy action. Current repository metadata is userscript
-> `1.15.5` / FastAPI `1.7.19`; the
+> `1.15.5` / FastAPI `1.7.20`; the Windows protocol and isolated launcher are
+> recorded in
+> [`../../iteration-12-2026-07-26-windows-launch-repair.md`](../../iteration-12-2026-07-26-windows-launch-repair.md); the
 > LaTeX/Office/WPS formula core is recorded in iteration 6; the current
 > userscript visual boundary is recorded in
 > [`../../iteration-11-2026-07-24-userscript-settings-visual-repair.md`](../../iteration-11-2026-07-24-userscript-settings-visual-repair.md), and the installable add-in boundary is recorded in

@@ -84,7 +84,7 @@ import server
 assert server.torch is None
 """
         result = subprocess.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-E", "-c", script],
             cwd=server.os.path.dirname(server.__file__),
             capture_output=True,
             text=True,

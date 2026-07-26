@@ -42,7 +42,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.15.5`（FastAPI `1.7.19`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.5`（FastAPI `1.7.20`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
 
 1. 按项目 README 完成环境安装，并至少启动本地 FastAPI 服务。
 2. `Read` 需要 Kokoro TTS 环境；Kokoro 会在第一次朗读时按需加载，不会因仅启动 API 或仅使用远程翻译而占用本地 GPU。
@@ -59,10 +59,11 @@ ollama pull qwen3:14b
 托盘程序会为当前 Windows 用户注册 `localreadtranslate://start`。如果 **Start local service** 无法唤起托盘程序，在项目目录执行：
 
 ```powershell
-conda run -n kokoro-tts python windows_protocol.py register
+conda run -n kokoro-tts python -E windows_protocol.py register
+conda run -n kokoro-tts python -E windows_startup.py install-menu
 ```
 
-注册记录使用绝对路径；移动项目后需要重新执行。注册在 `HKCU` 下，不需要管理员权限。网页发起协议操作时，浏览器可能要求确认打开外部应用；协议只支持无参数的 `start`、`ollama`、`remote` 三个固定操作，不携带远程凭据或模型参数。
+第一条修复当前用户协议，第二条创建 **Local Read & Translate** 开始菜单快捷方式，并只移除确认属于本项目的旧 **Kokoro TTS** 快捷方式。两处都使用绝对路径；移动项目后需要重新执行。协议注册在 `HKCU` 下，不需要管理员权限。项目启动器使用 `-E` 隔离外部 `PYTHONHOME`/`PYTHONPATH`，但不会修改这些系统设置。网页发起协议操作时，浏览器可能要求确认打开外部应用；协议只支持无参数的 `start`、`ollama`、`remote` 三个固定操作，不携带远程凭据或模型参数。
 
 后端省略模型参数时，翻译、朗读稿准备和复杂公式口语化可回退到 `translategemma:4b`；网页不会把这个回退值伪装成已安装模型。可通过 `OLLAMA_TRANSLATE_MODEL`、`OLLAMA_READ_MODEL`、`OLLAMA_FORMULA_MODEL` 覆盖后端回退。Advanced 里的 **Load & keep / Keep loaded** 会在当前来源常驻模型；运行中显示 **Unload**，只有 stale pin 时显示 **Remove keep-alive**。清除 stale pin 不发送生成请求，因此不会为了卸载而重新加载模型。4B 模型的翻译和公式朗读不参考上下文；14B 模型会保留更多上下文。使用 `qwen3:14b`、QwQ、DeepSeek-R1 等推理模型时，服务端会自动向 Ollama 传入 `think: false`。
 数学符号读法可在项目的 `config/math_glossary.json` 中调整，当前覆盖箭头、上下标、集合、逻辑、求和、积分、偏导等常见论文符号。
@@ -95,8 +96,8 @@ http://127.0.0.1:5000
 http://127.0.0.1:5000/health
 ```
 
-如果打不开，先运行推荐的托盘启动器 `Kokoro TTS.bat`，或用上面的 `windows_protocol.py register` 命令修复协议。`start.bat` 只启动裸 FastAPI，不负责远程 SSH 隧道或协议唤起；需要项目服务器时必须使用托盘程序。
-新版 `start.bat` 和 `Kokoro TTS.bat` 会直接定位 `kokoro-tts` 环境里的 Python，不需要先执行 `conda init`；`Kokoro TTS.pyw` 只在 Windows 已有关联 `.pyw` 到 Python 时适合双击。
+如果打不开，先从开始菜单打开 **Local Read & Translate**，或用上面的两条命令同时修复协议与快捷方式。项目目录中的手动备用入口是 `LocalReadTranslate.bat`。如果仍然“没有反应”，检查 `%LOCALAPPDATA%\LocalReadTranslate\launcher.log`；隐藏的 `pythonw` 启动异常会记录在这里并弹出提示。`start.bat` 只启动裸 FastAPI，不负责远程 SSH 隧道或协议唤起；需要项目服务器时必须使用托盘程序。
+新版 `start.bat` 和 `LocalReadTranslate.bat` 会直接定位 `kokoro-tts` 环境里的 Python，并用 `-E` 忽略外部 Python 路径污染，不需要先执行 `conda init`。旧的 `Kokoro TTS.bat` / `Kokoro TTS.pyw` 只作为兼容入口保留。
 
 ### 项目服务器没有出现在模型列表
 

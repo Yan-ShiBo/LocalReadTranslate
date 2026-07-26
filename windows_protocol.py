@@ -19,9 +19,9 @@ class ProtocolRegistrationError(RuntimeError):
     pass
 
 
-def build_start_protocol_command(pythonw: Path, tray_script: Path) -> str:
-    """Return the quoted command stored in the URL protocol registry key."""
-    return f'"{Path(pythonw)}" "{Path(tray_script)}" "%1"'
+def build_start_protocol_command(pythonw: Path, launcher_script: Path) -> str:
+    """Return the isolated command stored in the URL protocol registry key."""
+    return f'"{Path(pythonw)}" -E "{Path(launcher_script)}" "%1"'
 
 
 def parse_protocol_action(value: str) -> str | None:
@@ -69,7 +69,7 @@ def _verify_string_value(registry, key, name: str, expected: str) -> None:
 
 def ensure_start_protocol_registered(
     pythonw: Path,
-    tray_script: Path,
+    launcher_script: Path,
     *,
     registry=None,
     platform_name: str | None = None,
@@ -84,7 +84,7 @@ def ensure_start_protocol_registered(
     if registry is None:
         import winreg as registry
 
-    command = build_start_protocol_command(pythonw, tray_script)
+    command = build_start_protocol_command(pythonw, launcher_script)
     access = registry.KEY_READ | registry.KEY_WRITE
     changed = False
     with registry.CreateKeyEx(
@@ -169,7 +169,13 @@ def main(
         help="register the current-user localreadtranslate URL handler",
     )
     register.add_argument("--pythonw", type=Path)
-    register.add_argument("--tray-script", type=Path)
+    register.add_argument(
+        "--launcher-script",
+        "--tray-script",
+        dest="launcher_script",
+        type=Path,
+        help="bootstrap script run by pythonw (legacy --tray-script is accepted)",
+    )
     subparsers.add_parser(
         "unregister",
         help="remove the current-user localreadtranslate URL handler",
@@ -199,11 +205,13 @@ def main(
     current_python = Path(sys.executable if executable is None else executable)
     current_module = Path(__file__ if module_path is None else module_path)
     pythonw = args.pythonw or current_python.with_name("pythonw.exe")
-    tray_script = args.tray_script or current_module.with_name("tray_app.py")
+    launcher_script = (
+        args.launcher_script or current_module.with_name("windows_launcher.py")
+    )
     try:
         changed = ensure_start_protocol_registered(
             pythonw,
-            tray_script,
+            launcher_script,
             registry=registry,
             platform_name=current_platform,
         )
@@ -213,7 +221,10 @@ def main(
 
     status = "updated" if changed else "verified"
     print(f"Protocol {status}: HKCU\\{PROTOCOL_REGISTRY_PATH}", file=stdout)
-    print(f"Command: {build_start_protocol_command(pythonw, tray_script)}", file=stdout)
+    print(
+        f"Command: {build_start_protocol_command(pythonw, launcher_script)}",
+        file=stdout,
+    )
     return 0
 
 

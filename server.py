@@ -573,7 +573,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.19",
+    version="1.7.20",
     lifespan=lifespan,
 )
 

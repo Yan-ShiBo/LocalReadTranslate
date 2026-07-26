@@ -79,7 +79,7 @@ class NonPersistingRegistry(FakeRegistry):
 
 
 class WindowsProtocolCommandTests(unittest.TestCase):
-    def test_command_quotes_python_script_and_protocol_url(self):
+    def test_command_ignores_python_environment_and_quotes_script_and_url(self):
         command = build_start_protocol_command(
             Path(r"C:\Users\Example User\.conda\envs\kokoro-tts\pythonw.exe"),
             Path(r"D:\Local Read Translate\tray_app.py"),
@@ -88,7 +88,7 @@ class WindowsProtocolCommandTests(unittest.TestCase):
         self.assertEqual(
             command,
             '"C:\\Users\\Example User\\.conda\\envs\\kokoro-tts\\pythonw.exe" '
-            '"D:\\Local Read Translate\\tray_app.py" "%1"',
+            '-E "D:\\Local Read Translate\\tray_app.py" "%1"',
         )
 
     def test_registration_creates_per_user_url_protocol_values(self):
@@ -111,7 +111,7 @@ class WindowsProtocolCommandTests(unittest.TestCase):
         self.assertEqual(
             registry.values[(command_path, "")],
             '"C:\\Conda Env\\pythonw.exe" '
-            '"D:\\LocalReadTranslate\\tray_app.py" "%1"',
+            '-E "D:\\LocalReadTranslate\\tray_app.py" "%1"',
         )
 
     def test_registration_fails_when_written_values_cannot_be_verified(self):
@@ -140,7 +140,7 @@ class WindowsProtocolCommandTests(unittest.TestCase):
         self.assertFalse(is_start_protocol_url("localreadtranslate://remote"))
         self.assertFalse(is_start_protocol_url("https://start"))
 
-    def test_register_cli_defaults_to_current_pythonw_and_sibling_tray_script(self):
+    def test_register_cli_defaults_to_current_pythonw_and_sibling_launcher(self):
         registry = FakeRegistry()
         output = StringIO()
 
@@ -158,7 +158,7 @@ class WindowsProtocolCommandTests(unittest.TestCase):
         self.assertEqual(
             registry.values[(command_path, "")],
             '"C:\\Conda Env\\pythonw.exe" '
-            '"D:\\LocalReadTranslate\\tray_app.py" "%1"',
+            '-E "D:\\LocalReadTranslate\\windows_launcher.py" "%1"',
         )
         self.assertIn(r"HKCU\Software\Classes\localreadtranslate", output.getvalue())
 

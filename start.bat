@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul 2>nul
-title Kokoro TTS Server
+title Local Read & Translate Server
 
 echo.
 echo ========================================
-echo    Kokoro TTS Local Server
+echo    Local Read & Translate Server
 echo ========================================
 echo.
 
@@ -28,7 +28,7 @@ if not defined PYTHON_EXE if exist "%ProgramData%\anaconda3\envs\%CONDA_ENV%\pyt
 if not defined PYTHON_EXE if exist "%ProgramData%\miniconda3\envs\%CONDA_ENV%\python.exe" set "PYTHON_EXE=%ProgramData%\miniconda3\envs\%CONDA_ENV%\python.exe"
 
 if not defined PYTHON_EXE (
-    for /f "delims=" %%P in ('conda run -n %CONDA_ENV% python -c "import sys; print(sys.executable)" 2^>nul') do (
+    for /f "delims=" %%P in ('conda run -n %CONDA_ENV% python -E -c "import sys; print(sys.executable)" 2^>nul') do (
         if exist "%%P" set "PYTHON_EXE=%%P"
     )
 )
@@ -40,10 +40,10 @@ if not defined PYTHON_EXE (
     exit /b 1
 )
 
-echo Starting Kokoro TTS server...
+echo Starting Local Read & Translate server...
 echo Using: %PYTHON_EXE%
 echo Press Ctrl+C to stop.
 echo.
-"%PYTHON_EXE%" "%~dp0server.py"
+"%PYTHON_EXE%" -E "%~dp0server.py"
 
 pause

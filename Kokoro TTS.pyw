@@ -1,12 +1,14 @@
-"""Launcher for Kokoro TTS tray app (no console window)."""
+"""Legacy filename kept as a launcher for Local Read & Translate."""
 import json
 import subprocess
+import sys
 import tkinter.messagebox
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-TRAY_SCRIPT = SCRIPT_DIR / "tray_app.py"
+LAUNCHER_SCRIPT = SCRIPT_DIR / "windows_launcher.py"
 CONDA_ENV_NAME = "kokoro-tts"
+APP_NAME = "Local Read & Translate"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -63,13 +65,13 @@ def find_pythonw():
 pythonw = find_pythonw()
 if not pythonw:
     tkinter.messagebox.showerror(
-        "Kokoro TTS",
+        APP_NAME,
         "Cannot find the kokoro-tts Conda environment. Please run setup.bat first.",
     )
     raise SystemExit(1)
 
 subprocess.Popen(
-    [pythonw, str(TRAY_SCRIPT)],
+    [pythonw, "-E", str(LAUNCHER_SCRIPT), *sys.argv[1:]],
     cwd=str(SCRIPT_DIR),
     creationflags=NO_WINDOW,
 )

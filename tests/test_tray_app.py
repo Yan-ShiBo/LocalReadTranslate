@@ -100,7 +100,10 @@ class TrayOwnershipTests(unittest.TestCase):
 
         command = popen.call_args.args[0]
         kwargs = popen.call_args.kwargs
-        self.assertEqual(command, [str(app.python_exe), str(tray_app.ADDIN_HOST_SCRIPT)])
+        self.assertEqual(
+            command,
+            [str(app.python_exe), "-E", str(tray_app.ADDIN_HOST_SCRIPT)],
+        )
         self.assertEqual(kwargs["cwd"], str(tray_app.SCRIPT_DIR))
         self.assertIs(kwargs["stdin"], tray_app.subprocess.DEVNULL)
         self.assertIs(kwargs["stdout"], log_handle)
@@ -110,6 +113,65 @@ class TrayOwnershipTests(unittest.TestCase):
         process.terminate.assert_called_once()
         process.wait.assert_called_once_with(timeout=5)
         log_handle.close.assert_called_once()
+
+    def test_server_child_ignores_ambient_python_environment(self):
+        app = self.make_app()
+        process = Mock()
+        process.poll.return_value = None
+        log_handle = Mock()
+        fake_socket = Mock()
+        fake_socket.__enter__ = Mock(return_value=fake_socket)
+        fake_socket.__exit__ = Mock(return_value=False)
+        fake_socket.connect_ex.return_value = 1
+        startup_info = Mock(dwFlags=0)
+        app_data_directory = Mock()
+
+        with patch.object(app, "get_health", return_value=None), patch.object(
+            app,
+            "ensure_remote_ollama_tunnel",
+            return_value=True,
+        ), patch.object(
+            app,
+            "build_remote_ollama_sources_env",
+            return_value="",
+        ), patch.object(
+            app,
+            "start_addin_host",
+            return_value=True,
+        ), patch.object(
+            tray_app,
+            "APP_DATA_DIR",
+            app_data_directory,
+        ), patch.object(
+            tray_app.socket,
+            "socket",
+            return_value=fake_socket,
+        ), patch(
+            "builtins.open",
+            return_value=log_handle,
+        ), patch.object(
+            tray_app.subprocess,
+            "STARTUPINFO",
+            return_value=startup_info,
+        ), patch.object(
+            tray_app.subprocess,
+            "Popen",
+            return_value=process,
+        ) as popen, patch.object(
+            tray_app.threading,
+            "Thread",
+        ) as thread:
+            app.start_server()
+
+        self.assertEqual(
+            popen.call_args.args[0],
+            [str(app.python_exe), "-E", str(tray_app.SERVER_SCRIPT)],
+        )
+        self.assertEqual(popen.call_args.kwargs["cwd"], str(tray_app.SCRIPT_DIR))
+        self.assertIs(popen.call_args.kwargs["stdout"], log_handle)
+        self.assertTrue(app.owns_server)
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once_with()
 
 
 class TrayAutoStartTests(unittest.TestCase):
@@ -270,7 +332,7 @@ class TrayProtocolLaunchTests(unittest.TestCase):
                 enable_windows_protocol=True,
             )
 
-        register.assert_called_once_with(pythonw, tray_app.SCRIPT_DIR / "tray_app.py")
+        register.assert_called_once_with(pythonw, tray_app.WINDOWS_LAUNCHER)
         self.assertEqual(
             [call.args[0] for call in event_class.call_args_list],
             [

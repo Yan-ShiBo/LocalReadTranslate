@@ -25,6 +25,7 @@ class FakeShortcutRunner:
             self.shortcuts[shortcut] = {
                 "target": str(Path(env["KOKORO_TARGET"]).resolve()),
                 "working_directory": str(Path(env["KOKORO_WORKDIR"]).resolve()),
+                "arguments": env.get("KOKORO_ARGUMENTS", ""),
             }
             return None
         if script == windows_startup.INSPECT_SHORTCUT_SCRIPT:
@@ -32,6 +33,7 @@ class FakeShortcutRunner:
             return self.shortcuts.get(shortcut, {
                 "target": "",
                 "working_directory": "",
+                "arguments": "",
             })
         raise AssertionError("unexpected script")
 
@@ -53,6 +55,7 @@ def test_enabled_creates_missing_shortcut(startup_env):
     assert shortcut.exists()
     assert runner.create_calls == 1
     assert windows_startup.inspect_startup_shortcut(target, workdir, runner)
+    assert windows_startup.startup_shortcut_path().name == "Local Read & Translate.lnk"
 
 
 def test_enabled_repairs_wrong_shortcut(startup_env):
@@ -118,3 +121,59 @@ def test_runner_failure_raises_startup_error(startup_env):
             startup_env / "project",
             runner,
         )
+
+
+def test_start_menu_shortcut_replaces_owned_legacy_link(startup_env):
+    runner = FakeShortcutRunner()
+    target = startup_env / "pythonw.exe"
+    workdir = startup_env / "LocalReadTranslate"
+    launcher = workdir / "windows_launcher.py"
+    arguments = f'-E "{launcher}"'
+    legacy = windows_startup.start_menu_shortcut_path("Kokoro TTS.lnk")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("legacy", encoding="utf-8")
+    runner.shortcuts[legacy] = {
+        "target": str(target),
+        "working_directory": r"d:\local-tts-env",
+        "arguments": r'"d:\local-tts-env\tray_app.py"',
+    }
+
+    shortcut = windows_startup.reconcile_start_menu_shortcut(
+        target,
+        workdir,
+        arguments,
+        runner,
+    )
+
+    assert shortcut.name == "Local Read & Translate.lnk"
+    assert shortcut.exists()
+    assert not legacy.exists()
+    assert windows_startup.inspect_start_menu_shortcut(
+        target,
+        workdir,
+        arguments,
+        runner,
+    )
+
+
+def test_start_menu_migration_preserves_unrelated_legacy_named_link(startup_env):
+    runner = FakeShortcutRunner()
+    target = startup_env / "pythonw.exe"
+    workdir = startup_env / "LocalReadTranslate"
+    legacy = windows_startup.start_menu_shortcut_path("Kokoro TTS.lnk")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("unrelated", encoding="utf-8")
+    runner.shortcuts[legacy] = {
+        "target": str(startup_env / "other.exe"),
+        "working_directory": str(startup_env / "other"),
+        "arguments": "",
+    }
+
+    windows_startup.reconcile_start_menu_shortcut(
+        target,
+        workdir,
+        f'-E "{workdir / "windows_launcher.py"}"',
+        runner,
+    )
+
+    assert legacy.exists()

@@ -102,32 +102,34 @@ cd LocalReadTranslate
 # Double-click setup.bat, or run manually:
 conda create -n kokoro-tts python=3.10 -y
 conda activate kokoro-tts
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install -r requirements.txt
+python -E -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+python -E -m pip install -r requirements.txt
 ```
 
 ### 3. Start the Server
 
 **Option A: System tray app** (recommended)
-- Double-click `Kokoro TTS.bat` — starts the tray app without relying on Windows `.pyw` file associations. On Windows, the tray app also creates or repairs the current-user `localreadtranslate://` URL handler used by the fixed `start`, `ollama`, and `remote` actions.
+- Open **Local Read & Translate** from the Windows Start Menu. `setup.bat` creates or repairs this shortcut and removes an owned legacy **Kokoro TTS** shortcut that still points at an old checkout.
+- `LocalReadTranslate.bat` is the manual fallback. It starts the tray app without relying on Windows `.pyw` file associations.
 
 **Option B: Terminal mode**
 - Double-click `start.bat` — shows a console window with logs
 
-Both `.bat` launchers locate the `kokoro-tts` Conda environment Python directly, so normal startup does not require `conda init`. `Kokoro TTS.pyw` is kept as a no-console Python launcher, but it only works by double-click when Windows has a `.pyw` file association. Terminal mode starts only the FastAPI process; use the tray app when you need an SSH tunnel or the browser's one-click service start.
+Both `.bat` launchers locate the `kokoro-tts` Conda environment Python directly, so normal startup does not require `conda init`. Every project-owned Python entry point uses `-E` to ignore ambient `PYTHONHOME`/`PYTHONPATH` overrides without changing those system settings. `Kokoro TTS.bat` and `Kokoro TTS.pyw` remain compatibility entry points for old installations. Terminal mode starts only the FastAPI process; use the tray app when you need an SSH tunnel or the browser's one-click service start.
 
 You can register or repair the browser start handler explicitly:
 
 ```powershell
-conda run -n kokoro-tts python windows_protocol.py register
+conda run -n kokoro-tts python -E windows_protocol.py register
+conda run -n kokoro-tts python -E windows_startup.py install-menu
 ```
 
-The handler is stored under the current user's registry hive and does not require administrator rights. It contains absolute paths, so rerun the command after moving or renaming the project folder.
+The handler is stored under the current user's registry hive and does not require administrator rights. It runs `windows_launcher.py`, which records otherwise-hidden `pythonw` startup failures in `%LOCALAPPDATA%\LocalReadTranslate\launcher.log` and shows an actionable error dialog. The handler and shortcut contain absolute paths, so rerun both commands after moving or renaming the project folder.
 
 To remove only this per-user handler:
 
 ```powershell
-conda run -n kokoro-tts python windows_protocol.py unregister
+conda run -n kokoro-tts python -E windows_protocol.py unregister
 ```
 
 For local translation, install [Ollama](https://ollama.com/) and pull a model:
@@ -144,7 +146,7 @@ Use **Keep loaded** in the Translation settings when you plan to translate or re
 
 ### Remote Ollama over LAN
 
-Right-click the Kokoro TTS tray icon and choose `Remote Service`. The bundled profile is prefilled for `10.12.96.203` but remains disabled by default, so normal startup stays local. Choose one of two connection modes:
+Right-click the **Local Read & Translate** tray icon and choose `Remote Service`. The bundled profile is prefilled for `10.12.96.203` but remains disabled by default, so normal startup stays local. Choose one of two connection modes:
 
 - `ssh`: uses your SSH agent, default keys, or matching `~/.ssh/config` entry first; an optional key file can be supplied explicitly, and a password is only used as fallback. The app loads system/OpenSSH host keys and rejects an unknown host, then forwards the remote Ollama endpoint through a local tunnel.
 - `api`: connects directly to an Ollama API base URL such as `http://10.12.96.203:11434` without creating a tunnel.
@@ -317,12 +319,15 @@ and
 for the current formula translation/read contract. The WPS PDF installation
 and formula-recognition evidence remains in
 [`iteration 9`](docs/iteration-9-2026-07-23-wps-pdf-addin.md).
+The current Windows protocol, isolated launcher and Start Menu migration
+contract is recorded in
+[`iteration 12`](docs/iteration-12-2026-07-26-windows-launch-repair.md).
 
 ## Tampermonkey Development and Publishing
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.5` (FastAPI `1.7.19`).
+The current repository metadata version is `1.15.5` (FastAPI `1.7.20`).
 
 For each release:
 
@@ -358,11 +363,13 @@ browser script and built-in test page are generated from this catalog.
 | `audio_encoding.py` | Bundled FFmpeg helpers for OGG/Opus and WebM/Opus |
 | `tray_app.py` | System tray application (background mode) |
 | `windows_protocol.py` | Per-user `localreadtranslate://` registration and exact validation for the fixed `start`, `ollama`, and `remote` actions |
-| `windows_startup.py` | Windows Startup shortcut management for tray auto-start |
-| `Kokoro TTS.bat` | Recommended tray launcher; does not require `.pyw` file association |
-| `Kokoro TTS.pyw` | No-console launcher for tray app |
+| `windows_launcher.py` | Isolated `pythonw` bootstrap with visible failure dialog and `%LOCALAPPDATA%\LocalReadTranslate\launcher.log` diagnostics |
+| `windows_startup.py` | Start Menu and login Startup shortcut creation, validation and owned-legacy migration |
+| `LocalReadTranslate.bat` | Manual tray launcher; does not require a `.pyw` file association |
+| `Kokoro TTS.bat` / `Kokoro TTS.pyw` | Legacy-compatible launchers retained for old installations |
 | `tts-userscript.js` | Tampermonkey script for local selection read-aloud and translation |
 | `docs/greasyfork-additional-info.md` | Markdown content for the Greasy Fork additional info field |
+| `docs/iteration-12-2026-07-26-windows-launch-repair.md` | Current Windows protocol, isolated launcher and Start Menu migration release record |
 | `setup.bat` | One-click environment setup |
 | `start.bat` | Terminal-mode server launcher |
 | `install-document-addins.bat` | Current-user Word/WPS add-in installer |
@@ -511,10 +518,11 @@ Returns `api_ready` and `tts_model_loaded` separately. A healthy translation-onl
 Run the tray app once or repair the current-user protocol registration:
 
 ```powershell
-conda run -n kokoro-tts python windows_protocol.py register
+conda run -n kokoro-tts python -E windows_protocol.py register
+conda run -n kokoro-tts python -E windows_startup.py install-menu
 ```
 
-Chrome may ask whether it can open an external application; allow it only when you intentionally clicked the button. If the project folder moved, register again so the absolute handler paths point at the new location. You can always start manually with `Kokoro TTS.bat`.
+Chrome may ask whether it can open an external application; allow it only when you intentionally clicked the button. If the project folder moved, run both repair commands so the absolute handler and shortcut paths point at the new location. You can also open **Local Read & Translate** from Start or run `LocalReadTranslate.bat`. If the process still exits invisibly, inspect `%LOCALAPPDATA%\LocalReadTranslate\launcher.log`.
 
 ### The Project Server row has no models
 
@@ -527,13 +535,13 @@ Select **Local Ollama** in the Translation panel. If it is offline, click **Star
 ## ✅ Tests
 
 ```powershell
-conda run -n kokoro-tts python -m pytest tests -v
-conda run -n kokoro-tts python -m py_compile server.py document_formula.py addon_host.py addin_registration.py audio_encoding.py tray_app.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
+conda run -n kokoro-tts python -E -m pytest tests -v
+conda run -n kokoro-tts python -E -m py_compile server.py document_formula.py addon_host.py addin_registration.py audio_encoding.py tray_app.py windows_launcher.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
 node --check tts-userscript.js
 node --test tests/office-addins-core.test.cjs tests/userscript-core.test.cjs
-conda run -n kokoro-tts python scripts/sync_catalog.py --check
-conda run -n kokoro-tts python -c "from audio_encoding import validate_ffmpeg; validate_ffmpeg()"
-conda run -n kokoro-tts python -m pip check
+conda run -n kokoro-tts python -E scripts/sync_catalog.py --check
+conda run -n kokoro-tts python -E -c "from audio_encoding import validate_ffmpeg; validate_ffmpeg()"
+conda run -n kokoro-tts python -E -m pip check
 git diff --check
 ```
 

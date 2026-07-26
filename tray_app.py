@@ -1,5 +1,5 @@
 """
-tray_app.py - Kokoro TTS System Tray Application
+tray_app.py - Local Read & Translate System Tray Application
 
 Double-click to launch. The server runs in the background
 with a system tray icon for control.
@@ -38,6 +38,7 @@ from windows_runtime import WindowsNamedAutoResetEvent, WindowsNamedMutex
 from windows_startup import (
     StartupShortcutError,
     inspect_startup_shortcut,
+    reconcile_start_menu_shortcut,
     reconcile_startup_shortcut,
 )
 
@@ -48,9 +49,11 @@ from windows_startup import (
 SCRIPT_DIR = Path(__file__).parent.resolve()
 SERVER_SCRIPT = SCRIPT_DIR / "server.py"
 ADDIN_HOST_SCRIPT = SCRIPT_DIR / "addon_host.py"
-TRAY_LAUNCHER = SCRIPT_DIR / "Kokoro TTS.bat"
+WINDOWS_LAUNCHER = SCRIPT_DIR / "windows_launcher.py"
+WINDOWS_LAUNCH_ARGUMENTS = f'-E "{WINDOWS_LAUNCHER}"'
 SETTINGS_FILE = SCRIPT_DIR / "tray_settings.json"
 CONDA_ENV_NAME = "kokoro-tts"
+APP_NAME = "Local Read & Translate"
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", SCRIPT_DIR)) / "KokoroTTS"
 LOG_FILE = APP_DATA_DIR / "server.log"
 ADDIN_DATA_DIR = (
@@ -279,7 +282,7 @@ def create_icon_image(color="green"):
 
     draw.ellipse([4, 4, size - 4, size - 4], fill=fill)
 
-    # "K" letter
+    # App initial
     try:
         font = ImageFont.truetype("segoeui.ttf", 32)
     except Exception:
@@ -288,12 +291,12 @@ def create_icon_image(color="green"):
         except Exception:
             font = ImageFont.load_default()
 
-    bbox = draw.textbbox((0, 0), "K", font=font)
+    bbox = draw.textbbox((0, 0), "L", font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
     tx = (size - tw) // 2
     ty = (size - th) // 2 - 2
-    draw.text((tx, ty), "K", fill=(255, 255, 255, 255), font=font)
+    draw.text((tx, ty), "L", fill=(255, 255, 255, 255), font=font)
 
     return img
 
@@ -442,6 +445,7 @@ class TrayApp:
         self.is_running = False
         self._lock = threading.Lock()
         self.python_exe = find_conda_python(CONDA_ENV_NAME)
+        self.pythonw_exe = find_conda_pythonw(CONDA_ENV_NAME)
         self.remote_tunnel = None
         self.remote_tunnel_local_port = None
         self._enable_windows_protocol = bool(enable_windows_protocol)
@@ -468,8 +472,8 @@ class TrayApp:
     def _initialize_windows_protocol(self, *, start_listener):
         try:
             ensure_start_protocol_registered(
-                find_conda_pythonw(CONDA_ENV_NAME),
-                SCRIPT_DIR / "tray_app.py",
+                self.pythonw_exe,
+                WINDOWS_LAUNCHER,
             )
         except Exception:
             # URL registration is a convenience feature and must never prevent
@@ -653,7 +657,7 @@ class TrayApp:
         )
         try:
             self.addin_host_process = subprocess.Popen(
-                [str(self.python_exe), str(ADDIN_HOST_SCRIPT)],
+                [str(self.python_exe), "-E", str(ADDIN_HOST_SCRIPT)],
                 cwd=str(SCRIPT_DIR),
                 stdin=subprocess.DEVNULL,
                 stdout=self._addin_log_handle,
@@ -694,7 +698,7 @@ class TrayApp:
                 self.owns_server = False
                 self.is_running = True
                 self.start_addin_host()
-                self._update_icon("green", "Kokoro TTS - Running")
+                self._update_icon("green", f"{APP_NAME} - Running")
                 return
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -703,11 +707,11 @@ class TrayApp:
                     self.owns_server = False
                     self.is_running = False
                     self._update_icon(
-                        "red", f"Kokoro TTS - Port {DEFAULT_PORT} is occupied"
+                        "red", f"{APP_NAME} - Port {DEFAULT_PORT} is occupied"
                     )
                     return
 
-            self._update_icon("yellow", "Kokoro TTS - Starting...")
+            self._update_icon("yellow", f"{APP_NAME} - Starting...")
 
             env = os.environ.copy()
             self.ensure_remote_ollama_tunnel()
@@ -729,7 +733,7 @@ class TrayApp:
             APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
             self._log_handle = open(LOG_FILE, "a", encoding="utf-8")
             self.server_process = subprocess.Popen(
-                [str(self.python_exe), str(SERVER_SCRIPT)],
+                [str(self.python_exe), "-E", str(SERVER_SCRIPT)],
                 cwd=str(SCRIPT_DIR),
                 env=env,
                 startupinfo=startupinfo,
@@ -746,16 +750,16 @@ class TrayApp:
                 if self.server_process.poll() is not None:
                     self.owns_server = False
                     self.is_running = False
-                    self._update_icon("red", "Kokoro TTS - Failed to start")
+                    self._update_icon("red", f"{APP_NAME} - Failed to start")
                     self._close_log()
                     return
                 if self.get_health():
                     self.is_running = True
-                    self._update_icon("green", "Kokoro TTS - Running")
+                    self._update_icon("green", f"{APP_NAME} - Running")
                     return
                 time.sleep(1)
             self.is_running = False
-            self._update_icon("red", "Kokoro TTS - Startup timeout")
+            self._update_icon("red", f"{APP_NAME} - Startup timeout")
 
         threading.Thread(target=wait_ready, daemon=True).start()
 
@@ -772,10 +776,10 @@ class TrayApp:
             self._close_log()
             if self.get_health():
                 self.is_running = True
-                self._update_icon("green", "Kokoro TTS - External server running")
+                self._update_icon("green", f"{APP_NAME} - External server running")
                 return
             self.is_running = False
-            self._update_icon("red", "Kokoro TTS - Stopped")
+            self._update_icon("red", f"{APP_NAME} - Stopped")
 
     def restart_server(self, _=None):
         self.stop_server()
@@ -953,7 +957,7 @@ class TrayApp:
             remote.update(self.settings["remote_ollama"])
 
         window = tk.Tk()
-        window.title("Kokoro TTS - Remote Service")
+        window.title(f"{APP_NAME} - Remote Service")
         window.resizable(False, False)
 
         fields = [
@@ -1086,23 +1090,40 @@ class TrayApp:
                 ctypes.windll.user32.MessageBoxW(
                     0,
                     str(message),
-                    f"Kokoro TTS - {title}",
+                    f"{APP_NAME} - {title}",
                     0x10,
                 )
                 return
             except Exception:
                 pass
-        print(f"[Kokoro TTS] {title}: {message}")
+        print(f"[{APP_NAME}] {title}: {message}")
 
     def _init_and_reconcile_auto_start(self):
         try:
+            reconcile_start_menu_shortcut(
+                self.pythonw_exe,
+                SCRIPT_DIR,
+                WINDOWS_LAUNCH_ARGUMENTS,
+            )
+        except Exception as error:
+            self.show_error("Start Menu", str(error))
+        try:
             # 在后台线程中检查快捷方式实际是否存在，避免卡死托盘启动
-            actual = inspect_startup_shortcut(TRAY_LAUNCHER, SCRIPT_DIR)
+            actual = inspect_startup_shortcut(
+                self.pythonw_exe,
+                SCRIPT_DIR,
+                arguments=WINDOWS_LAUNCH_ARGUMENTS,
+            )
             self.auto_start_cached = actual
             
             desired = bool(self.settings.get("auto_start", False))
             if desired != actual:
-                actual = reconcile_startup_shortcut(desired, TRAY_LAUNCHER, SCRIPT_DIR)
+                actual = reconcile_startup_shortcut(
+                    desired,
+                    self.pythonw_exe,
+                    SCRIPT_DIR,
+                    arguments=WINDOWS_LAUNCH_ARGUMENTS,
+                )
                 self.auto_start_cached = actual
         except Exception:
             pass
@@ -1120,8 +1141,9 @@ class TrayApp:
             requested = not previous
             actual = reconcile_startup_shortcut(
                 requested,
-                TRAY_LAUNCHER,
+                self.pythonw_exe,
                 SCRIPT_DIR,
+                arguments=WINDOWS_LAUNCH_ARGUMENTS,
             )
             self.auto_start_cached = actual
         except StartupShortcutError as error:
@@ -1275,9 +1297,9 @@ class TrayApp:
         import pystray
 
         icon = pystray.Icon(
-            name="kokoro-tts",
+            name="local-read-translate",
             icon=create_icon_image("yellow"),
-            title="Kokoro TTS - Starting...",
+            title=f"{APP_NAME} - Starting...",
             menu=self._build_menu(),
         )
         self.tray_icon = icon
@@ -1317,8 +1339,8 @@ def main(argv=None):
 
         ctypes.windll.user32.MessageBoxW(
             0,
-            "Kokoro TTS 已在运行。",
-            "Kokoro TTS",
+            f"{APP_NAME} 已在运行。",
+            APP_NAME,
             0x40,
         )
         return 0
