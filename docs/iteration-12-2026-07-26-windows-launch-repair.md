@@ -85,7 +85,10 @@ C:\Users\YanShibo\.conda\envs\kokoro-tts\DLLs\select.pyd
 - `node --check`、Python 编译、目录同步检查、bundled FFmpeg、
   `pip check`、`git diff --check` 全部通过。
 
-GitHub CI 证据在发布提交完成后补入本记录。
+代码提交 `8edcb16` 已由 GitHub Actions 运行
+[`30181598032`](https://github.com/Yan-ShiBo/LocalReadTranslate/actions/runs/30181598032)
+验证通过；`test` 作业中的目录同步、Python 语法、bundled FFmpeg、Python
+测试、JavaScript 语法与测试、依赖检查均为 `success`。
 
 ## 修复命令
 
