@@ -1,5 +1,9 @@
 # Iteration 12: Windows 启动链路与快捷方式修复
 
+> **Iteration 13 后续说明：** Windows 启动链路保持不变。当前 userscript 为
+> `1.15.6`；设置面板的跨页面状态缓存与后台刷新见
+> [`iteration-13-2026-07-26-userscript-health-cache.md`](iteration-13-2026-07-26-userscript-health-cache.md)。
+
 **状态：** userscript 保持 `1.15.5`，FastAPI 升级为 `1.7.20`。网页
 **Start local service**、**Local Ollama → Start**、开始菜单启动和登录自启
 现在共用同一个隔离且可诊断的 Windows 启动链路。

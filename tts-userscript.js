@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.5
+// @version      1.15.6
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -212,6 +212,36 @@ const KokoroTTSCore = (() => {
       translationSource,
       translationModels,
       translateModel: translationModels[translationSource] || "",
+    };
+  }
+
+  function normalizeTranslationHealthSnapshot(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    if (value.version !== 1 || typeof value.mediatorOnline !== "boolean") {
+      return null;
+    }
+    const savedAt = Number(value.savedAt);
+    if (!Number.isFinite(savedAt) || savedAt < 0) {
+      return null;
+    }
+    const payload = value.payload;
+    if (
+      payload !== null &&
+      (!payload || typeof payload !== "object" || Array.isArray(payload))
+    ) {
+      return null;
+    }
+    const healthError = typeof value.healthError === "string"
+      ? value.healthError.trim()
+      : "";
+    return {
+      version: 1,
+      savedAt,
+      mediatorOnline: value.mediatorOnline,
+      payload,
+      healthError,
     };
   }
 
@@ -1262,6 +1292,7 @@ const KokoroTTSCore = (() => {
     latexToReadableFormula,
     mergeTranslationModelOptions,
     chooseTranslationModelFallback,
+    normalizeTranslationHealthSnapshot,
     normalizeTranslationPreferences,
     normalizeAudioBuffer,
     normalizeAudioBlob,
@@ -1308,6 +1339,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   const API_TRANSLATE_UNLOAD_URL = API_BASE + "/translate/model/unload";
   const API_READ_PREPARE_URL = API_BASE + "/read/prepare";
   const API_FORMULA_VERBALIZE_URL = API_BASE + "/formula/verbalize";
+  const TRANSLATION_HEALTH_CACHE_KEY = "local-read-translate-translation-health-v1";
   const LOCAL_SERVICE_START_URL = "localreadtranslate://start";
   const LOCAL_OLLAMA_START_URL = "localreadtranslate://ollama";
   const REMOTE_SERVICE_OPEN_URL = "localreadtranslate://remote";
@@ -1359,6 +1391,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   let mediatorOnline = false;
   let translationHealthPayload = null;
   let translationHealthError = "";
+  let translationHealthStateKnown = false;
   let translationHealthRequestId = 0;
   let translationModelActionRequestId = 0;
   const translationSourceActionPending = new Set();
@@ -1392,6 +1425,49 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       GM_setValue("kokoro-tts-settings", settings);
     } catch (err) {
       console.error("[Kokoro TTS] Cannot save settings", err);
+    }
+  }
+
+  function restoreTranslationHealthSnapshot() {
+    if (translationHealthStateKnown) return true;
+    try {
+      const snapshot = KokoroTTSCore.normalizeTranslationHealthSnapshot(
+        GM_getValue(TRANSLATION_HEALTH_CACHE_KEY, null)
+      );
+      if (!snapshot) return false;
+      mediatorOnline = snapshot.mediatorOnline;
+      translationHealthPayload = snapshot.payload;
+      translationHealthError = snapshot.healthError;
+      translationHealthStateKnown = true;
+      translationDiscoveryReady = Boolean(
+        KokoroTTSCore.chooseTranslationModel(
+          translationHealthPayload || {},
+          settings.translateModel,
+          settings.translationSource
+        )
+      );
+      return true;
+    } catch (error) {
+      console.warn("[Local Read & Translate] Cannot restore translation status", error);
+      return false;
+    }
+  }
+
+  function persistTranslationHealthSnapshot() {
+    if (!translationHealthStateKnown) return;
+    try {
+      const snapshot = KokoroTTSCore.normalizeTranslationHealthSnapshot({
+        version: 1,
+        savedAt: Date.now(),
+        mediatorOnline,
+        payload: translationHealthPayload,
+        healthError: translationHealthError,
+      });
+      if (snapshot) {
+        GM_setValue(TRANSLATION_HEALTH_CACHE_KEY, snapshot);
+      }
+    } catch (error) {
+      console.warn("[Local Read & Translate] Cannot save translation status", error);
     }
   }
 
@@ -2844,6 +2920,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     document.body.appendChild(panel);
     settingsPanel = panel;
+    const restoredCachedState = restoreTranslationHealthSnapshot();
 
     // Event listeners
     panel.querySelector("#tts-voice-select").addEventListener("change", (e) => {
@@ -2921,7 +2998,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     renderTranslationSettingsState();
     // Check server status
     checkServerStatus();
-    checkTranslationStatus();
+    checkTranslationStatus({
+      preserveVisibleState:
+        restoredCachedState || Boolean(translationHealthPayload),
+    });
   }
 
   function setTranslationControlMessage(message, color = "#f0c040") {
@@ -3133,6 +3213,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   function updateLocalServiceControl(online, starting = localServiceStartPending) {
     const button = document.getElementById("tts-start-local-service-btn");
     mediatorOnline = Boolean(online);
+    if (translationHealthStateKnown && !starting) {
+      persistTranslationHealthSnapshot();
+    }
     const state = KokoroTTSCore.getLocalServiceControlState({ online, starting });
     if (button) {
       const className = online
@@ -3339,8 +3422,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     if (!settingsPanel) return Promise.resolve(false);
     const requestId = ++translationHealthRequestId;
 
-    translationHealthError = "";
-    if (!preserveVisibleState || !translationHealthPayload) {
+    if (!preserveVisibleState || !translationHealthStateKnown) {
+      translationHealthError = "";
       translationHealthPayload = null;
       renderTranslationSettingsState();
     }
@@ -3357,8 +3440,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
               return;
             }
             if (resp.status !== 200) {
+              translationDiscoveryReady = false;
               translationHealthError = "Translation health check failed.";
               translationHealthPayload = null;
+              translationHealthStateKnown = true;
+              persistTranslationHealthSnapshot();
               renderTranslationSettingsState();
               resolve(false);
               return;
@@ -3367,8 +3453,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
             try {
               payload = JSON.parse(resp.responseText || "{}");
             } catch {
+              translationDiscoveryReady = false;
               translationHealthError = "Invalid translation status.";
               translationHealthPayload = null;
+              translationHealthStateKnown = true;
+              persistTranslationHealthSnapshot();
               renderTranslationSettingsState();
               resolve(false);
               return;
@@ -3379,11 +3468,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
             translationHealthError = "";
             translationHealthPayload = payload;
             mediatorOnline = true;
+            translationHealthStateKnown = true;
             const selectedSourceState = Array.isArray(payload.sources)
               ? payload.sources.find((item) => item && item.id === settings.translationSource)
               : null;
             if (fallbackModel && fallbackModel !== settings.translateModel) {
               rememberTranslationModel(fallbackModel);
+              persistTranslationHealthSnapshot();
               checkTranslationStatus({ preserveVisibleState: true }).then(resolve);
               return;
             }
@@ -3411,6 +3502,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
                 true
               );
             }
+            persistTranslationHealthSnapshot();
             renderTranslationSettingsState();
             resolve(true);
           },
@@ -3422,6 +3514,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
             translationDiscoveryReady = false;
             translationHealthError = "Translation status unavailable.";
             translationHealthPayload = null;
+            translationHealthStateKnown = true;
+            persistTranslationHealthSnapshot();
             renderTranslationSettingsState();
             resolve(false);
           },
@@ -3433,6 +3527,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
             translationDiscoveryReady = false;
             translationHealthError = "Translation status timed out.";
             translationHealthPayload = null;
+            translationHealthStateKnown = true;
+            persistTranslationHealthSnapshot();
             renderTranslationSettingsState();
             resolve(false);
           },
@@ -3445,6 +3541,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         translationDiscoveryReady = false;
         translationHealthError = "Translation status unavailable.";
         translationHealthPayload = null;
+        translationHealthStateKnown = true;
+        persistTranslationHealthSnapshot();
         renderTranslationSettingsState();
         resolve(false);
       }

@@ -55,6 +55,15 @@
   </style>
   <script>
     window.__LOCAL_READ_TRANSLATE_VISUAL_FIXTURE__ = true;
+    const fixtureParams = new URLSearchParams(window.location.search);
+    const fixtureCase = fixtureParams.get("case") || "default";
+    const requestedDelay = Number(fixtureParams.get("healthDelay"));
+    const translationHealthDelay = Number.isFinite(requestedDelay)
+      ? Math.max(0, requestedDelay)
+      : 30;
+    const remoteReachable = fixtureParams.get("remoteReachable") !== "0";
+    const fixtureStorageKey = (key) =>
+      `local-read-translate-fixture:${fixtureCase}:${key}`;
     const remoteModel = "remote:project-server:qwen3:30b";
     const savedSettings = {
       settingsVersion: 4,
@@ -73,22 +82,38 @@
       style.textContent = cssText;
       document.head.appendChild(style);
     };
-    window.GM_getValue = (_key, fallback) => ({ ...fallback, ...savedSettings });
-    window.GM_setValue = () => {};
+    window.GM_getValue = (key, fallback) => {
+      const stored = window.localStorage.getItem(fixtureStorageKey(key));
+      if (stored !== null) {
+        try {
+          return JSON.parse(stored);
+        } catch {}
+      }
+      return key === "kokoro-tts-settings"
+        ? { ...fallback, ...savedSettings }
+        : fallback;
+    };
+    window.GM_setValue = (key, value) => {
+      window.localStorage.setItem(fixtureStorageKey(key), JSON.stringify(value));
+    };
     window.GM_setClipboard = () => {};
+    window.__translationHealthRequests = 0;
     window.GM_xmlhttpRequest = (options) => {
       const isTranslationHealth = options.url.includes("/translate/health");
+      if (isTranslationHealth) window.__translationHealthRequests += 1;
       const payload = isTranslationHealth
         ? {
-            available_model_options: [
-              {
-                value: remoteModel,
-                label: "Project Server / qwen3:30b",
-                source: "project-server",
-                source_name: "Project Server",
-                model: "qwen3:30b",
-              },
-            ],
+            available_model_options: remoteReachable
+              ? [
+                  {
+                    value: remoteModel,
+                    label: "Project Server / qwen3:30b",
+                    source: "project-server",
+                    source_name: "Project Server",
+                    model: "qwen3:30b",
+                  },
+                ]
+              : [],
             sources: [
               {
                 id: "local",
@@ -101,16 +126,18 @@
                 id: "project-server",
                 name: "Project Server",
                 kind: "remote",
-                reachable: true,
-                models: [
-                  {
-                    value: remoteModel,
-                    name: "qwen3:30b",
-                    running: true,
-                    pinned: false,
-                    usable_for_translation: true,
-                  },
-                ],
+                reachable: remoteReachable,
+                models: remoteReachable
+                  ? [
+                      {
+                        value: remoteModel,
+                        name: "qwen3:30b",
+                        running: true,
+                        pinned: false,
+                        usable_for_translation: true,
+                      },
+                    ]
+                  : [],
               },
             ],
           }
@@ -125,7 +152,7 @@
           responseText: JSON.stringify(payload),
           response: payload,
         });
-      }, 30);
+      }, isTranslationHealth ? translationHealthDelay : 30);
       return {
         abort() {
           window.clearTimeout(timer);

@@ -1126,7 +1126,7 @@ test("background translation health refresh keeps the ready settings visible", (
   );
   assert.match(
     healthBody,
-    /if \(!preserveVisibleState \|\| !translationHealthPayload\)/
+    /if \(!preserveVisibleState \|\| !translationHealthStateKnown\)/
   );
   assert.match(
     testBody,
@@ -1139,6 +1139,86 @@ test("background translation health refresh keeps the ready settings visible", (
   assert.match(
     sourceChangeBody,
     /checkTranslationStatus\(\{\s*preserveVisibleState:\s*true\s*\}\)/
+  );
+});
+
+test("translation health cache restores the last page state before refreshing", () => {
+  const {
+    normalizeTranslationHealthSnapshot,
+  } = require("../tts-userscript.js");
+  const payload = {
+    status: "available",
+    available_model_options: [
+      {
+        value: "remote:project-server:qwen3:30b",
+        label: "Project Server / qwen3:30b",
+        source: "project-server",
+      },
+    ],
+    sources: [
+      {
+        id: "project-server",
+        name: "Project Server",
+        reachable: true,
+        models: [],
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    normalizeTranslationHealthSnapshot({
+      version: 1,
+      savedAt: 1234,
+      mediatorOnline: true,
+      payload,
+      healthError: "",
+    }),
+    {
+      version: 1,
+      savedAt: 1234,
+      mediatorOnline: true,
+      payload,
+      healthError: "",
+    }
+  );
+  assert.equal(
+    normalizeTranslationHealthSnapshot({
+      version: 2,
+      savedAt: 1234,
+      mediatorOnline: true,
+      payload,
+    }),
+    null
+  );
+  assert.equal(normalizeTranslationHealthSnapshot("not-an-object"), null);
+});
+
+test("settings hydrate cached translation health before the background check", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "tts-userscript.js"),
+    "utf8"
+  );
+  const panelBody = source.match(
+    /function createSettingsPanel[\s\S]*?(?=\n  function setTranslationControlMessage)/
+  )?.[0] || "";
+
+  assert.match(source, /const TRANSLATION_HEALTH_CACHE_KEY\s*=/);
+  assert.match(source, /function restoreTranslationHealthSnapshot\(\)/);
+  assert.match(source, /function persistTranslationHealthSnapshot\(\)/);
+  assert.match(
+    panelBody,
+    /const restoredCachedState = restoreTranslationHealthSnapshot\(\);/
+  );
+  const restoreIndex = panelBody.indexOf(
+    "const restoredCachedState = restoreTranslationHealthSnapshot();"
+  );
+  const renderIndex = panelBody.lastIndexOf("renderTranslationSettingsState();");
+  const refreshIndex = panelBody.lastIndexOf("checkTranslationStatus({");
+  assert.ok(restoreIndex >= 0 && restoreIndex < renderIndex);
+  assert.ok(renderIndex < refreshIndex);
+  assert.match(
+    panelBody,
+    /preserveVisibleState:\s*restoredCachedState \|\| Boolean\(translationHealthPayload\),\s*\}\)/
   );
 });
 

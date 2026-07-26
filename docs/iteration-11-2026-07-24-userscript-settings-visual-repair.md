@@ -1,5 +1,9 @@
 # Iteration 11：网页设置面板视觉修复与跨站样式隔离
 
+> **Iteration 13 后续说明：** 本文件保留 `1.15.5` 的视觉验收。当前
+> userscript 为 `1.15.6`；恢复上次状态并后台刷新见
+> [`iteration-13-2026-07-26-userscript-health-cache.md`](iteration-13-2026-07-26-userscript-health-cache.md)。
+
 **状态：** userscript 升级为 `1.15.5`，FastAPI 保持 `1.7.19`。来源发现、
 模型过滤、翻译、朗读、常驻和卸载契约没有改变；本轮只修复网页设置面板的视觉层级、
 表单样式污染和窄屏定位。

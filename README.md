@@ -322,12 +322,18 @@ and formula-recognition evidence remains in
 The current Windows protocol, isolated launcher and Start Menu migration
 contract is recorded in
 [`iteration 12`](docs/iteration-12-2026-07-26-windows-launch-repair.md).
+The current userscript startup-state contract is recorded in
+[`iteration 13`](docs/iteration-13-2026-07-26-userscript-health-cache.md):
+after the first successful discovery, reopening the panel or reloading a page
+renders the last known source/model state immediately while a background health
+request refreshes it. A first-ever open with no valid snapshot still shows the
+checking state.
 
 ## Tampermonkey Development and Publishing
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.5` (FastAPI `1.7.20`).
+The current repository metadata version is `1.15.6` (FastAPI `1.7.20`).
 
 For each release:
 
@@ -367,8 +373,9 @@ browser script and built-in test page are generated from this catalog.
 | `windows_startup.py` | Start Menu and login Startup shortcut creation, validation and owned-legacy migration |
 | `LocalReadTranslate.bat` | Manual tray launcher; does not require a `.pyw` file association |
 | `Kokoro TTS.bat` / `Kokoro TTS.pyw` | Legacy-compatible launchers retained for old installations |
-| `tts-userscript.js` | Tampermonkey script for local selection read-aloud and translation |
+| `tts-userscript.js` | Tampermonkey script for local selection read-aloud and translation, with cached source/model state followed by background health refresh |
 | `docs/greasyfork-additional-info.md` | Markdown content for the Greasy Fork additional info field |
+| `docs/iteration-13-2026-07-26-userscript-health-cache.md` | Current userscript cached-health and background-refresh release record |
 | `docs/iteration-12-2026-07-26-windows-launch-repair.md` | Current Windows protocol, isolated launcher and Start Menu migration release record |
 | `setup.bat` | One-click environment setup |
 | `start.bat` | Terminal-mode server launcher |
@@ -379,7 +386,7 @@ browser script and built-in test page are generated from this catalog.
 | `config/tts_catalog.json` | Canonical voices, speeds and defaults |
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
 | `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
-| `tests/fixtures/userscript-settings-hostile.html` | Hostile page-style visual regression fixture for the userscript settings panel |
+| `tests/fixtures/userscript-settings-hostile.html` | Hostile page-style, delayed-health and cross-page cache visual regression fixture for the userscript settings panel |
 | `docs/iteration-11-2026-07-24-userscript-settings-visual-repair.md` | Current userscript settings visual-isolation release record |
 | `docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md` | Current document formula translation/read parity release record |
 | `docs/iteration-9-2026-07-23-wps-pdf-addin.md` | Historical WPS PDF read/translate/formula-to-LaTeX add-in release record |

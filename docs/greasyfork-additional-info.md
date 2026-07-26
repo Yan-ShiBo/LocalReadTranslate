@@ -25,7 +25,8 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 - 项目服务器未连接时选择服务器来源会显示 **Connect**，通过固定 `localreadtranslate://remote` 操作打开托盘的 `Remote Service` 窗口；已连接时不再重复要求连接
 - 本地 API 尚未运行时只显示 **Start local service**；模型、翻译测试、Advanced 和 Read aloud 都隐藏，按钮打开固定的 `localreadtranslate://start` 操作并等待服务就绪
 - 已连接来源没有可翻译生成模型时仍显示“已连接”，只提示安装生成模型，不要求重复连接；健康检查失败则显示明确的 **Unavailable**
-- 测试翻译、切换来源/模型以及常驻/卸载后的后台刷新会保留当前可见状态，不再反复闪回 **Checking translation sources...**；切换来源、模型或目标语言会清除不再匹配的旧测试结果
+- 第一次真正没有历史状态时才显示 **Checking translation sources...**；之后重新打开设置或刷新网页时会先恢复上次的来源、模型和可用状态，再在后台静默检查并自动更新
+- 测试翻译、切换来源/模型以及常驻/卸载后的后台刷新也会保留当前可见状态；切换来源、模型或目标语言会清除不再匹配的旧测试结果
 - 目标语言和当前可执行的模型常驻/卸载操作收进 **Advanced**；声音与语速收进 **Read aloud**
 - 模型已退出但仍有 pin 时显示 **Remove keep-alive**，只清 pin、不重新加载；卸载只有在运行列表确认模型消失时才报告成功，仍驻留会显示 `still_running`
 - 英文会尽量原样保留，中文会翻成英文；英文含公式的朗读会优先开始正文，公式在后台变成英文口语描述
@@ -42,7 +43,7 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.15.5`（FastAPI `1.7.20`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.6`（FastAPI `1.7.20`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
 
 1. 按项目 README 完成环境安装，并至少启动本地 FastAPI 服务。
 2. `Read` 需要 Kokoro TTS 环境；Kokoro 会在第一次朗读时按需加载，不会因仅启动 API 或仅使用远程翻译而占用本地 GPU。
@@ -110,6 +111,8 @@ http://127.0.0.1:5000/health
 ### 翻译健康检测失败
 
 通常是浏览器脚本已更新，但本地后台服务还没重启到最新版。重启本地服务后再刷新网页。
+`1.15.6` 会在后台响应到达前短暂显示上次已知状态，但错误、超时或离线结果返回后会
+立即替换旧状态，不会一直把缓存显示为当前事实。
 
 ### 翻译第一次比较慢
 

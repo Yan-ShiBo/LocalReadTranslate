@@ -1,8 +1,9 @@
 # Iteration 10：文档译文 LaTeX 与公式朗读一致性
 
 > **Iteration 11 后续说明：** 本文件保留 userscript `1.15.4` 的公式翻译与朗读
-> 验收记录。当前仓库 userscript 已升级为 `1.15.5`；网页设置面板的视觉修复、跨站
-> 样式隔离和窄屏证据见
+> 验收记录。当前仓库 userscript 已升级为 `1.15.6`；跨页面状态缓存与后台刷新见
+> [`iteration-13-2026-07-26-userscript-health-cache.md`](iteration-13-2026-07-26-userscript-health-cache.md)，
+> 网页设置面板的视觉修复、跨站样式隔离和窄屏证据见
 > [`iteration-11-2026-07-24-userscript-settings-visual-repair.md`](iteration-11-2026-07-24-userscript-settings-visual-repair.md)。
 
 **状态：** userscript 升级为 `1.15.4`，FastAPI 保持 `1.7.19`。Word、WPS

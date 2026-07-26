@@ -3,7 +3,10 @@
 > **Iteration 11 note:** This source/model contract now also governs the shared
 > Word/WPS document task pane, including the non-writing WPS PDF adapter and its
 > model-assisted formula-selection-to-LaTeX copy action. Current repository metadata is userscript
-> `1.15.5` / FastAPI `1.7.20`; the Windows protocol and isolated launcher are
+> `1.15.6` / FastAPI `1.7.20`; cached page startup and background health refresh
+> are recorded in
+> [`../../iteration-13-2026-07-26-userscript-health-cache.md`](../../iteration-13-2026-07-26-userscript-health-cache.md);
+> the Windows protocol and isolated launcher are
 > recorded in
 > [`../../iteration-12-2026-07-26-windows-launch-repair.md`](../../iteration-12-2026-07-26-windows-launch-repair.md); the
 > LaTeX/Office/WPS formula core is recorded in iteration 6; the current
@@ -39,6 +42,7 @@ Completed and verified on 2026-07-23:
 - unload preserves an explicit `keep_alive: 0`, removes pin before the request, restores it on failure, and reports `still_running` when post-request source state still contains the model; an already absent model clears only its stale pin without a generation call;
 - model-source failures use source-neutral public errors, so a remote failure is not mislabeled as local Ollama;
 - translation-test, source/model-switch, and residency-action refreshes preserve the last valid source view while the health request is pending instead of replacing the panel with a checking state;
+- after the first resolved health state, panel reopen and page reload synchronously restore a validated versioned snapshot before rendering, then refresh it in the background; the first-ever uncached view still reports Checking;
 - request generations prevent an older health or model-lifecycle response from overwriting a newer source/model selection, and changing source, model, or target language clears the stale test result;
 - source-action polling waits for each health request before scheduling the next one, so slow checks cannot accumulate overlapping requests;
 - the complete backend suite passes **212 tests plus 17 subtests** and the userscript core suite passes **48 tests**;
@@ -192,9 +196,10 @@ Automated verification covers:
 - local Ollama startup idempotence and remote-dialog dispatch without credential exposure;
 - actual unload ordering and post-request running-state verification;
 - non-blocking background health refresh, stale-response rejection, serialized source polling, and stale translation-test reset;
+- cross-page health snapshot validation, restore-before-render ordering, and background replacement of a cached state;
 - Trusted Types sink regression and syntax checks.
 
-The normal compact panel and narrow viewport were exercised with the production userscript in an isolated ordinary-page harness; the source switch showed only server models and the `390 × 844` viewport had no horizontal overflow. A delayed-health harness also verified that source switching, successful test translation, and model switching do not flash the checking state, and that the old test result is cleared after the model changes. Trusted Types sinks, native DOM construction, trust guards, syntax, and request behavior are covered by regression tests. Tampermonkey's protected update page for `1.15.2` still requires the user to click the final confirmation before the installed copy can be rechecked on a strict production page; this browser-owned consent step is not bypassed.
+The normal compact panel and narrow viewport were exercised with the production userscript in an isolated ordinary-page harness; the source switch showed only server models and the `390 × 844` viewport had no horizontal overflow. A delayed-health harness also verified that source switching, successful test translation, and model switching do not flash the checking state, and that the old test result is cleared after the model changes. Iteration 13 extended that harness with persistent test storage and a `1.2s` health delay: a reload rendered the previous Ready/source/model state before the response, then replaced it with Connect server when the delayed backend snapshot reported the server unavailable. Trusted Types sinks, native DOM construction, trust guards, syntax, and request behavior are covered by regression tests. Tampermonkey's protected update page still requires the user to click the final confirmation before the installed copy can be rechecked on a strict production page; this browser-owned consent step is not bypassed.
 
 ## Rollout
 
