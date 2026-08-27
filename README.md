@@ -20,6 +20,7 @@
 - **Backend-driven source choice** — While the mediator is online, Local Ollama and Project Server remain explicit choices; the selected source shows either its one truthful recovery action or only its discovered generation models
 - **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
 - **Copy selection as canonical LaTeX** — Copy selected prose without translation, preserve paragraph breaks, and normalize detected inline/display MathJax, MathML, and KaTeX formulas to `$...$` / `$$...$$`
+- **ChatGPT formula source preservation** — Read the outer `data-math-source` / labeled math container even when KaTeX renders HTML only; partial formula selections retain the full source instead of flattening roots, fractions, and subscripts
 - **Installable Word/WPS document add-ins** — The shared task pane brings source-first translation and local read-aloud into Word, WPS Writer and WPS PDF; editable Word/Writer documents retain bidirectional native-equation/LaTeX conversion, while selectable WPS PDF formulas can be recognized and copied as canonical LaTeX with the chosen model
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
@@ -333,7 +334,9 @@ checking state.
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.6` (FastAPI `1.7.20`).
+The current repository metadata version is `1.15.7` (FastAPI `1.7.20`). This version fixes ChatGPT formula copying by preserving its outer math-source container. The formula selection tests use jsdom only as a development dependency; the installed userscript has no new runtime dependency.
+
+The root cause and validation record are in [iteration 14](docs/iteration-14-2026-08-27-chatgpt-formula-copy.md).
 
 For each release:
 
@@ -387,6 +390,8 @@ browser script and built-in test page are generated from this catalog.
 | `scripts/sync_catalog.py` | Synchronizes the catalog into the userscript |
 | `tests/fixtures/latex-formula-corpus.md` | 50-formula native conversion and round-trip corpus |
 | `tests/fixtures/userscript-settings-hostile.html` | Hostile page-style, delayed-health and cross-page cache visual regression fixture for the userscript settings panel |
+| `tests/fixtures/chatgpt-formula.html` | Sanitized HTML-only ChatGPT formula DOM with source on the outer math container |
+| `tests/userscript-selection.test.cjs` | Real DOM/Range regression tests for formula selection and canonical LaTeX copying |
 | `docs/iteration-11-2026-07-24-userscript-settings-visual-repair.md` | Current userscript settings visual-isolation release record |
 | `docs/iteration-10-2026-07-24-document-formula-translation-read-parity.md` | Current document formula translation/read parity release record |
 | `docs/iteration-9-2026-07-23-wps-pdf-addin.md` | Historical WPS PDF read/translate/formula-to-LaTeX add-in release record |
@@ -541,16 +546,26 @@ Select **Local Ollama** in the Translation panel. If it is offline, click **Star
 
 ## ✅ Tests
 
+The JavaScript tests use Node.js 24 and the pnpm version pinned in `package.json`.
+
 ```powershell
 conda run -n kokoro-tts python -E -m pytest tests -v
 conda run -n kokoro-tts python -E -m py_compile server.py document_formula.py addon_host.py addin_registration.py audio_encoding.py tray_app.py windows_launcher.py "Kokoro TTS.pyw" tts_catalog.py windows_protocol.py windows_runtime.py windows_startup.py scripts/sync_catalog.py
 node --check tts-userscript.js
-node --test tests/office-addins-core.test.cjs tests/userscript-core.test.cjs
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm test
 conda run -n kokoro-tts python -E scripts/sync_catalog.py --check
 conda run -n kokoro-tts python -E -c "from audio_encoding import validate_ffmpeg; validate_ffmpeg()"
 conda run -n kokoro-tts python -E -m pip check
 git diff --check
 ```
+
+For focused formula-copy checks, run `pnpm test:selection`. For a real-browser
+check without the backend, run `node scripts/serve_formula_copy_fixture.cjs`
+and open the printed loopback URL. Its full/partial selection checks use the
+current extraction code and the sanitized ChatGPT DOM fixture. The page also
+links to the local userscript for a manually confirmed Tampermonkey update;
+it does not publish or push the script.
 
 The default suite uses a fake pipeline and does not load Kokoro or CUDA.
 Iteration 10 completed with `264` Python tests plus `17` Python subtests and

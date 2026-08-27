@@ -25,6 +25,11 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
+      - uses: pnpm/action-setup@v4
+
+      - name: Install JavaScript test dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
       - name: Install test dependencies
         run: python -m pip install -r requirements-test.txt
 
@@ -43,7 +48,7 @@ jobs:
       - name: JavaScript syntax and tests
         run: |
           node --check tts-userscript.js
-          node --test tests/office-addins-core.test.cjs tests/userscript-core.test.cjs
+          pnpm test
 
       - name: Dependency check
         run: python -m pip check

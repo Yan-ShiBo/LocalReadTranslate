@@ -43,7 +43,9 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.15.6`（FastAPI `1.7.20`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.7`（FastAPI `1.7.20`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+
+`1.15.7` 修复 ChatGPT 网页的公式复制：从外层 `data-math-source` 或带标签的数学容器读取原始 LaTeX。只选中公式的一部分时也保留完整源码，避免根号、分式、上下标被压成普通文字。
 
 1. 按项目 README 完成环境安装，并至少启动本地 FastAPI 服务。
 2. `Read` 需要 Kokoro TTS 环境；Kokoro 会在第一次朗读时按需加载，不会因仅启动 API 或仅使用远程翻译而占用本地 GPU。

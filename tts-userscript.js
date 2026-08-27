@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.6
+// @version      1.15.7
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -26,6 +26,525 @@
 // @run-at       document-end
 // @noframes
 // ==/UserScript==
+
+function createSelectionTools(document, window = document.defaultView) {
+  const MATH_SELECTOR = 'math, mjx-container, script[type^="math/tex"], .MathJax, .katex, .katex-display, [data-latex], [data-tex], [data-math], [data-mathml], [data-math-source], [role="math"]';
+  const SOURCE_ATTRIBUTES = ["data-math-source", "data-latex", "data-tex", "data-math", "data-mathml"];
+  const SOURCE_SELECTOR = SOURCE_ATTRIBUTES.map((name) => `[${name}]`).join(", ");
+
+  function isSourceMathWrapper(element) {
+    if (!element || element.nodeType !== 1) return false;
+    if (String(element.getAttribute("data-math-source") || "").trim()) return true;
+    if (element.getAttribute("role") !== "math") return false;
+    const label = String(element.getAttribute("aria-label") || "").trim();
+    if (!label || /^math$/i.test(label)) return false;
+
+    // A role/label is only a fallback. Do not let an empty or descriptive
+    // outer shell swallow independent MathML/MathJax or explicit child sources.
+    if (element.querySelector('math, mjx-container, mjx-math, script[type^="math/tex"]')) return false;
+    return !Array.from(element.querySelectorAll(SOURCE_SELECTOR)).some((child) =>
+      SOURCE_ATTRIBUTES.some((name) => String(child.getAttribute(name) || "").trim())
+    );
+  }
+
+  function normalizeSelectionOutput(text) {
+    return String(text || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function normalizeMathFormulaText(text) {
+    return String(text || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/\s+/g, " ")
+      .replace(/\s*([{}_^=,+*/()])\s*/g, "$1")
+      .replace(/\s*(->|→|⇒|↦|\\to|\\rightarrow|\\mapsto)\s*/g, " \\to ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function mathOperatorToTex(value) {
+    const operator = String(value || "").trim();
+    const operators = {
+      "→": "\\to",
+      "⇒": "\\Rightarrow",
+      "↦": "\\mapsto",
+      "−": "-",
+      "×": "\\times",
+      "÷": "\\div",
+      "≤": "\\le",
+      "≥": "\\ge",
+      "≠": "\\ne",
+      "≈": "\\approx",
+      "∈": "\\in",
+      "∑": "\\sum",
+      "∫": "\\int",
+    };
+    return operators[operator] || operator;
+  }
+
+  function mathMlChildrenToTex(element) {
+    return Array.from(element.childNodes || [])
+      .map(mathMlNodeToTex)
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function mathMlNodeToTex(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) {
+      return String(node.nodeValue || "").trim();
+    }
+    if (node.nodeType !== 1) return "";
+
+    const element = node;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    const children = Array.from(element.childNodes || []);
+    const child = (index) => mathMlNodeToTex(children[index]);
+
+    if (tag === "annotation") return "";
+    if (tag === "semantics") {
+      const visible = children.find((item) => {
+        const name = (item.localName || item.tagName || "").toLowerCase();
+        return name !== "annotation" && name !== "annotation-xml";
+      });
+      return mathMlNodeToTex(visible);
+    }
+    if (tag === "math" || tag === "mrow" || tag === "mpadded" || tag === "mstyle") {
+      return mathMlChildrenToTex(element);
+    }
+    if (tag === "mi" || tag === "mn" || tag === "mtext") {
+      return String(element.textContent || "").trim();
+    }
+    if (tag === "mo") {
+      return mathOperatorToTex(element.textContent);
+    }
+    if (tag === "msub") {
+      return `${child(0)}_{${child(1)}}`;
+    }
+    if (tag === "msup") {
+      return `${child(0)}^{${child(1)}}`;
+    }
+    if (tag === "msubsup") {
+      return `${child(0)}_{${child(1)}}^{${child(2)}}`;
+    }
+    if (tag === "mfrac") {
+      return `\\frac{${child(0)}}{${child(1)}}`;
+    }
+    if (tag === "msqrt") {
+      return `\\sqrt{${mathMlChildrenToTex(element)}}`;
+    }
+    if (tag === "mroot") {
+      return `\\sqrt[${child(1)}]{${child(0)}}`;
+    }
+    if (tag === "mfenced") {
+      const open = element.getAttribute("open") || "(";
+      const close = element.getAttribute("close") || ")";
+      return `${open}${mathMlChildrenToTex(element)}${close}`;
+    }
+    if (tag === "mtable") {
+      const rows = children.map(mathMlNodeToTex).filter(Boolean);
+      return `\\begin{matrix}${rows.join(" \\\\ ")}\\end{matrix}`;
+    }
+    if (tag === "mtr" || tag === "mlabeledtr") {
+      return children.map(mathMlNodeToTex).filter(Boolean).join(" & ");
+    }
+    if (tag === "mtd") {
+      return mathMlChildrenToTex(element);
+    }
+    return mathMlChildrenToTex(element);
+  }
+
+  function mathJaxChtmlChildrenToTex(element) {
+    return Array.from(element.childNodes || [])
+      .map(mathJaxChtmlNodeToTex)
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function isKatexElement(element) {
+    return Boolean(
+      element &&
+      element.nodeType === 1 &&
+      element.classList &&
+      (element.classList.contains("katex") || element.classList.contains("katex-display"))
+    );
+  }
+
+  function closestKatexRoot(element) {
+    if (!element || element.nodeType !== 1 || !element.closest) return null;
+    return element.closest(".katex-display") || element.closest(".katex");
+  }
+
+  function normalizeMathGlyphChar(char) {
+    if (!char) return "";
+    const cp = char.codePointAt(0);
+    if (cp >= 0x1d434 && cp <= 0x1d44d) return String.fromCharCode(65 + cp - 0x1d434);
+    if (cp >= 0x1d44e && cp <= 0x1d467) return String.fromCharCode(97 + cp - 0x1d44e);
+    if (cp >= 0x1d7ce && cp <= 0x1d7d7) return String(cp - 0x1d7ce);
+    const greek = {
+      "𝛼": "\\alpha", "𝛽": "\\beta", "𝛾": "\\gamma", "𝛿": "\\delta",
+      "𝜃": "\\theta", "𝜆": "\\lambda", "𝜇": "\\mu", "𝜋": "\\pi",
+      "𝜎": "\\sigma", "𝜔": "\\omega",
+    };
+    return greek[char] || char;
+  }
+
+  function mathJaxGlyphToText(element) {
+    const className = String(element.getAttribute("class") || "");
+    const match = className.match(/\bmjx-c([0-9A-Fa-f]+)\b/);
+    if (!match) return "";
+    const codePoint = Number.parseInt(match[1], 16);
+    if (!Number.isFinite(codePoint)) return "";
+    try {
+      return normalizeMathGlyphChar(String.fromCodePoint(codePoint));
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function meaningfulMathJaxChildren(element) {
+    return Array.from(element.childNodes || []).filter((child) => {
+      if (!child) return false;
+      if (child.nodeType === 3) return Boolean(String(child.nodeValue || "").trim());
+      if (child.nodeType !== 1) return false;
+      const tag = (child.localName || child.tagName || "").toLowerCase();
+      return tag !== "mjx-assistive-mml" && tag !== "mjx-itable";
+    });
+  }
+
+  function mathJaxChtmlNodeToTex(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) {
+      return String(node.nodeValue || "").trim();
+    }
+    if (node.nodeType !== 1) return "";
+
+    const element = node;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    const children = meaningfulMathJaxChildren(element);
+    const child = (index) => mathJaxChtmlNodeToTex(children[index]);
+    const joined = () => children.map(mathJaxChtmlNodeToTex).filter(Boolean).join(" ");
+
+    if (tag === "mjx-c") {
+      return String(element.textContent || "").trim() || mathJaxGlyphToText(element);
+    }
+    if (tag === "mjx-assistive-mml") return "";
+    if (tag === "mjx-container" || tag === "mjx-math" || tag === "mjx-mrow" || tag === "mjx-texatom" || tag === "mjx-script" || tag === "mjx-box") {
+      return joined();
+    }
+    if (tag === "mjx-mi" || tag === "mjx-mn" || tag === "mjx-mtext") {
+      return String(element.textContent || "").trim() || joined();
+    }
+    if (tag === "mjx-mo") {
+      return mathOperatorToTex(String(element.textContent || "").trim() || joined());
+    }
+    if (tag === "mjx-msub") {
+      return `${child(0)}_{${child(children.length - 1)}}`;
+    }
+    if (tag === "mjx-msup") {
+      return `${child(0)}^{${child(children.length - 1)}}`;
+    }
+    if (tag === "mjx-msubsup") {
+      return `${child(0)}_{${child(1)}}^{${child(children.length - 1)}}`;
+    }
+    if (tag === "mjx-mfrac") {
+      return `\\frac{${child(0)}}{${child(1)}}`;
+    }
+    if (tag === "mjx-msqrt") {
+      return `\\sqrt{${joined()}}`;
+    }
+    if (tag === "mjx-mover" || tag === "mjx-over") {
+      const base = child(0);
+      const accent = children.slice(1).map(mathJaxChtmlNodeToTex).join(" ");
+      if (/[-_‾¯]/.test(accent)) return `\\bar{${base}}`;
+      if (/[~˜]/.test(accent)) return `\\tilde{${base}}`;
+      return `\\hat{${base}}`;
+    }
+    return String(element.textContent || "").trim() || joined();
+  }
+
+  function findTexAnnotation(element) {
+    const annotations = Array.from(element.querySelectorAll ? element.querySelectorAll("annotation") : []);
+    for (const annotation of annotations) {
+      const encoding = String(annotation.getAttribute("encoding") || "").toLowerCase();
+      if (encoding.includes("tex") || encoding.includes("latex")) {
+        const value = normalizeMathFormulaText(annotation.textContent);
+        if (value) return value;
+      }
+    }
+    return "";
+  }
+
+  function extractMathFormula(element) {
+    if (!element || element.nodeType !== 1) return "";
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+
+    if (tag === "script" && /^math\/tex/i.test(element.getAttribute("type") || "")) {
+      return normalizeMathFormulaText(element.textContent);
+    }
+
+    for (const name of SOURCE_ATTRIBUTES) {
+      // ChatGPT keeps the original TeX on an outer wrapper. Do not normalize
+      // it like rendered glyphs: spaces inside commands such as \text matter.
+      const value = name === "data-math-source"
+        ? String(element.getAttribute(name) || "").trim()
+        : normalizeMathFormulaText(element.getAttribute(name));
+      if (value) return value;
+    }
+
+    const annotation = findTexAnnotation(element);
+    if (annotation) return annotation;
+
+    const script = element.querySelector && element.querySelector('script[type^="math/tex"]');
+    if (script) {
+      const value = normalizeMathFormulaText(script.textContent);
+      if (value) return value;
+    }
+
+    const mathElement = tag === "math" ? element : element.querySelector && element.querySelector("math");
+    if (mathElement) {
+      const value = normalizeMathFormulaText(mathMlNodeToTex(mathElement));
+      if (value) return value;
+    }
+
+    if (tag === "mjx-container" || (element.querySelector && element.querySelector("mjx-math, mjx-msub, mjx-msup, mjx-mover"))) {
+      const value = normalizeMathFormulaText(mathJaxChtmlNodeToTex(element));
+      if (value) return value;
+    }
+
+    if (isKatexElement(element) || (element.querySelector && element.querySelector(".katex-mathml, .katex-html"))) {
+      const katexRoot = closestKatexRoot(element) || element;
+      const mathMl = katexRoot.querySelector && katexRoot.querySelector(".katex-mathml math");
+      if (mathMl) {
+        const value = normalizeMathFormulaText(mathMlNodeToTex(mathMl));
+        if (value) return value;
+      }
+      const texAnnotation = katexRoot.querySelector && katexRoot.querySelector('annotation[encoding*="TeX"], annotation[encoding*="tex"], annotation[encoding*="latex"]');
+      if (texAnnotation) {
+        const value = normalizeMathFormulaText(texAnnotation.textContent);
+        if (value) return value;
+      }
+    }
+
+    const aria = isSourceMathWrapper(element)
+      ? String(element.getAttribute("aria-label") || "").trim()
+      : normalizeMathFormulaText(element.getAttribute("aria-label"));
+    if (aria && !/^math$/i.test(aria)) return aria;
+
+    return normalizeMathFormulaText(element.textContent);
+  }
+
+  function isSemanticMathElement(element) {
+    if (!element || element.nodeType !== 1) return false;
+    if (isSourceMathWrapper(element)) return true;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    if (tag === "math" || tag === "mjx-container") return true;
+    if (tag === "script" && /^math\/tex/i.test(element.getAttribute("type") || "")) return true;
+    if (element.classList && element.classList.contains("MathJax")) return true;
+    if (isKatexElement(element)) return true;
+    return ["data-latex", "data-tex", "data-math", "data-mathml"].some((name) =>
+      element.hasAttribute && element.hasAttribute(name)
+    );
+  }
+
+  function isDisplayMathElement(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const tag = (element.localName || element.tagName || "").toLowerCase();
+    const type = String(element.getAttribute && element.getAttribute("type") || "");
+    const display = String(element.getAttribute && element.getAttribute("display") || "");
+    if (tag === "script" && /mode\s*=\s*display/i.test(type)) return true;
+    if (tag === "math" && /^block$/i.test(display)) return true;
+    if (tag === "mjx-container" && /^(?:true|block)$/i.test(display)) return true;
+    // The source owner can be outside KaTeX's display container. Inline
+    // style and descendants survive cloneContents(), unlike computed style.
+    if (isSourceMathWrapper(element) && (
+      (element.style && element.style.display === "block") ||
+      element.querySelector('.katex-display, .MathJax_Display, math[display="block"], mjx-container[display="true"]')
+    )) return true;
+    if (
+      element.classList &&
+      (element.classList.contains("katex-display") ||
+        element.classList.contains("MathJax_Display"))
+    ) {
+      return true;
+    }
+    return Boolean(
+      element.closest &&
+      element.closest(".katex-display, .MathJax_Display")
+    );
+  }
+
+  function closestSemanticMathElement(node) {
+    let element = null;
+    let nearestMath = null;
+    if (!node) return null;
+    if (node.nodeType === 1) {
+      element = node;
+    } else {
+      element = node.parentElement || node.parentNode;
+    }
+    while (element && element.nodeType === 1) {
+      // Retain the source-bearing owner before cloning a partial selection,
+      // even if a KaTeX glyph or an intermediate layout div is closer.
+      if (isSourceMathWrapper(element)) return element;
+      if (!nearestMath && isSemanticMathElement(element)) nearestMath = element;
+      element = element.parentElement;
+    }
+    return nearestMath;
+  }
+
+  function rectsOverlap(a, b) {
+    if (!a || !b) return false;
+    if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) return false;
+    const horizontal = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    const vertical = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    if (horizontal <= 0 || vertical <= 0) return false;
+    const overlapArea = horizontal * vertical;
+    const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+    return overlapArea / Math.max(smallerArea, 1) >= 0.08;
+  }
+
+  function rangeBoundaryIsInsideElement(range, element) {
+    return Boolean(
+      range &&
+      element &&
+      (element.contains(range.startContainer) || element.contains(range.endContainer))
+    );
+  }
+
+  function rangeLooksLikeMathOnly(range, mathEl) {
+    if (!range || !mathEl) return false;
+    const selected = String(range.toString() || "").replace(/\s+/g, "");
+    const mathText = String(mathEl.textContent || "").replace(/\s+/g, "");
+    if (!selected) return true;
+    if (!mathText) return selected.length <= 12;
+    return selected.length <= Math.max(12, Math.ceil(mathText.length * 0.55));
+  }
+
+  function serializeSelectionNode(node) {
+    if (!node) return "";
+    if (node.nodeType === 3) return node.nodeValue || "";
+    if (node.nodeType !== 1 && node.nodeType !== 11) return "";
+
+    if (node.nodeType === 1) {
+      const element = node;
+      const tag = (element.localName || element.tagName || "").toLowerCase();
+      if (tag === "style" || tag === "noscript") return "";
+      if (isSemanticMathElement(element)) {
+        const formula = extractMathFormula(element);
+        const wrapper = isDisplayMathElement(element) ? "MATH_BLOCK" : "MATH";
+        return formula ? ` [[${wrapper}: ${formula}]] ` : "";
+      }
+      if (tag === "br") return "\n";
+      if (tag === "script") return "";
+    }
+
+    const text = Array.from(node.childNodes || []).map(serializeSelectionNode).join("");
+    if (node.nodeType !== 1) return text;
+
+    const blockTags = new Set([
+      "address", "article", "aside", "blockquote", "div", "dl", "figcaption",
+      "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr",
+      "li", "main", "nav", "ol", "p", "pre", "section", "table", "tr", "ul",
+    ]);
+    const tag = (node.localName || node.tagName || "").toLowerCase();
+    return blockTags.has(tag) ? `\n${text}\n` : text;
+  }
+
+  function expandRangeToContainMath(range) {
+    if (!range) return range;
+    const newRange = range.cloneRange();
+    const selectedRect = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
+    const startMath = closestSemanticMathElement(range.startContainer);
+    const endMath = closestSemanticMathElement(range.endContainer);
+
+    try {
+      if (startMath && startMath.parentNode) {
+        newRange.setStartBefore(startMath);
+      }
+      if (endMath && endMath.parentNode) {
+        newRange.setEndAfter(endMath);
+      }
+    } catch (e) {
+      // Continue with query-based expansion below.
+    }
+
+    const common = range.commonAncestorContainer;
+    if (!common) return newRange;
+    const root = common.nodeType === 1 ? common : (common.parentElement || common.parentNode);
+    if (!root || typeof root.querySelectorAll !== "function") return newRange;
+
+    let mathElements = [];
+    try {
+      const scanRoot = root.closest && root.closest("p, li, div, section, article, body")
+        ? root.closest("p, li, div, section, article, body")
+        : root;
+      mathElements = Array.from(scanRoot.querySelectorAll(MATH_SELECTOR)).filter(isSemanticMathElement);
+      if (isSemanticMathElement(scanRoot)) {
+        mathElements.push(scanRoot);
+      }
+      if (mathElements.length === 0 && selectedRect && document.querySelectorAll) {
+        mathElements = Array.from(document.querySelectorAll(MATH_SELECTOR)).filter(isSemanticMathElement).filter((mathEl) => {
+          try {
+            return rectsOverlap(selectedRect, mathEl.getBoundingClientRect());
+          } catch (e) {
+            return false;
+          }
+        });
+      }
+    } catch (e) {
+      return newRange;
+    }
+
+    for (const mathEl of mathElements) {
+      try {
+        const intersectsDom = newRange.intersectsNode(mathEl);
+        const intersectsRect = selectedRect && rectsOverlap(selectedRect, mathEl.getBoundingClientRect());
+        if (intersectsDom || intersectsRect) {
+          if (mathEl.contains(newRange.startContainer)) {
+            newRange.setStartBefore(mathEl);
+          }
+          if (mathEl.contains(newRange.endContainer)) {
+            newRange.setEndAfter(mathEl);
+          }
+          if (
+            intersectsRect &&
+            !intersectsDom &&
+            !rangeBoundaryIsInsideElement(newRange, mathEl) &&
+            rangeLooksLikeMathOnly(range, mathEl)
+          ) {
+            newRange.setStartBefore(mathEl);
+            newRange.setEndAfter(mathEl);
+          }
+        }
+      } catch (e) {
+        // Ignore errors on specific nodes
+      }
+    }
+    return newRange;
+  }
+
+  function getSelectedText() {
+    const selection = window.getSelection();
+    if (!selection) return "";
+    const plainText = selection.toString().trim();
+    const semanticParts = [];
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      const expandedRange = expandRangeToContainMath(range);
+      semanticParts.push(serializeSelectionNode(expandedRange.cloneContents()));
+    }
+    const semanticText = normalizeSelectionOutput(semanticParts.join("\n"));
+    return semanticText || plainText;
+  }
+
+  return { getSelectedText, expandRangeToContainMath, serializeSelectionNode };
+}
 
 const KokoroTTSCore = (() => {
   const WEBM_OPUS_MIME = 'audio/webm; codecs="opus"';
@@ -1282,6 +1801,7 @@ const KokoroTTSCore = (() => {
     cjkRatio,
     createAppendQueue,
     createRequestGate,
+    createSelectionTools,
     deriveTranslationSettingsView,
     formatPlaybackProgress,
     formulaToReadableHtml,
@@ -1323,7 +1843,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 (function () {
   "use strict";
 
-  const MATH_SELECTOR = 'math, mjx-container, script[type^="math/tex"], .MathJax, .katex, .katex-display, [data-latex], [data-tex], [data-math], [data-mathml]';
+  const { getSelectedText, expandRangeToContainMath, serializeSelectionNode } =
+    KokoroTTSCore.createSelectionTools(document, window);
 
   // ════════════════════════════════════════════════════════
   //  Configuration
@@ -3743,485 +4264,6 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   //  Core logic
   // ════════════════════════════════════════════════════════
 
-  function normalizeSelectionOutput(text) {
-    return String(text || "")
-      .replace(/\r\n?/g, "\n")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n[ \t]+/g, "\n")
-      .replace(/[ \t]{2,}/g, " ")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-  }
-
-  function normalizeMathFormulaText(text) {
-    return String(text || "")
-      .replace(/\r\n?/g, "\n")
-      .replace(/\s+/g, " ")
-      .replace(/\s*([{}_^=,+*/()])\s*/g, "$1")
-      .replace(/\s*(->|→|⇒|↦|\\to|\\rightarrow|\\mapsto)\s*/g, " \\to ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  function mathOperatorToTex(value) {
-    const operator = String(value || "").trim();
-    const operators = {
-      "→": "\\to",
-      "⇒": "\\Rightarrow",
-      "↦": "\\mapsto",
-      "−": "-",
-      "×": "\\times",
-      "÷": "\\div",
-      "≤": "\\le",
-      "≥": "\\ge",
-      "≠": "\\ne",
-      "≈": "\\approx",
-      "∈": "\\in",
-      "∑": "\\sum",
-      "∫": "\\int",
-    };
-    return operators[operator] || operator;
-  }
-
-  function mathMlChildrenToTex(element) {
-    return Array.from(element.childNodes || [])
-      .map(mathMlNodeToTex)
-      .filter(Boolean)
-      .join(" ");
-  }
-
-  function mathMlNodeToTex(node) {
-    if (!node) return "";
-    if (node.nodeType === 3) {
-      return String(node.nodeValue || "").trim();
-    }
-    if (node.nodeType !== 1) return "";
-
-    const element = node;
-    const tag = (element.localName || element.tagName || "").toLowerCase();
-    const children = Array.from(element.childNodes || []);
-    const child = (index) => mathMlNodeToTex(children[index]);
-
-    if (tag === "annotation") return "";
-    if (tag === "semantics") {
-      const visible = children.find((item) => {
-        const name = (item.localName || item.tagName || "").toLowerCase();
-        return name !== "annotation" && name !== "annotation-xml";
-      });
-      return mathMlNodeToTex(visible);
-    }
-    if (tag === "math" || tag === "mrow" || tag === "mpadded" || tag === "mstyle") {
-      return mathMlChildrenToTex(element);
-    }
-    if (tag === "mi" || tag === "mn" || tag === "mtext") {
-      return String(element.textContent || "").trim();
-    }
-    if (tag === "mo") {
-      return mathOperatorToTex(element.textContent);
-    }
-    if (tag === "msub") {
-      return `${child(0)}_{${child(1)}}`;
-    }
-    if (tag === "msup") {
-      return `${child(0)}^{${child(1)}}`;
-    }
-    if (tag === "msubsup") {
-      return `${child(0)}_{${child(1)}}^{${child(2)}}`;
-    }
-    if (tag === "mfrac") {
-      return `\\frac{${child(0)}}{${child(1)}}`;
-    }
-    if (tag === "msqrt") {
-      return `\\sqrt{${mathMlChildrenToTex(element)}}`;
-    }
-    if (tag === "mroot") {
-      return `\\sqrt[${child(1)}]{${child(0)}}`;
-    }
-    if (tag === "mfenced") {
-      const open = element.getAttribute("open") || "(";
-      const close = element.getAttribute("close") || ")";
-      return `${open}${mathMlChildrenToTex(element)}${close}`;
-    }
-    if (tag === "mtable") {
-      const rows = children.map(mathMlNodeToTex).filter(Boolean);
-      return `\\begin{matrix}${rows.join(" \\\\ ")}\\end{matrix}`;
-    }
-    if (tag === "mtr" || tag === "mlabeledtr") {
-      return children.map(mathMlNodeToTex).filter(Boolean).join(" & ");
-    }
-    if (tag === "mtd") {
-      return mathMlChildrenToTex(element);
-    }
-    return mathMlChildrenToTex(element);
-  }
-
-  function mathJaxChtmlChildrenToTex(element) {
-    return Array.from(element.childNodes || [])
-      .map(mathJaxChtmlNodeToTex)
-      .filter(Boolean)
-      .join(" ");
-  }
-
-  function isKatexElement(element) {
-    return Boolean(
-      element &&
-      element.nodeType === 1 &&
-      element.classList &&
-      (element.classList.contains("katex") || element.classList.contains("katex-display"))
-    );
-  }
-
-  function closestKatexRoot(element) {
-    if (!element || element.nodeType !== 1 || !element.closest) return null;
-    return element.closest(".katex-display") || element.closest(".katex");
-  }
-
-  function normalizeMathGlyphChar(char) {
-    if (!char) return "";
-    const cp = char.codePointAt(0);
-    if (cp >= 0x1d434 && cp <= 0x1d44d) return String.fromCharCode(65 + cp - 0x1d434);
-    if (cp >= 0x1d44e && cp <= 0x1d467) return String.fromCharCode(97 + cp - 0x1d44e);
-    if (cp >= 0x1d7ce && cp <= 0x1d7d7) return String(cp - 0x1d7ce);
-    const greek = {
-      "𝛼": "\\alpha", "𝛽": "\\beta", "𝛾": "\\gamma", "𝛿": "\\delta",
-      "𝜃": "\\theta", "𝜆": "\\lambda", "𝜇": "\\mu", "𝜋": "\\pi",
-      "𝜎": "\\sigma", "𝜔": "\\omega",
-    };
-    return greek[char] || char;
-  }
-
-  function mathJaxGlyphToText(element) {
-    const className = String(element.getAttribute("class") || "");
-    const match = className.match(/\bmjx-c([0-9A-Fa-f]+)\b/);
-    if (!match) return "";
-    const codePoint = Number.parseInt(match[1], 16);
-    if (!Number.isFinite(codePoint)) return "";
-    try {
-      return normalizeMathGlyphChar(String.fromCodePoint(codePoint));
-    } catch (e) {
-      return "";
-    }
-  }
-
-  function meaningfulMathJaxChildren(element) {
-    return Array.from(element.childNodes || []).filter((child) => {
-      if (!child) return false;
-      if (child.nodeType === 3) return Boolean(String(child.nodeValue || "").trim());
-      if (child.nodeType !== 1) return false;
-      const tag = (child.localName || child.tagName || "").toLowerCase();
-      return tag !== "mjx-assistive-mml" && tag !== "mjx-itable";
-    });
-  }
-
-  function mathJaxChtmlNodeToTex(node) {
-    if (!node) return "";
-    if (node.nodeType === 3) {
-      return String(node.nodeValue || "").trim();
-    }
-    if (node.nodeType !== 1) return "";
-
-    const element = node;
-    const tag = (element.localName || element.tagName || "").toLowerCase();
-    const children = meaningfulMathJaxChildren(element);
-    const child = (index) => mathJaxChtmlNodeToTex(children[index]);
-    const joined = () => children.map(mathJaxChtmlNodeToTex).filter(Boolean).join(" ");
-
-    if (tag === "mjx-c") {
-      return String(element.textContent || "").trim() || mathJaxGlyphToText(element);
-    }
-    if (tag === "mjx-assistive-mml") return "";
-    if (tag === "mjx-container" || tag === "mjx-math" || tag === "mjx-mrow" || tag === "mjx-texatom" || tag === "mjx-script" || tag === "mjx-box") {
-      return joined();
-    }
-    if (tag === "mjx-mi" || tag === "mjx-mn" || tag === "mjx-mtext") {
-      return String(element.textContent || "").trim() || joined();
-    }
-    if (tag === "mjx-mo") {
-      return mathOperatorToTex(String(element.textContent || "").trim() || joined());
-    }
-    if (tag === "mjx-msub") {
-      return `${child(0)}_{${child(children.length - 1)}}`;
-    }
-    if (tag === "mjx-msup") {
-      return `${child(0)}^{${child(children.length - 1)}}`;
-    }
-    if (tag === "mjx-msubsup") {
-      return `${child(0)}_{${child(1)}}^{${child(children.length - 1)}}`;
-    }
-    if (tag === "mjx-mfrac") {
-      return `\\frac{${child(0)}}{${child(1)}}`;
-    }
-    if (tag === "mjx-msqrt") {
-      return `\\sqrt{${joined()}}`;
-    }
-    if (tag === "mjx-mover" || tag === "mjx-over") {
-      const base = child(0);
-      const accent = children.slice(1).map(mathJaxChtmlNodeToTex).join(" ");
-      if (/[-_‾¯]/.test(accent)) return `\\bar{${base}}`;
-      if (/[~˜]/.test(accent)) return `\\tilde{${base}}`;
-      return `\\hat{${base}}`;
-    }
-    return String(element.textContent || "").trim() || joined();
-  }
-
-  function findTexAnnotation(element) {
-    const annotations = Array.from(element.querySelectorAll ? element.querySelectorAll("annotation") : []);
-    for (const annotation of annotations) {
-      const encoding = String(annotation.getAttribute("encoding") || "").toLowerCase();
-      if (encoding.includes("tex") || encoding.includes("latex")) {
-        const value = normalizeMathFormulaText(annotation.textContent);
-        if (value) return value;
-      }
-    }
-    return "";
-  }
-
-  function extractMathFormula(element) {
-    if (!element || element.nodeType !== 1) return "";
-    const tag = (element.localName || element.tagName || "").toLowerCase();
-
-    if (tag === "script" && /^math\/tex/i.test(element.getAttribute("type") || "")) {
-      return normalizeMathFormulaText(element.textContent);
-    }
-
-    const attributeNames = ["data-latex", "data-tex", "data-math", "data-mathml"];
-    for (const name of attributeNames) {
-      const value = normalizeMathFormulaText(element.getAttribute(name));
-      if (value) return value;
-    }
-
-    const annotation = findTexAnnotation(element);
-    if (annotation) return annotation;
-
-    const script = element.querySelector && element.querySelector('script[type^="math/tex"]');
-    if (script) {
-      const value = normalizeMathFormulaText(script.textContent);
-      if (value) return value;
-    }
-
-    const mathElement = tag === "math" ? element : element.querySelector && element.querySelector("math");
-    if (mathElement) {
-      const value = normalizeMathFormulaText(mathMlNodeToTex(mathElement));
-      if (value) return value;
-    }
-
-    if (tag === "mjx-container" || (element.querySelector && element.querySelector("mjx-math, mjx-msub, mjx-msup, mjx-mover"))) {
-      const value = normalizeMathFormulaText(mathJaxChtmlNodeToTex(element));
-      if (value) return value;
-    }
-
-    if (isKatexElement(element) || (element.querySelector && element.querySelector(".katex-mathml, .katex-html"))) {
-      const katexRoot = closestKatexRoot(element) || element;
-      const mathMl = katexRoot.querySelector && katexRoot.querySelector(".katex-mathml math");
-      if (mathMl) {
-        const value = normalizeMathFormulaText(mathMlNodeToTex(mathMl));
-        if (value) return value;
-      }
-      const texAnnotation = katexRoot.querySelector && katexRoot.querySelector('annotation[encoding*="TeX"], annotation[encoding*="tex"], annotation[encoding*="latex"]');
-      if (texAnnotation) {
-        const value = normalizeMathFormulaText(texAnnotation.textContent);
-        if (value) return value;
-      }
-    }
-
-    const aria = normalizeMathFormulaText(element.getAttribute("aria-label"));
-    if (aria && !/^math$/i.test(aria)) return aria;
-
-    return normalizeMathFormulaText(element.textContent);
-  }
-
-  function isSemanticMathElement(element) {
-    if (!element || element.nodeType !== 1) return false;
-    const tag = (element.localName || element.tagName || "").toLowerCase();
-    if (tag === "math" || tag === "mjx-container") return true;
-    if (tag === "script" && /^math\/tex/i.test(element.getAttribute("type") || "")) return true;
-    if (element.classList && element.classList.contains("MathJax")) return true;
-    if (isKatexElement(element)) return true;
-    return ["data-latex", "data-tex", "data-math", "data-mathml"].some((name) =>
-      element.hasAttribute && element.hasAttribute(name)
-    );
-  }
-
-  function isDisplayMathElement(element) {
-    if (!element || element.nodeType !== 1) return false;
-    const tag = (element.localName || element.tagName || "").toLowerCase();
-    const type = String(element.getAttribute && element.getAttribute("type") || "");
-    const display = String(element.getAttribute && element.getAttribute("display") || "");
-    if (tag === "script" && /mode\s*=\s*display/i.test(type)) return true;
-    if (tag === "math" && /^block$/i.test(display)) return true;
-    if (tag === "mjx-container" && /^(?:true|block)$/i.test(display)) return true;
-    if (
-      element.classList &&
-      (element.classList.contains("katex-display") ||
-        element.classList.contains("MathJax_Display"))
-    ) {
-      return true;
-    }
-    return Boolean(
-      element.closest &&
-      element.closest(".katex-display, .MathJax_Display")
-    );
-  }
-
-  function closestSemanticMathElement(node) {
-    let element = null;
-    if (!node) return null;
-    if (node.nodeType === 1) {
-      element = node;
-    } else {
-      element = node.parentElement || node.parentNode;
-    }
-    while (element && element.nodeType === 1) {
-      if (isSemanticMathElement(element)) return element;
-      element = element.parentElement;
-    }
-    return null;
-  }
-
-  function rectsOverlap(a, b) {
-    if (!a || !b) return false;
-    if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) return false;
-    const horizontal = Math.min(a.right, b.right) - Math.max(a.left, b.left);
-    const vertical = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
-    if (horizontal <= 0 || vertical <= 0) return false;
-    const overlapArea = horizontal * vertical;
-    const smallerArea = Math.min(a.width * a.height, b.width * b.height);
-    return overlapArea / Math.max(smallerArea, 1) >= 0.08;
-  }
-
-  function rangeBoundaryIsInsideElement(range, element) {
-    return Boolean(
-      range &&
-      element &&
-      (element.contains(range.startContainer) || element.contains(range.endContainer))
-    );
-  }
-
-  function rangeLooksLikeMathOnly(range, mathEl) {
-    if (!range || !mathEl) return false;
-    const selected = String(range.toString() || "").replace(/\s+/g, "");
-    const mathText = String(mathEl.textContent || "").replace(/\s+/g, "");
-    if (!selected) return true;
-    if (!mathText) return selected.length <= 12;
-    return selected.length <= Math.max(12, Math.ceil(mathText.length * 0.55));
-  }
-
-  function serializeSelectionNode(node) {
-    if (!node) return "";
-    if (node.nodeType === 3) return node.nodeValue || "";
-    if (node.nodeType !== 1 && node.nodeType !== 11) return "";
-
-    if (node.nodeType === 1) {
-      const element = node;
-      const tag = (element.localName || element.tagName || "").toLowerCase();
-      if (tag === "style" || tag === "noscript") return "";
-      if (isSemanticMathElement(element)) {
-        const formula = extractMathFormula(element);
-        const wrapper = isDisplayMathElement(element) ? "MATH_BLOCK" : "MATH";
-        return formula ? ` [[${wrapper}: ${formula}]] ` : "";
-      }
-      if (tag === "br") return "\n";
-      if (tag === "script") return "";
-    }
-
-    const text = Array.from(node.childNodes || []).map(serializeSelectionNode).join("");
-    if (node.nodeType !== 1) return text;
-
-    const blockTags = new Set([
-      "address", "article", "aside", "blockquote", "div", "dl", "figcaption",
-      "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr",
-      "li", "main", "nav", "ol", "p", "pre", "section", "table", "tr", "ul",
-    ]);
-    const tag = (node.localName || node.tagName || "").toLowerCase();
-    return blockTags.has(tag) ? `\n${text}\n` : text;
-  }
-
-  function expandRangeToContainMath(range) {
-    if (!range) return range;
-    const newRange = range.cloneRange();
-    const selectedRect = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
-    const startMath = closestSemanticMathElement(range.startContainer);
-    const endMath = closestSemanticMathElement(range.endContainer);
-
-    try {
-      if (startMath && startMath.parentNode) {
-        newRange.setStartBefore(startMath);
-      }
-      if (endMath && endMath.parentNode) {
-        newRange.setEndAfter(endMath);
-      }
-    } catch (e) {
-      // Continue with query-based expansion below.
-    }
-
-    const common = range.commonAncestorContainer;
-    if (!common) return newRange;
-    const root = common.nodeType === 1 ? common : (common.parentElement || common.parentNode);
-    if (!root || typeof root.querySelectorAll !== "function") return newRange;
-
-    let mathElements = [];
-    try {
-      const scanRoot = root.closest && root.closest("p, li, div, section, article, body")
-        ? root.closest("p, li, div, section, article, body")
-        : root;
-      mathElements = Array.from(scanRoot.querySelectorAll(MATH_SELECTOR));
-      if (typeof scanRoot.matches === "function" && scanRoot.matches(MATH_SELECTOR)) {
-        mathElements.push(scanRoot);
-      }
-      if (mathElements.length === 0 && selectedRect && document.querySelectorAll) {
-        mathElements = Array.from(document.querySelectorAll(MATH_SELECTOR)).filter((mathEl) => {
-          try {
-            return rectsOverlap(selectedRect, mathEl.getBoundingClientRect());
-          } catch (e) {
-            return false;
-          }
-        });
-      }
-    } catch (e) {
-      return newRange;
-    }
-
-    for (const mathEl of mathElements) {
-      try {
-        const intersectsDom = newRange.intersectsNode(mathEl);
-        const intersectsRect = selectedRect && rectsOverlap(selectedRect, mathEl.getBoundingClientRect());
-        if (intersectsDom || intersectsRect) {
-          if (mathEl.contains(newRange.startContainer)) {
-            newRange.setStartBefore(mathEl);
-          }
-          if (mathEl.contains(newRange.endContainer)) {
-            newRange.setEndAfter(mathEl);
-          }
-          if (
-            intersectsRect &&
-            !intersectsDom &&
-            !rangeBoundaryIsInsideElement(newRange, mathEl) &&
-            rangeLooksLikeMathOnly(range, mathEl)
-          ) {
-            newRange.setStartBefore(mathEl);
-            newRange.setEndAfter(mathEl);
-          }
-        }
-      } catch (e) {
-        // Ignore errors on specific nodes
-      }
-    }
-    return newRange;
-  }
-
-  function getSelectedText() {
-    const selection = window.getSelection();
-    if (!selection) return "";
-    const plainText = selection.toString().trim();
-    const semanticParts = [];
-    for (let index = 0; index < selection.rangeCount; index += 1) {
-      const range = selection.getRangeAt(index);
-      const expandedRange = expandRangeToContainMath(range);
-      semanticParts.push(serializeSelectionNode(expandedRange.cloneContents()));
-    }
-    const semanticText = normalizeSelectionOutput(semanticParts.join("\n"));
-    return semanticText || plainText;
-  }
 
   function trimContextAroundSelection(contextText, selectedText, maxChars = 6000) {
     const context = KokoroTTSCore.normalizeLlmSourceText(contextText);

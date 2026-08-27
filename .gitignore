@@ -5,6 +5,10 @@ __pycache__/
 dist/
 build/
 
+# JavaScript test dependencies
+node_modules/
+.pnpm-store/
+
 # User settings (generated at runtime)
 tray_settings.json
 

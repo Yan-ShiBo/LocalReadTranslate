@@ -1,0 +1,12 @@
+{
+  "name": "local-read-translate-tests",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "test": "node --test tests/office-addins-core.test.cjs tests/userscript-core.test.cjs tests/userscript-selection.test.cjs",
+    "test:selection": "node --test tests/userscript-selection.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}
