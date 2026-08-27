@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.7
+// @version      1.15.8
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -1198,13 +1198,121 @@ const KokoroTTSCore = (() => {
       );
   }
 
+  function normalizeLatexBarArguments(formula) {
+    const value = String(formula || "");
+    const textCommands = /^(?:text(?:bf|it|rm|sf|tt|normal|up|sl|sc)?|mbox|hbox|operatorname)$/;
+    const symbolCommands = /^(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|varkappa|lambda|mu|nu|xi|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|imath|jmath|ell)$/;
+    let result = "";
+    let index = 0;
+
+    function afterWhitespace(start) {
+      while (start < value.length && /\s/.test(value[start])) start += 1;
+      return start;
+    }
+
+    function afterTextTrivia(start) {
+      let cursor = afterWhitespace(start);
+      while (value[cursor] === "%") {
+        const newline = value.indexOf("\n", cursor);
+        if (newline < 0) return value.length;
+        cursor = afterWhitespace(newline + 1);
+      }
+      return cursor;
+    }
+
+    function afterTextGroup(start) {
+      let depth = 0;
+      for (let cursor = start; cursor < value.length; cursor += 1) {
+        if (value[cursor] === "\\") {
+          cursor += 1;
+        } else if (value[cursor] === "%") {
+          const newline = value.indexOf("\n", cursor);
+          if (newline < 0) return value.length;
+          cursor = newline;
+        } else if (value[cursor] === "{") {
+          depth += 1;
+        } else if (value[cursor] === "}" && --depth === 0) {
+          return cursor + 1;
+        }
+      }
+      return value.length;
+    }
+
+    while (index < value.length) {
+      if (value[index] === "%") {
+        const newline = value.indexOf("\n", index);
+        const end = newline < 0 ? value.length : newline + 1;
+        result += value.slice(index, end);
+        index = end;
+        continue;
+      }
+      if (value[index] !== "\\") {
+        result += value[index++];
+        continue;
+      }
+      const command = /^\\([A-Za-z]+|[\s\S])/.exec(value.slice(index));
+      if (!command) {
+        result += value[index++];
+        continue;
+      }
+      const commandEnd = index + command[0].length;
+      const argumentStart = afterWhitespace(commandEnd);
+
+      // Verbatim delimiters are arbitrary; their contents must stay literal.
+      if (command[1] === "verb") {
+        const delimiterStart = commandEnd + (value[commandEnd] === "*" ? 1 : 0);
+        const delimiter = value[delimiterStart];
+        const close = delimiter && !/\s/.test(delimiter)
+          ? value.indexOf(delimiter, delimiterStart + 1)
+          : -1;
+        const end = close < 0 ? value.length : close + 1;
+        result += value.slice(index, end);
+        index = end;
+        continue;
+      }
+
+      // Text-mode contents are literal, not math arguments to rewrite.
+      if (textCommands.test(command[1])) {
+        const textStart = afterTextTrivia(commandEnd);
+        const groupStart = value[textStart] === "*"
+          ? afterTextTrivia(textStart + 1)
+          : textStart;
+        if (value[groupStart] === "{") {
+          const groupEnd = afterTextGroup(groupStart);
+          result += value.slice(index, groupEnd);
+          index = groupEnd;
+          continue;
+        }
+      }
+
+      // WPS drops the accent from valid TeX shorthand such as \bar v.
+      // Brace one unambiguous atom only; never guess a macro's arity, consume
+      // a following subscript, or change an already grouped expression.
+      if (command[1] === "bar") {
+        const character = String.fromCodePoint(value.codePointAt(argumentStart) || 0);
+        const symbol = /^\\([A-Za-z]+)/.exec(value.slice(argumentStart));
+        const atom = /[\p{L}\p{N}]/u.test(character)
+          ? character
+          : symbol && symbolCommands.test(symbol[1]) ? symbol[0] : "";
+        if (atom) {
+          result += command[0] + "{" + atom + "}";
+          index = argumentStart + atom.length;
+          continue;
+        }
+      }
+      result += command[0];
+      index = commandEnd;
+    }
+    return result;
+  }
+
   function normalizeCopyTextWithLatex(text) {
     const normalized = normalizeDisplayMathWrappers(text)
       .replace(/[\u200B-\u200F\uFEFF]/g, "")
       .replace(/\r\n?/g, "\n");
     const pieces = splitLatexSegments(normalized).map((segment) => {
       if (segment.type === "latex") {
-        const formula = stripLatexDelimiters(segment.value);
+        const formula = normalizeLatexBarArguments(stripLatexDelimiters(segment.value));
         if (!formula) return "";
         return segment.block
           ? `\n\n$$\n${formula}\n$$\n\n`
@@ -1228,11 +1336,29 @@ const KokoroTTSCore = (() => {
 
   function splitLatexSegments(text) {
     const value = normalizeDisplayMathWrappers(text);
-    const pattern = /(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$)/g;
+    const pattern =
+      /(\$\$(?:\\[\s\S]|[^\\])*?\$\$|\\\[(?:\\(?!\])[\s\S]|[^\\])*?\\\]|\\\((?:\\(?!\))[\s\S]|[^\\])*?\\\)|\$(?:\\[^\n]|[^$\\\n])+\$)/y;
+    const openings = /\$\$|\$|\\\[|\\\(/g;
     const segments = [];
     let lastIndex = 0;
-    let match;
-    while ((match = pattern.exec(value)) !== null) {
+    let opening;
+    while ((opening = openings.exec(value)) !== null) {
+      let backslashes = 0;
+      for (let cursor = opening.index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) {
+        backslashes += 1;
+      }
+      if (backslashes % 2) {
+        // Reject literal delimiters before scanning for a close. Otherwise
+        // repeated escaped prices force a full suffix scan for each dollar.
+        openings.lastIndex = opening.index + 1;
+        continue;
+      }
+      pattern.lastIndex = opening.index;
+      const match = pattern.exec(value);
+      if (!match) {
+        openings.lastIndex = opening.index + 1;
+        continue;
+      }
       if (match.index > lastIndex) {
         segments.push({
           type: "text",
@@ -1247,6 +1373,7 @@ const KokoroTTSCore = (() => {
         block: formula.startsWith("$$") || formula.startsWith("\\["),
       });
       lastIndex = pattern.lastIndex;
+      openings.lastIndex = lastIndex;
     }
     if (lastIndex < value.length) {
       segments.push({
@@ -1295,8 +1422,10 @@ const KokoroTTSCore = (() => {
 
   function stripLatexDelimiters(formula) {
     let value = String(formula || "").trim();
-    if ((value.startsWith("$$") && value.endsWith("$$")) || (value.startsWith("$") && value.endsWith("$"))) {
-      value = value.replace(/^\$\$?/, "").replace(/\$\$?$/, "");
+    if (value.startsWith("$$") && value.endsWith("$$")) {
+      value = value.slice(2, -2);
+    } else if (value.startsWith("$") && value.endsWith("$")) {
+      value = value.slice(1, -1);
     } else if (
       (value.startsWith("\\(") && value.endsWith("\\)")) ||
       (value.startsWith("\\[") && value.endsWith("\\]"))

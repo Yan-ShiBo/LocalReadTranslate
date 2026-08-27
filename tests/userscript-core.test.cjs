@@ -388,6 +388,127 @@ test("copy text preserves paragraphs and canonicalizes display formulas", () => 
 });
 
 
+test("copy text braces a single bar argument for WPS LaTeX import", () => {
+  const { normalizeCopyTextWithLatex } = require("../tts-userscript.js");
+
+  assert.equal(normalizeCopyTextWithLatex("$\\bar v$"), "$\\bar{v}$");
+});
+
+
+for (const [name, input, expected] of [
+  ["internal inline wrapper", "[[MATH: \\bar v]]", "$\\bar{v}$"],
+  ["internal display wrapper", "[[MATH_BLOCK: \\bar v]]", "$$\n\\bar{v}\n$$"],
+  ["parenthesized inline wrapper", "\\(\\bar v\\)", "$\\bar{v}$"],
+  ["bracketed display wrapper", "\\[\\bar v\\]", "$$\n\\bar{v}\n$$"],
+  ["dollar display wrapper", "$$\\bar v$$", "$$\n\\bar{v}\n$$"],
+  [
+    "mixed paragraphs leave literal prose alone",
+    "命令 \\bar v 只作正文说明。\n\n均值 $\\bar v$。\n\n\\[\\bar x\\]\n\n保留原文。",
+    "命令 \\bar v 只作正文说明。\n\n均值 $\\bar{v}$。\n\n$$\n\\bar{x}\n$$\n\n保留原文。",
+  ],
+  ["subscripts and powers stay outside the argument", "$\\bar v_z^2$", "$\\bar{v}_z^2$"],
+  ["only the next letter is an argument", "$\\bar xy$", "$\\bar{x}y$"],
+  ["only the next digit is an argument", "$\\bar 12$", "$\\bar{1}2$"],
+  [
+    "known Greek symbols are single arguments",
+    "$\\bar \\alpha_z^2+\\bar \\Delta$",
+    "$\\bar{\\alpha}_z^2+\\bar{\\Delta}$",
+  ],
+  ["a Greek symbol needs no separating space", "$\\bar\\alpha$", "$\\bar{\\alpha}$"],
+  ["an existing group is preserved", "$\\bar{v}$", "$\\bar{v}$"],
+  [
+    "nested existing groups are preserved",
+    "$\\bar{{v_z}^2}+\\bar{\\frac{x}{y}}$",
+    "$\\bar{{v_z}^2}+\\bar{\\frac{x}{y}}$",
+  ],
+  ["a spaced existing group is preserved", "$\\bar {v}$", "$\\bar {v}$"],
+  [
+    "other command names are not bar",
+    "$\\barrier+\\barfoo{v}+\\overbar{v}+\\overline{v}$",
+    "$\\barrier+\\barfoo{v}+\\overbar{v}+\\overline{v}$",
+  ],
+  ["an escaped backslash is not a bar command", "$\\\\bar v$", "$\\\\bar v$"],
+  [
+    "an escaped backslash does not hide a later real bar",
+    "$\\\\bar v+\\bar x$",
+    "$\\\\bar v+\\bar{x}$",
+  ],
+  ["a missing argument is left incomplete", "$\\bar$", "$\\bar$"],
+  ["an unclosed argument group is left incomplete", "$\\bar{v$", "$\\bar{v$"],
+  ["an unclosed formula is not rewritten", "Before $\\bar v", "Before $\\bar v"],
+  [
+    "unknown or parameter-taking commands are not guessed",
+    "$\\bar \\custom{v}+\\bar \\frac{a}{b}+\\bar \\alphabeta$",
+    "$\\bar \\custom{v}+\\bar \\frac{a}{b}+\\bar \\alphabeta$",
+  ],
+  [
+    "nested text content is preserved while following math is normalized",
+    "$\\text{literal {nested \\bar v} text}+\\bar x$",
+    "$\\text{literal {nested \\bar v} text}+\\bar{x}$",
+  ],
+  [
+    "text font commands and their literal content are preserved",
+    "$\\textbf{literal \\bar v}+\\textit{literal \\bar w}+\\bar x$",
+    "$\\textbf{literal \\bar v}+\\textit{literal \\bar w}+\\bar{x}$",
+  ],
+  [
+    "verbatim content is preserved while following math is normalized",
+    "$\\verb|\\bar v|+\\bar x$",
+    "$\\verb|\\bar v|+\\bar{x}$",
+  ],
+  [
+    "starred verbatim content is preserved while following math is normalized",
+    "$\\verb*|\\bar v|+\\bar x$",
+    "$\\verb*|\\bar v|+\\bar{x}$",
+  ],
+  [
+    "escaped dollar delimiters stay literal",
+    "Literal \\$\\bar v\\$",
+    "Literal \\$\\bar v\\$",
+  ],
+  [
+    "escaped dollar text does not hide a following real formula",
+    "Literal \\$\\bar v\\$; actual $\\bar x$.",
+    "Literal \\$\\bar v\\$; actual $\\bar{x}$.",
+  ],
+  [
+    "a trailing escaped dollar inside a formula is preserved",
+    "$a+\\$$",
+    "$a+\\$$",
+  ],
+  [
+    "a trailing escaped dollar survives bar normalization",
+    "$\\bar v+\\$$",
+    "$\\bar{v}+\\$$",
+  ],
+  [
+    "an escaped dollar immediately before a formula does not hide it",
+    "\\$$\\bar v$",
+    "\\$$\\bar{v}$",
+  ],
+  [
+    "long escaped-price prose does not hide a final formula",
+    "\\$1 ".repeat(16000) + "$\\bar v$",
+    "\\$1 ".repeat(16000) + "$\\bar{v}$",
+  ],
+  [
+    "comments between a text command and its group preserve literal content",
+    "$$\\text% note\n{literal \\bar v}+\\bar x$$",
+    "$$\n\\text% note\n{literal \\bar v}+\\bar{x}\n$$",
+  ],
+  [
+    "math fonts are neither added nor removed",
+    "$\\bar{\\mathbf{v}}+\\mathit{w}+\\bar u$",
+    "$\\bar{\\mathbf{v}}+\\mathit{w}+\\bar{u}$",
+  ],
+]) {
+  test("copy text bar compatibility: " + name, () => {
+    const { normalizeCopyTextWithLatex } = require("../tts-userscript.js");
+    assert.equal(normalizeCopyTextWithLatex(input), expected);
+  });
+}
+
+
 test("simple formulas are verbalized by rule before TTS", () => {
   const { prepareTextForRead } = require("../tts-userscript.js");
   const prepared = prepareTextForRead("The loss is $x^2 + y^2 = z^2$.");

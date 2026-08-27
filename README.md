@@ -21,6 +21,7 @@
 - **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
 - **Copy selection as canonical LaTeX** — Copy selected prose without translation, preserve paragraph breaks, and normalize detected inline/display MathJax, MathML, and KaTeX formulas to `$...$` / `$$...$$`
 - **ChatGPT formula source preservation** — Read the outer `data-math-source` / labeled math container even when KaTeX renders HTML only; partial formula selections retain the full source instead of flattening roots, fractions, and subscripts
+- **WPS bar-accent compatibility** — Copy single-atom shorthand such as `\bar v` as `\bar{v}` so WPS retains the overbar, without changing subscripts or adding font styling
 - **Installable Word/WPS document add-ins** — The shared task pane brings source-first translation and local read-aloud into Word, WPS Writer and WPS PDF; editable Word/Writer documents retain bidirectional native-equation/LaTeX conversion, while selectable WPS PDF formulas can be recognized and copied as canonical LaTeX with the chosen model
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
@@ -334,9 +335,9 @@ checking state.
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.7` (FastAPI `1.7.20`). This version fixes ChatGPT formula copying by preserving its outer math-source container. The formula selection tests use jsdom only as a development dependency; the installed userscript has no new runtime dependency.
+The current repository metadata version is `1.15.8` (FastAPI `1.7.20`). This version normalizes single-atom `\bar` shorthand during copying for WPS LaTeX compatibility, while retaining the ChatGPT source-preservation repair. The formula selection tests use jsdom only as a development dependency; the installed userscript has no new runtime dependency.
 
-The root cause and validation record are in [iteration 14](docs/iteration-14-2026-08-27-chatgpt-formula-copy.md).
+The root cause and validation records are in [iteration 15](docs/iteration-15-2026-08-28-wps-bar-compatibility.md) and [iteration 14](docs/iteration-14-2026-08-27-chatgpt-formula-copy.md).
 
 For each release:
 

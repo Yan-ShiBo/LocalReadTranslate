@@ -83,6 +83,30 @@ test("copying a ChatGPT HTML-only formula retains the outer LaTeX source", (t) =
   assert.equal(copySelection(page), RADIUS_DISPLAY);
 });
 
+test("copying an inline ChatGPT bar formula braces its argument for WPS without changing prose", (t) => {
+  const page = createPage(t,
+    '<p id="paragraph">均值为 <span id="bar" role="math" data-math-source="\\bar v_z">' +
+    '<span class="katex"><span class="katex-html" aria-hidden="true">v</span></span>' +
+    '</span>，下标保持不变。</p>'
+  );
+  selectContents(page, "#paragraph");
+
+  assert.equal(copySelection(page), "均值为 $\\bar{v}_z$，下标保持不变。");
+  assert.equal(page.document.querySelector("#bar").getAttribute("data-math-source"), "\\bar v_z");
+});
+
+test("copying a selected glyph in a display bar formula retains the source and normalizes its argument", (t) => {
+  const page = createPage(t,
+    '<span id="bar" role="math" data-math-source="\\bar v" style="display: block">' +
+    '<span class="katex-display"><span class="katex"><span class="katex-html" aria-hidden="true">' +
+    '<span id="glyph">v</span></span></span></span></span>'
+  );
+  selectText(page, "#glyph", 0, "#glyph", 1);
+
+  assert.equal(copySelection(page), "$$\n\\bar{v}\n$$");
+  assert.equal(page.document.querySelector("#bar").getAttribute("data-math-source"), "\\bar v");
+});
+
 test("the captured ChatGPT formula copies as its original display LaTeX", (t) => {
   const html = fs.readFileSync(
     path.join(__dirname, "fixtures", "chatgpt-formula.html"),

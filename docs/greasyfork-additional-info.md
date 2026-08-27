@@ -43,7 +43,9 @@ Keep the GitHub links in both places: metadata makes them appear in Greasy Fork'
 
 ## 重要：需要本地服务
 
-当前用户脚本版本为 `1.15.7`（FastAPI `1.7.20`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+当前用户脚本版本为 `1.15.8`（FastAPI `1.7.20`）。它不是单独安装就能工作的云端脚本：浏览器端始终需要本项目的本地 FastAPI 中介服务。
+
+`1.15.8` 修复 WPS 导入上划线简写的问题：复制时将 `\bar v` 补成标准 LaTeX `\bar{v}`，保留下标和原有字体，不额外添加粗体、斜体，也不全局替换为 `\overbar`。已带花括号的参数保持原样。
 
 `1.15.7` 修复 ChatGPT 网页的公式复制：从外层 `data-math-source` 或带标签的数学容器读取原始 LaTeX。只选中公式的一部分时也保留完整源码，避免根号、分式、上下标被压成普通文字。
 
