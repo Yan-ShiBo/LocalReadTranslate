@@ -14,6 +14,7 @@ if ($OfficeOnly -and $WpsOnly) {
 $ProjectDirectory = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $OfficeManifest = Join-Path $ProjectDirectory "addons\office-word\manifest.xml"
 $RegistrationScript = Join-Path $ProjectDirectory "addin_registration.py"
+$StartupScript = Join-Path $ProjectDirectory "windows_startup.py"
 $HostScript = Join-Path $ProjectDirectory "addon_host.py"
 $OfficeAddinId = "74d95f3f-f8d0-4a33-95d8-2f0b637df535"
 $OfficeDeveloperKey = "HKCU:\Software\Microsoft\Office\16.0\WEF\Developer"
@@ -59,6 +60,10 @@ function Test-AddinHost {
 $InstallOffice = -not $WpsOnly
 $InstallWps = -not $OfficeOnly
 $PythonPath = Find-ProjectPython
+$PythonwPath = Join-Path (Split-Path $PythonPath -Parent) "pythonw.exe"
+if (-not (Test-Path -LiteralPath $PythonwPath -PathType Leaf)) {
+    $PythonwPath = $PythonPath
+}
 
 if ($InstallOffice) {
     if (-not (Test-Path -LiteralPath $OfficeManifest -PathType Leaf)) {
@@ -87,20 +92,29 @@ if ($InstallWps) {
     }
 }
 
+& $PythonPath -E $StartupScript install-addin-loader `
+    --pythonw $PythonwPath `
+    --host $HostScript `
+    --workdir $ProjectDirectory `
+    --pid-file $StandalonePidPath
+if ($LASTEXITCODE -ne 0) {
+    throw "The lightweight add-in loader startup registration failed."
+}
+Write-Host (
+    "[OK] Registered the lightweight add-in loader for login; " +
+    "the full local service remains on demand."
+)
+
 if (-not $NoStart -and -not (Test-AddinHost)) {
-    $PythonwPath = Join-Path (Split-Path $PythonPath -Parent) "pythonw.exe"
-    if (-not (Test-Path -LiteralPath $PythonwPath -PathType Leaf)) {
-        $PythonwPath = $PythonPath
-    }
+    $HostArguments = (
+        "-E `"$HostScript`" --pid-file `"$StandalonePidPath`""
+    )
     $Process = Start-Process `
         -FilePath $PythonwPath `
-        -ArgumentList @("""$HostScript""") `
+        -ArgumentList $HostArguments `
         -WorkingDirectory $ProjectDirectory `
         -WindowStyle Hidden `
         -PassThru
-    $PidDirectory = Split-Path $StandalonePidPath -Parent
-    New-Item -ItemType Directory -Path $PidDirectory -Force | Out-Null
-    Set-Content -LiteralPath $StandalonePidPath -Value $Process.Id -Encoding ascii
     $Ready = $false
     foreach ($Attempt in 1..30) {
         Start-Sleep -Milliseconds 200

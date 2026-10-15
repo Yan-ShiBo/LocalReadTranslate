@@ -47,7 +47,7 @@ test("translation-card copy uses canonical LaTeX instead of rendered text", () =
   );
   assert.match(
     source,
-    /normalizeCopyTextWithLatex\(\s*payload\.translated_text \|\| ""\s*\)/
+    /prepareLatexForClipboard\(\s*payload\.translated_text \|\| ""\s*\)/
   );
 });
 
@@ -386,6 +386,52 @@ test("copy text preserves paragraphs and canonicalizes display formulas", () => 
   );
   assert.doesNotMatch(copied, /\\\(|\\\)|\\\[|\\\]/);
 });
+
+const clipboardCores = [
+  ["web", require("../tts-userscript.js")],
+  ["add-in", require("../addons/shared/reading-core.js")],
+];
+
+for (const [name, core] of clipboardCores) {
+  test(`${name} clipboard prepares the reported pendulum formula for a WPS equation box`, () => {
+    const source = String.raw`\[ \begin{bmatrix} \dot{\theta}\\ \dot{\omega} \end{bmatrix} = \begin{bmatrix} \omega\\[2mm] \displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right) +\frac{1}{ml^2}u \end{bmatrix} \]`;
+    const expected = String.raw`\left[\begin{matrix} \dot{\theta}\\ \dot{\omega} \end{matrix}\right] = \left[\begin{matrix} \omega\\ \displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right) +\frac{1}{ml^2}u \end{matrix}\right]`;
+    assert.equal(core.prepareLatexForClipboard(source), expected);
+    assert.match(core.normalizeCopyTextWithLatex(source), /^\$\$\n/);
+    assert.ok(core.normalizeCopyTextWithLatex(source).includes(String.raw`\\[2mm]`));
+  });
+
+  test(`${name} clipboard strips only a solitary formula wrapper`, () => {
+    for (const source of ["$x^2$", "$$x^2$$", String.raw`\(x^2\)`, String.raw`\[x^2\]`, "[[MATH: x^2]]", "[[MATH_BLOCK: x^2]]"]) {
+      assert.equal(core.prepareLatexForClipboard(source), "x^2");
+    }
+    for (const source of ["结果 $x^2$。", "$x$ $y$", "$$x$$\n\n$$y$$", String.raw`\(x\)\(y\)`, "x^2", "$x^2", "", "price $5 and $10"]) {
+      assert.equal(core.prepareLatexForClipboard(source), core.normalizeCopyTextWithLatex(source));
+    }
+    const mixed = String.raw`矩阵 $\begin{bmatrix}a\\[2mm]b\end{bmatrix}$ 保留段落格式。`;
+    assert.equal(core.prepareLatexForClipboard(mixed), core.normalizeCopyTextWithLatex(mixed));
+  });
+
+  test(`${name} clipboard handles nested matrix fences without changing cell contents`, () => {
+    const source = String.raw`$\begin{bmatrix}\begin{pmatrix}a&b\\[-.5ex]c&d\end{pmatrix}&\begin{Bmatrix}u\\v\end{Bmatrix}\\[1pt]\begin{vmatrix}p&q\end{vmatrix}&\begin{Vmatrix}r\end{Vmatrix}\end{bmatrix}$`;
+    const expected = String.raw`\left[\begin{matrix}\left(\begin{matrix}a&b\\c&d\end{matrix}\right)&\left\{\begin{matrix}u\\v\end{matrix}\right\}\\\left|\begin{matrix}p&q\end{matrix}\right|&\left\|\begin{matrix}r\end{matrix}\right\|\end{matrix}\right]`;
+    assert.equal(core.prepareLatexForClipboard(source), expected);
+  });
+
+  test(`${name} clipboard keeps mathematical brackets, empty cells, escaped tokens and text`, () => {
+    const source = String.raw`$\begin{bmatrix}[0,1]&\text{keep  two spaces \& \$5 \begin{pmatrix}q\\[2mm]r\end{pmatrix}}&\\[2mm][x]&a\&b&\end{bmatrix}$`;
+    const expected = String.raw`\left[\begin{matrix}[0,1]&\text{keep  two spaces \& \$5 \begin{pmatrix}q\\[2mm]r\end{pmatrix}}&\\[x]&a\&b&\end{matrix}\right]`;
+    assert.equal(core.prepareLatexForClipboard(source), expected);
+    assert.equal(core.prepareLatexForClipboard(String.raw`$\left[x\right]+[2mm]+\\begin{pmatrix}$`), String.raw`\left[x\right]+[2mm]+\\begin{pmatrix}`);
+  });
+
+  test(`${name} clipboard removes only legal row spacing in supported math environments`, () => {
+    const source = String.raw`$\begin{array}{cc}a&b\\*[+2.5mm]c&d\\[x]e&f\end{array}+\begin{aligned}u&=v\\ [1ex]p&=q\end{aligned}+x\\[2mm]y$`;
+    const expected = String.raw`\begin{array}{cc}a&b\\*c&d\\[x]e&f\end{array}+\begin{aligned}u&=v\\p&=q\end{aligned}+x\\[2mm]y`;
+    assert.equal(core.prepareLatexForClipboard(source), expected);
+    assert.equal(core.prepareLatexForClipboard(String.raw`$\begin{bmatrix}a\\[2mm]b\end{pmatrix}$`), String.raw`\begin{bmatrix}a\\[2mm]b\end{pmatrix}`);
+  });
+}
 
 
 test("simple formulas are verbalized by rule before TTS", () => {

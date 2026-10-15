@@ -19,8 +19,8 @@
 - **System tray app** — Runs silently in the background, right-click to control, with optional login auto-start
 - **Backend-driven source choice** — While the mediator is online, Local Ollama and Project Server remain explicit choices; the selected source shows either its one truthful recovery action or only its discovered generation models
 - **Compact translation workflow** — A two-row source rail comes before one source-filtered model selector and one translation test; target language/model residency and read-aloud controls stay in collapsed sections
-- **Copy selection as canonical LaTeX** — Copy selected prose without translation, preserve paragraph breaks, and normalize detected inline/display MathJax, MathML, and KaTeX formulas to `$...$` / `$$...$$`
-- **Installable Word/WPS document add-ins** — The shared task pane brings source-first translation and local read-aloud into Word, WPS Writer and WPS PDF; editable Word/Writer documents retain bidirectional native-equation/LaTeX conversion, while selectable WPS PDF formulas can be recognized and copied as canonical LaTeX with the chosen model
+- **Copy formulas for Word/WPS** — A selection containing only one formula is copied as bare LaTeX for the built-in equation editor, with compatible matrix syntax. Selections containing prose or multiple formulas retain paragraph breaks and canonical `$...$` / `$$...$$` wrappers for document conversion
+- **Installable Word/WPS document add-ins** — The shared task pane brings source-first translation and local read-aloud into Word, WPS Writer and WPS PDF; editable Word/Writer documents retain bidirectional native-equation/LaTeX conversion, while selectable WPS PDF formulas can be recognized and copied as LaTeX with the chosen model
 - **Trusted Types friendly UI** — The userscript builds UI with DOM APIs instead of assigning HTML strings, so stricter Google pages such as Gemini can run it
 - **Truthful Ollama residency** — Contextual advanced actions can keep or unload the selected model; stale pins can be removed without loading the model, and an unload timeout reports `still_running` instead of claiming VRAM was released
 - **Target-language guard** — Chinese targets that return all-English output are retried once with a strict same-model instruction; a second non-compliant result is reported as failure
@@ -175,7 +175,7 @@ Editing the repository file does not update a copy already installed in Tampermo
 
 1. Open any webpage
 2. **Select text** → floating `Read`, `Translate`, and `Copy` buttons appear
-3. Click `Read` for local English TTS with background formula verbalization, `Translate` with the selected local or remote Ollama model, or `Copy` to copy the selection while preserving paragraphs and canonicalizing inline/display formulas as `$...$` / `$$...$$`
+3. Click `Read` for local English TTS with background formula verbalization, `Translate` with the selected local or remote Ollama model, or `Copy` for LaTeX: a single formula without prose is ready to paste into a Word/WPS equation editor; prose or multiple formulas retain `$...$` / `$$...$$` wrappers
 4. Open the gear panel to choose the route first and then the model:
    - while the mediator is online, **Local Ollama** and **Project Server** remain visible as separate source rows, even when one of them is offline;
    - select **Local Ollama** to see only discovered local generation models; if it is offline, the row shows **Start**, which opens the fixed `localreadtranslate://ollama` action and waits for local Ollama;
@@ -189,6 +189,25 @@ Editing the repository file does not update a copy already installed in Tampermo
    - remote credentials and connection lifecycle remain in the tray app's `Remote Service` dialog, never in the webpage.
 
 > ⌨️ Shortcut: `Ctrl+Shift+S` to read selected text directly.
+
+For a single formula, use this userscript's floating **Copy**, enter the
+built-in Word/WPS equation editor in LaTeX mode, and paste. Version `1.15.7`
+removes only a single outer math wrapper, rewrites bracketed matrix
+environments as equivalent `\left...\begin{matrix}...\end{matrix}\right...`,
+and removes valid row-spacing options such as `\\[2mm]` while retaining the
+row break. This avoids passing display delimiters and layout-only row options
+to the equation editor. Text mixed with formulas, or several formulas at
+once, should instead be pasted into the document body and converted with the
+add-in's **转换为原生公式** action. The same final-copy rule applies to the
+webpage translation card, the document add-in's formula copy, and the
+document add-in's translation copy. Translation/read-aloud internals, API
+results, and document writeback retain canonical LaTeX. See the
+[equation-editor copy note](docs/iteration-15-2026-10-15-equation-editor-copy.md)
+for the reported matrix example and validation limits.
+
+The webpage's own copy button and an older installed Tampermonkey copy do not
+use this fix. Install `tts-userscript.js` version `1.15.7` in Tampermonkey and
+refresh the source page before retrying.
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
@@ -206,6 +225,14 @@ Reopen the applications. In Word, choose
 **LocalReadTranslate → 阅读与公式**. In WPS PDF, choose
 **LocalReadTranslate → 阅读与翻译**.
 
+The add-in installation keeps only a lightweight loopback loader available
+after Windows login. It serves the Word/WPS package and task pane on
+`127.0.0.1:5443`, but it does **not** start FastAPI, Kokoro, Ollama, the remote
+tunnel, or the tray application. If the full local service is offline, the
+task pane shows **启动本地服务**; that explicit click launches the normal
+Local Read & Translate program and waits for the real service state to become
+ready.
+
 The shared task pane follows the userscript's layout and state rules:
 
 - **Translation** is the only expanded primary section. Select **Local
@@ -214,8 +241,10 @@ The shared task pane follows the userscript's layout and state rules:
   canonicalized; native Word/Writer equations are exported as LaTeX when the
   selection is formula-bearing, and formula-like WPS PDF selections are
   reconstructed with the selected model. Translation results keep formulas as
-  `$...$` / `$$...$$` when copied or written back. WPS PDF keeps the copy
-  action and hides replacement.
+  `$...$` / `$$...$$` internally and when written back. Copying a single
+  formula produces equation-editor-compatible bare LaTeX; prose or multiple
+  formulas keep the canonical wrappers. WPS PDF keeps the copy action and
+  hides replacement.
 - **Advanced** contains the target language and only the model residency
   actions that are currently applicable.
 - **Read aloud** uses the API voice catalog and plays local WAV audio. Plain
@@ -227,7 +256,9 @@ The shared task pane follows the userscript's layout and state rules:
   translation.
 - **Formula & LaTeX** converts mixed prose plus `$...$` / `$$...$$` into
   editable native equations in Word and WPS Writer, and copies selected native
-  equations plus prose as canonical plain-text LaTeX. WPS PDF exposes only
+  equations as bare LaTeX when there is only one formula, or canonical
+  plain-text LaTeX when the selection contains prose or multiple formulas.
+  WPS PDF exposes only
   **Recognize and copy as LaTeX**: it reads the selectable PDF text and its
   visual line breaks, asks the explicitly selected discovered model to restore
   the formula, validates/canonicalizes the result, and copies plain-text LaTeX.
@@ -255,14 +286,18 @@ starts local Ollama implicitly.
 
 The installer registers the exact Office manifest, atomically merges separate
 WPS Writer (`type="wps"`) and WPS PDF (`type="pdf"`) `publish.xml` items while
-preserving unrelated add-ins, and starts the strict `127.0.0.1:5443` host if
-needed. It deliberately does not modify the Windows certificate trust store.
+preserving unrelated add-ins, registers the separate
+`LocalReadTranslate Add-in Loader.lnk` login shortcut, and starts the strict
+`127.0.0.1:5443` loader immediately if needed. This shortcut launches only
+`addon_host.py`; it neither creates nor enables the full
+`Local Read & Translate.lnk` login shortcut. The installer deliberately does
+not modify the Windows certificate trust store.
 The default HTTP endpoint is for local desktop development only;
 `addon_host.py` can use caller-supplied trusted TLS certificate/key files for
 another deployment.
 
 To remove only LocalReadTranslate's registrations and an installer-owned
-standalone add-in host:
+standalone add-in loader:
 
 ```powershell
 .\uninstall-document-addins.bat
@@ -322,6 +357,9 @@ and formula-recognition evidence remains in
 The current Windows protocol, isolated launcher and Start Menu migration
 contract is recorded in
 [`iteration 12`](docs/iteration-12-2026-07-26-windows-launch-repair.md).
+The split login lifecycle—lightweight add-in loader always available, complete
+translation service started only from the task pane—is recorded in
+[`iteration 14`](docs/iteration-14-2026-07-29-addin-on-demand-startup.md).
 The current userscript startup-state contract is recorded in
 [`iteration 13`](docs/iteration-13-2026-07-26-userscript-health-cache.md):
 after the first successful discovery, reopening the panel or reloading a page
@@ -333,7 +371,7 @@ checking state.
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.6` (FastAPI `1.7.20`).
+The current repository metadata version is `1.15.7` (FastAPI `1.7.20`).
 
 For each release:
 
@@ -375,6 +413,7 @@ browser script and built-in test page are generated from this catalog.
 | `Kokoro TTS.bat` / `Kokoro TTS.pyw` | Legacy-compatible launchers retained for old installations |
 | `tts-userscript.js` | Tampermonkey script for local selection read-aloud and translation, with cached source/model state followed by background health refresh |
 | `docs/greasyfork-additional-info.md` | Markdown content for the Greasy Fork additional info field |
+| `docs/iteration-15-2026-10-15-equation-editor-copy.md` | Single-formula copy compatibility for the built-in Word/WPS equation editor |
 | `docs/iteration-13-2026-07-26-userscript-health-cache.md` | Current userscript cached-health and background-refresh release record |
 | `docs/iteration-12-2026-07-26-windows-launch-repair.md` | Current Windows protocol, isolated launcher and Start Menu migration release record |
 | `setup.bat` | One-click environment setup |

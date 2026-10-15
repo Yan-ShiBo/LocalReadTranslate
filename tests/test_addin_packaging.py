@@ -89,5 +89,8 @@ def test_installers_use_narrow_current_user_registration_targets():
     assert "publish.xml" in install
     assert "WPS PDF" in install
     assert "MainWindowHandle -ne 0" in install
+    assert "install-addin-loader" in install
+    assert "--pid-file" in install
     assert "Remove-ItemProperty" in uninstall
+    assert "remove-addin-loader" in uninstall
     assert "setup_addin_certificate" not in install

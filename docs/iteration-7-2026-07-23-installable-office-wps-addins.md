@@ -5,6 +5,11 @@
 > 加入与网页端同构的来源优先翻译和本地朗读，并为 WPS PDF 增加模型辅助公式
 > LaTeX 复制；现行边界见
 > [`iteration-10-2026-07-24-document-formula-translation-read-parity.md`](iteration-10-2026-07-24-document-formula-translation-read-parity.md)。
+>
+> **Iteration 14 启动说明：** 当前安装器会在登录时只启动轻量
+> `addon_host.py`，确保 Word/WPS 能显示加载项；完整 FastAPI、TTS、Ollama、
+> 远程隧道和托盘仍由任务窗格中的“启动本地服务”按需启动。见
+> [`iteration-14-2026-07-29-addin-on-demand-startup.md`](iteration-14-2026-07-29-addin-on-demand-startup.md)。
 
 **状态：** userscript `1.15.3` 不变；FastAPI 升级为 `1.7.17`。共享任务窗格、
 Office XML manifest、WPS ribbon/package、回环宿主、安装/卸载脚本，以及 Word 与

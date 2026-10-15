@@ -8,6 +8,7 @@ from pathlib import Path
 
 SHORTCUT_NAME = "Local Read & Translate.lnk"
 LEGACY_SHORTCUT_NAME = "Kokoro TTS.lnk"
+ADDIN_LOADER_SHORTCUT_NAME = "LocalReadTranslate Add-in Loader.lnk"
 
 CREATE_SHORTCUT_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
@@ -60,6 +61,10 @@ def startup_shortcut_path(name: str = SHORTCUT_NAME) -> Path:
 
 def start_menu_shortcut_path(name: str = SHORTCUT_NAME) -> Path:
     return _start_menu_programs_dir() / name
+
+
+def addin_loader_startup_shortcut_path() -> Path:
+    return startup_shortcut_path(ADDIN_LOADER_SHORTCUT_NAME)
 
 
 def run_powershell(script: str, env_vars: dict[str, str]):
@@ -246,6 +251,56 @@ def reconcile_startup_shortcut(
     return False
 
 
+def inspect_addin_loader_startup_shortcut(
+    target: Path,
+    workdir: Path,
+    arguments: str = "",
+    runner=run_powershell,
+) -> bool:
+    return _shortcut_matches(
+        _inspect_shortcut(addin_loader_startup_shortcut_path(), runner),
+        target,
+        workdir,
+        arguments,
+    )
+
+
+def reconcile_addin_loader_startup_shortcut(
+    enabled: bool,
+    target: Path,
+    workdir: Path,
+    arguments: str = "",
+    runner=run_powershell,
+) -> bool:
+    shortcut = addin_loader_startup_shortcut_path()
+    if enabled:
+        if not inspect_addin_loader_startup_shortcut(
+            target,
+            workdir,
+            arguments,
+            runner,
+        ):
+            _enable_shortcut(
+                shortcut,
+                target,
+                workdir,
+                arguments,
+                runner,
+            )
+        return True
+    if shortcut.exists():
+        shortcut.unlink()
+    return False
+
+
+def remove_addin_loader_startup_shortcut() -> bool:
+    shortcut = addin_loader_startup_shortcut_path()
+    if not shortcut.exists():
+        return False
+    shortcut.unlink()
+    return True
+
+
 def inspect_start_menu_shortcut(
     target: Path,
     workdir: Path,
@@ -291,7 +346,7 @@ def main(
     stderr=None,
 ) -> int:
     parser = argparse.ArgumentParser(
-        description="Install or remove the Local Read & Translate Start Menu shortcut."
+        description="Manage Local Read & Translate Windows shortcuts."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     install = subparsers.add_parser("install-menu")
@@ -299,6 +354,12 @@ def main(
     install.add_argument("--launcher", type=Path)
     install.add_argument("--workdir", type=Path)
     subparsers.add_parser("remove-menu")
+    install_loader = subparsers.add_parser("install-addin-loader")
+    install_loader.add_argument("--pythonw", type=Path, required=True)
+    install_loader.add_argument("--host", type=Path, required=True)
+    install_loader.add_argument("--workdir", type=Path, required=True)
+    install_loader.add_argument("--pid-file", type=Path, required=True)
+    subparsers.add_parser("remove-addin-loader")
     args = parser.parse_args(argv)
 
     stdout = sys.stdout if stdout is None else stdout
@@ -306,6 +367,39 @@ def main(
     if os.name != "nt":
         print("Start Menu shortcuts are only available on Windows.", file=stderr)
         return 2
+
+    if args.command == "install-addin-loader":
+        arguments = f'-E "{args.host}" --pid-file "{args.pid_file}"'
+        try:
+            reconcile_addin_loader_startup_shortcut(
+                True,
+                args.pythonw,
+                args.workdir,
+                arguments,
+            )
+        except Exception as error:
+            print(f"Unable to install add-in loader startup: {error}", file=stderr)
+            return 1
+        print(
+            f"Add-in loader startup installed: "
+            f"{addin_loader_startup_shortcut_path()}",
+            file=stdout,
+        )
+        return 0
+
+    if args.command == "remove-addin-loader":
+        try:
+            changed = remove_addin_loader_startup_shortcut()
+        except Exception as error:
+            print(f"Unable to remove add-in loader startup: {error}", file=stderr)
+            return 1
+        print(
+            "Add-in loader startup removed."
+            if changed
+            else "No add-in loader startup found.",
+            file=stdout,
+        )
+        return 0
 
     if args.command == "remove-menu":
         try:

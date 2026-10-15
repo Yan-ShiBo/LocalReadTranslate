@@ -8,6 +8,7 @@ $OfficeAddinId = "74d95f3f-f8d0-4a33-95d8-2f0b637df535"
 $OfficeDeveloperKey = "HKCU:\Software\Microsoft\Office\16.0\WEF\Developer"
 $WpsPublishPath = Join-Path $env:APPDATA "kingsoft\wps\jsaddons\publish.xml"
 $RegistrationScript = Join-Path $ProjectDirectory "addin_registration.py"
+$StartupScript = Join-Path $ProjectDirectory "windows_startup.py"
 $StandalonePidPath = Join-Path $env:LOCALAPPDATA "LocalReadTranslate\addin-host-standalone.pid"
 
 function Find-ProjectPython {
@@ -50,6 +51,10 @@ $PythonPath = Find-ProjectPython
 & $PythonPath $RegistrationScript uninstall-wps --path $WpsPublishPath
 if ($LASTEXITCODE -ne 0) {
     throw "WPS add-in unregistration failed."
+}
+& $PythonPath -E $StartupScript remove-addin-loader
+if ($LASTEXITCODE -ne 0) {
+    throw "The lightweight add-in loader startup removal failed."
 }
 
 if (Test-Path -LiteralPath $StandalonePidPath -PathType Leaf) {

@@ -140,7 +140,7 @@
             <span><i class="legend-mark display"></i>独立 <b id="display-count">0</b></span>
           </div>
           <p id="selection-note" class="selection-note">
-            执行时会重新读取选区；复制原生公式会统一输出为 LaTeX 纯文本。
+            单个公式复制后可直接粘贴到 Word/WPS 公式框；带正文的段落保留 LaTeX 分隔符。
           </p>
           <div class="formula-actions">
             <button id="convert-button" class="panel-button primary" type="button" disabled>
@@ -168,8 +168,8 @@
     </main>
 
     <script src="/shared/localreadtranslate-client.js"></script>
-    <script src="/shared/formula-controller.js"></script>
     <script src="/shared/reading-core.js"></script>
+    <script src="/shared/formula-controller.js"></script>
     <script src="/office-word/office-adapter.js"></script>
     <script src="/wps-word/wps-adapter.js"></script>
     <script src="/wps-pdf/pdf-adapter.js"></script>

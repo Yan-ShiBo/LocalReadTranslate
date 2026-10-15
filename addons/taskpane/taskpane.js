@@ -1055,7 +1055,7 @@
       elements.formulaLegend.hidden = state.capabilities.formulaRecognition;
       elements.selectionNote.textContent = state.capabilities.formulaRecognition
         ? "识别会读取 WPS PDF 选区文本及其视觉换行，并使用当前模型恢复规范 LaTeX。"
-        : "执行时会重新读取选区；复制原生公式会统一输出为 LaTeX 纯文本。";
+        : "单个公式复制后可直接粘贴到 Word/WPS 公式框；带正文的段落保留 LaTeX 分隔符。";
       elements.replaceTranslationButton.hidden =
         !state.capabilities.replaceSelectionText;
       updateButtons();
@@ -1210,8 +1210,8 @@
           "success",
           `已复制 ${formulaCount} 个公式`,
           state.capabilities.formulaRecognition
-            ? `已使用 ${result.model || state.selectedModel} 识别；剪贴板中只有规范 LaTeX 与原段落文本。`
-            : "剪贴板中只有规范化 LaTeX 与原段落文本。"
+            ? `已使用 ${result.model || state.selectedModel} 识别；单个公式可直接粘贴到公式框，段落保留 LaTeX 分隔符。`
+            : "已复制 LaTeX；单个公式可直接粘贴到公式框，段落保留分隔符。"
         );
         return result;
       } catch (error) {
@@ -1567,7 +1567,9 @@
       if (!state.translationText || state.busy) return false;
       setBusy(true);
       try {
-        await options.writeClipboard(state.translationText);
+        await options.writeClipboard(
+          readingCore.prepareLatexForClipboard(state.translationText)
+        );
         setOperation("success", "已复制译文", "剪贴板中只有当前翻译结果。");
         return true;
       } finally {
