@@ -387,7 +387,26 @@ def parse_args(argv=None):
     parser.add_argument("--api-base-url", default=DEFAULT_API_BASE_URL)
     parser.add_argument("--cert", type=Path)
     parser.add_argument("--key", type=Path)
+    parser.add_argument("--pid-file", type=Path)
     return parser.parse_args(argv)
+
+
+def _write_pid_file(path: Path) -> Path:
+    pid_path = Path(path).expanduser().resolve(strict=False)
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = pid_path.with_name(f"{pid_path.name}.{os.getpid()}.tmp")
+    temporary.write_text(str(os.getpid()), encoding="ascii")
+    os.replace(temporary, pid_path)
+    return pid_path
+
+
+def _remove_owned_pid_file(path: Path) -> None:
+    try:
+        recorded = path.read_text(encoding="ascii").strip()
+    except OSError:
+        return
+    if recorded == str(os.getpid()):
+        path.unlink(missing_ok=True)
 
 
 def main(argv=None) -> int:
@@ -413,17 +432,24 @@ def main(argv=None) -> int:
         context.load_cert_chain(certfile=cert_file, keyfile=key_file)
         server.socket = context.wrap_socket(server.socket, server_side=True)
         scheme = "https"
-    print(
-        f"LocalReadTranslate add-in host: {scheme}://localhost:{args.port} "
-        f"-> {server.api_base_url}",
-        flush=True,
-    )
+    pid_file = None
     try:
+        if args.pid_file:
+            pid_file = _write_pid_file(args.pid_file)
+        print(
+            f"LocalReadTranslate add-in host: {scheme}://localhost:{args.port} "
+            f"-> {server.api_base_url}",
+            flush=True,
+        )
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
+        try:
+            server.server_close()
+        finally:
+            if pid_file is not None:
+                _remove_owned_pid_file(pid_file)
     return 0
 
 

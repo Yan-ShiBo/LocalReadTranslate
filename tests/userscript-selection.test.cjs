@@ -73,8 +73,111 @@ function selectText(page, startSelector, startOffset, endSelector, endOffset) {
 }
 
 function copySelection(page) {
+  // These extraction assertions deliberately retain the canonical interchange
+  // format used by translation/read. The UI tests below check the clipboard.
   return core.normalizeCopyTextWithLatex(page.tools.getSelectedText());
 }
+
+function createUserscriptPage(t, html) {
+  const dom = new JSDOM(html, {
+    url: "https://selection.test/",
+    runScripts: "outside-only",
+  });
+  t.after(() => dom.window.close());
+  const { window } = dom;
+  const clipboard = [];
+  const listeners = new WeakMap();
+  const timers = new Map();
+  let timerId = 0;
+  const addEventListener = window.EventTarget.prototype.addEventListener;
+  window.EventTarget.prototype.addEventListener = function (type, listener, options) {
+    if (!listeners.has(this)) listeners.set(this, new Map());
+    const registered = listeners.get(this);
+    if (!registered.has(type)) registered.set(type, []);
+    registered.get(type).push(listener);
+    return addEventListener.call(this, type, listener, options);
+  };
+  window.setTimeout = (callback, delay) => {
+    timers.set(++timerId, { callback, delay });
+    return timerId;
+  };
+  window.clearTimeout = (id) => timers.delete(id);
+  window.requestAnimationFrame = (callback) => callback(0);
+  window.Range.prototype.getBoundingClientRect = () => ({
+    left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20,
+  });
+  window.GM_addStyle = () => {};
+  window.GM_getValue = (_key, fallback) => fallback;
+  window.GM_setValue = () => {};
+  window.GM_setClipboard = (text, type) => clipboard.push({ text, type });
+  window.GM_xmlhttpRequest = () => {
+    throw new Error("Copy must not require a local service or model");
+  };
+  window.console.log = () => {};
+  window.eval(fs.readFileSync(path.join(__dirname, "..", "tts-userscript.js"), "utf8"));
+
+  return {
+    window,
+    document: window.document,
+    clipboard,
+    tools: core.createSelectionTools(window.document),
+    invokeUserEvent(target, type, eventTarget = target) {
+      // jsdom cannot create trusted DOM events. Invoke the actual registered
+      // handler with the browser's user-event contract; production guards stay.
+      const callbacks = listeners.get(target)?.get(type) || [];
+      assert.ok(callbacks.length, `Expected a registered ${type} handler`);
+      for (const callback of callbacks) callback.call(target, {
+        isTrusted: true, target: eventTarget,
+        preventDefault() {}, stopPropagation() {},
+      });
+    },
+    runTimers(delay) {
+      for (const [id, timer] of [...timers]) {
+        if (timer.delay === delay) {
+          timers.delete(id);
+          timer.callback();
+        }
+      }
+    },
+  };
+}
+
+test("the Copy button prepares the reported matrix for a WPS equation editor", async (t) => {
+  const source = String.raw`\begin{bmatrix} \dot{\theta}\\ \dot{\omega} \end{bmatrix} = \begin{bmatrix} \omega\\[2mm] \displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right) +\frac{1}{ml^2}u \end{bmatrix}`;
+  const expected = String.raw`\left[\begin{matrix} \dot{\theta}\\ \dot{\omega} \end{matrix}\right] = \left[\begin{matrix} \omega\\ \displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right) +\frac{1}{ml^2}u \end{matrix}\right]`;
+  const page = createUserscriptPage(t, sourceFormula({ source }));
+  selectText(page, "#radius-subscript", 0, "#radius-subscript", 1);
+  const canonical = copySelection(page);
+  assert.ok(canonical.startsWith("$$\n"));
+  assert.ok(canonical.includes(String.raw`\\[2mm]`));
+
+  page.invokeUserEvent(page.document, "mouseup", page.document.querySelector("#radius-subscript"));
+  page.runTimers(10);
+  const button = page.document.querySelector(".tts-copy-btn");
+  assert.ok(button, "Selecting a rendered formula should expose Copy");
+  button.click();
+  assert.deepEqual(page.clipboard, [], "An untrusted synthetic click must remain ignored");
+  page.invokeUserEvent(button, "click");
+  await Promise.resolve();
+
+  assert.deepEqual(page.clipboard, [{ text: expected, type: "text" }]);
+  assert.equal(copySelection(page), canonical);
+  assert.equal(page.document.querySelector("#radius").getAttribute("data-math-source"), source);
+});
+
+test("the Copy button preserves the merged bar fix for a solitary formula", async (t) => {
+  const source = String.raw`\bar v_z`;
+  const page = createUserscriptPage(t, sourceFormula({ source }));
+  selectContents(page, "#radius");
+  assert.equal(copySelection(page), "$$\n\\bar{v}_z\n$$");
+  page.invokeUserEvent(page.document, "mouseup", page.document.querySelector("#radius"));
+  page.runTimers(10);
+  page.invokeUserEvent(page.document.querySelector(".tts-copy-btn"), "click");
+  await Promise.resolve();
+
+  assert.deepEqual(page.clipboard, [{ text: String.raw`\bar{v}_z`, type: "text" }]);
+  assert.equal(page.document.querySelector("#radius").getAttribute("data-math-source"), source);
+});
 
 test("copying a ChatGPT HTML-only formula retains the outer LaTeX source", (t) => {
   const page = createPage(t, sourceFormula());

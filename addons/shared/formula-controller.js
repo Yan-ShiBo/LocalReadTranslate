@@ -1,8 +1,11 @@
 (function (root, factory) {
-  const api = factory();
+  const readingCore = typeof module !== "undefined" && module.exports
+    ? require("./reading-core.js")
+    : root && root.LocalReadTranslateReadingCore;
+  const api = factory(readingCore);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) root.LocalReadTranslateFormulaController = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (readingCore) {
   "use strict";
 
   async function defaultWriteClipboard(text) {
@@ -79,8 +82,10 @@
     const result = await selectionAsLatex(options);
 
     // LaTeX is deliberately the only externally copied representation.
-    await writeClipboard(result.latex);
-    return result;
+    const clipboardText = readingCore.prepareLatexForClipboard(result.latex);
+    await writeClipboard(clipboardText);
+    // Keep the canonical API result for translation/read and document preview.
+    return { ...result, clipboard_text: clipboardText };
   }
 
   return {

@@ -3,6 +3,11 @@
 > **Iteration 13 后续说明：** Windows 启动链路保持不变。当前 userscript 为
 > `1.15.6`；设置面板的跨页面状态缓存与后台刷新见
 > [`iteration-13-2026-07-26-userscript-health-cache.md`](iteration-13-2026-07-26-userscript-health-cache.md)。
+>
+> **Iteration 14 后续说明：** `localreadtranslate://start` 协议链路保持不变；
+> Word/WPS 现在由独立的轻量 5443 加载器在登录时提供界面，完整程序不随登录
+> 启动，用户可在加载项内按需启动。见
+> [`iteration-14-2026-07-29-addin-on-demand-startup.md`](iteration-14-2026-07-29-addin-on-demand-startup.md)。
 
 **状态：** userscript 保持 `1.15.5`，FastAPI 升级为 `1.7.20`。网页
 **Start local service**、**Local Ollama → Start**、开始菜单启动和登录自启

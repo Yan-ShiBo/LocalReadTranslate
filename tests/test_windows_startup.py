@@ -1,4 +1,5 @@
 import os
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -108,6 +109,99 @@ def test_disabled_removes_only_named_shortcut(startup_env):
 
     assert not shortcut.exists()
     assert other.exists()
+
+
+def test_addin_loader_startup_is_distinct_from_full_app_autostart(startup_env):
+    runner = FakeShortcutRunner()
+    pythonw = startup_env / "pythonw.exe"
+    workdir = startup_env / "LocalReadTranslate"
+    host = workdir / "addon_host.py"
+    pid_file = startup_env / "LocalReadTranslate" / "addin-host-standalone.pid"
+    arguments = f'-E "{host}" --pid-file "{pid_file}"'
+    full_app_shortcut = windows_startup.startup_shortcut_path()
+    full_app_shortcut.parent.mkdir(parents=True, exist_ok=True)
+    full_app_shortcut.write_text("keep", encoding="utf-8")
+
+    assert windows_startup.reconcile_addin_loader_startup_shortcut(
+        True,
+        pythonw,
+        workdir,
+        arguments,
+        runner,
+    )
+
+    loader_shortcut = windows_startup.addin_loader_startup_shortcut_path()
+    assert loader_shortcut.name == "LocalReadTranslate Add-in Loader.lnk"
+    assert loader_shortcut.exists()
+    assert full_app_shortcut.exists()
+    assert windows_startup.inspect_addin_loader_startup_shortcut(
+        pythonw,
+        workdir,
+        arguments,
+        runner,
+    )
+
+
+def test_cli_installs_addin_loader_without_enabling_full_app(startup_env):
+    pythonw = startup_env / "pythonw.exe"
+    workdir = startup_env / "LocalReadTranslate"
+    host = workdir / "addon_host.py"
+    pid_file = startup_env / "LocalReadTranslate" / "addin-host-standalone.pid"
+    stdout = StringIO()
+    stderr = StringIO()
+
+    with patch.object(
+        windows_startup,
+        "reconcile_addin_loader_startup_shortcut",
+        return_value=True,
+    ) as reconcile:
+        result = windows_startup.main(
+            [
+                "install-addin-loader",
+                "--pythonw",
+                str(pythonw),
+                "--host",
+                str(host),
+                "--workdir",
+                str(workdir),
+                "--pid-file",
+                str(pid_file),
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    assert result == 0
+    reconcile.assert_called_once_with(
+        True,
+        pythonw,
+        workdir,
+        f'-E "{host}" --pid-file "{pid_file}"',
+    )
+    assert "Add-in loader startup installed" in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+
+def test_cli_removes_only_addin_loader_startup(startup_env):
+    loader = windows_startup.addin_loader_startup_shortcut_path()
+    full_app = windows_startup.startup_shortcut_path()
+    loader.parent.mkdir(parents=True, exist_ok=True)
+    loader.write_text("remove", encoding="utf-8")
+    full_app.write_text("keep", encoding="utf-8")
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = windows_startup.main(
+        ["remove-addin-loader"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert result == 0
+    assert not loader.exists()
+    assert full_app.exists()
+    assert "Add-in loader startup removed" in stdout.getvalue()
+    assert stderr.getvalue() == ""
 
 
 def test_runner_failure_raises_startup_error(startup_env):

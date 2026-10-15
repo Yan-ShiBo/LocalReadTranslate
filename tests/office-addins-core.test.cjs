@@ -289,6 +289,30 @@ test("formula controller copies only canonical LaTeX", async () => {
   assert.equal(cleanupCalls, 1);
 });
 
+test("formula copy prepares one matrix for an equation editor without changing canonical content", async () => {
+  const clipboard = [];
+  const latex = String.raw`\[\begin{bmatrix}\dot{\theta}\\\dot{\omega}\end{bmatrix}=\begin{bmatrix}\omega\\[2mm]\displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right)+\frac{1}{ml^2}u\end{bmatrix}\]`;
+  const result = await copySelectionAsLatex({
+    adapter: {
+      async exportSelectionForLatex() {
+        return { source_format: "flat-opc", content: "<pkg:package/>" };
+      },
+    },
+    client: {
+      async nativeToLatex() { return { latex, formula_count: 1 }; },
+    },
+    async writeClipboard(value) { clipboard.push(value); },
+  });
+  assert.equal(result.latex, latex);
+  assert.equal(result.formula_count, 1);
+  assert.deepEqual(clipboard, [result.clipboard_text]);
+  assert.equal(result.clipboard_text, ReadingCore.prepareLatexForClipboard(latex));
+  assert.ok(result.clipboard_text.startsWith(String.raw`\left[\begin{matrix}`));
+  assert.ok(result.clipboard_text.endsWith(String.raw`\end{matrix}\right]`));
+  assert.doesNotMatch(result.clipboard_text, /\[2mm\]|\$/);
+  assert.equal((result.clipboard_text.match(/\\begin\{matrix\}/g) || []).length, 2);
+});
+
 test("formula controller cleans up a WPS spool when conversion fails", async () => {
   let cleanupCalls = 0;
   const adapter = {
@@ -346,7 +370,8 @@ test("formula controller recognizes a WPS PDF text selection with the chosen mod
   });
 
   assert.equal(result.formula_count, 1);
-  assert.deepEqual(clipboard, ["$x_{t+1}=x_t$"]);
+  assert.equal(result.latex, "$x_{t+1}=x_t$");
+  assert.deepEqual(clipboard, ["x_{t+1}=x_t"]);
 });
 
 test("Office adapter reads OOXML and inserts generated DOCX at the selection", async () => {
@@ -645,9 +670,15 @@ test("document reading core stays behaviorally aligned with the userscript", () 
     "Before.\n\n$$\\sum_{i=1}^{n} x_i$$\n\nAfter.",
     "中文说明与 $x+y$ 公式。",
     "A link [paper](https://example.com) and `code`.",
+    String.raw`\[\begin{bmatrix}x\\[2mm]y\end{bmatrix}\]`,
+    "$x^2$",
   ];
 
   for (const fixture of fixtures) {
+    assert.equal(
+      ReadingCore.prepareLatexForClipboard(fixture),
+      WebReadingCore.prepareLatexForClipboard(fixture)
+    );
     assert.equal(
       ReadingCore.normalizeCopyTextWithLatex(fixture),
       WebReadingCore.normalizeCopyTextWithLatex(fixture)
@@ -1124,6 +1155,7 @@ test("task pane checks formula health once, then actions reuse that state", asyn
 
 test("task pane translates and reads with cached backend discovery", async () => {
   const { document, elements, listeners } = fakeTaskPaneDocument();
+  let translatedText = "The paper concludes that $x^2$.";
   let latexChecks = 0;
   let translationChecks = 0;
   let voiceChecks = 0;
@@ -1199,7 +1231,7 @@ test("task pane translates and reads with cached backend discovery", async () =>
         target_language: "Simplified Chinese",
       });
       return {
-        translated_text: "The paper concludes that $x^2$.",
+        translated_text: translatedText,
         model: payload.model,
         elapsed: 1.2,
       };
@@ -1281,6 +1313,14 @@ test("task pane translates and reads with cached backend discovery", async () =>
   await app.replaceTranslation();
   assert.deepEqual(clipboard, ["The paper concludes that $x^2$."]);
   assert.deepEqual(replacements, ["The paper concludes that $x^2$."]);
+
+  translatedText = "$x^2$";
+  await app.runAssistantAction("translate");
+  await app.copyTranslation();
+  await app.replaceTranslation();
+  assert.equal(clipboard.at(-1), "x^2");
+  assert.equal(replacements.at(-1), "$x^2$");
+  assert.equal(app.state.translationText, "$x^2$");
 
   elements["target-language"].value = "English";
   listeners.get("target-language:change")();
@@ -1654,6 +1694,73 @@ test("task pane restores the saved 30b server model instead of selecting a large
     writes.at(-1).value.translationModels["project-server"],
     "remote:project-server:qwen3:30b"
   );
+});
+
+test("task pane starts an offline local service through the lightweight loader", async () => {
+  const { document, elements } = fakeTaskPaneDocument();
+  const controls = [];
+  const timers = [];
+  const offline = Object.assign(
+    new Error("Cannot connect to the local translation service"),
+    { status: 502 }
+  );
+  const app = createTaskPaneApp({
+    document,
+    hostHint: "wps",
+    wpsApplication: {},
+    wpsAdapterFactory() {
+      return {
+        async readSelectionText() {
+          return "Selected text";
+        },
+      };
+    },
+    officeAdapterFactory() {
+      throw new Error("Office should not be selected");
+    },
+    clientFactory() {
+      return {
+        async getLatexHealth() {
+          throw offline;
+        },
+        async getTranslateHealth() {
+          throw offline;
+        },
+        async getVoices() {
+          throw offline;
+        },
+        async openControlAction(action) {
+          controls.push(action);
+          return { status: "requested", action };
+        },
+      };
+    },
+    controller: {
+      async convertSelectedLatex() {
+        return { formula_count: 0, warnings: [] };
+      },
+      async copySelectionAsLatex() {
+        return { formula_count: 0, latex: "" };
+      },
+    },
+    async writeClipboard() {},
+    setTimeout(callback, delay) {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimeout() {},
+  });
+
+  await app.initialize();
+
+  assert.equal(app.state.apiReady, false);
+  assert.equal(elements["source-action-button"].hidden, false);
+  assert.equal(elements["source-action-button"].textContent, "启动本地服务");
+  assert.equal(await app.runSourceAction(), true);
+  assert.deepEqual(controls, ["start"]);
+  assert.equal(app.state.sourceActionSource, "mediator");
+  assert.equal(elements["source-action-button"].textContent, "启动中…");
+  assert.equal(timers[0].delay, 0);
 });
 
 test("task pane refreshes discovery only after an explicit source connection action", async () => {

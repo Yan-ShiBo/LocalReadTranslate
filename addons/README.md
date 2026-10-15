@@ -7,8 +7,9 @@ Three host packages reuse the same source-first document assistant:
   Local Ollama or Project Server source. Formula-bearing selections are
   canonicalized to LaTeX first: Word/Writer export native equations, while WPS
   PDF uses the selected model to reconstruct formula structure. The result
-  keeps `$...$` / `$$...$$` when copied; Word and WPS Writer can also replace
-  the current selection.
+  keeps `$...$` / `$$...$$` internally and for document replacement. Final
+  copy emits bare LaTeX for a single formula, or canonical wrappers for prose
+  or multiple formulas. Word and WPS Writer can also replace the selection.
 - **Read selection** uses the API voice/speed catalog and local WAV playback.
   Plain English can go directly to Kokoro. English plus formulas uses the same
   progressive queue as the userscript: prose starts while formula
@@ -16,11 +17,12 @@ Three host packages reuse the same source-first document assistant:
   CJK/formula content keeps the `/read/prepare` path.
 - **Formula & LaTeX in editable documents** turns selected prose plus `$...$`
   or `$$...$$` LaTeX into editable native Word/WPS Writer equations and copies
-  selected native equations plus prose as canonical plain-text LaTeX.
+  selected native equations as plain-text LaTeX: bare for a single formula,
+  canonical wrappers for prose or multiple formulas.
 - **Formula recognition in WPS PDF** reads a selectable PDF formula or
   formula-bearing paragraph, sends that text to the explicitly selected
-  discovered model, validates the returned LaTeX, and copies only canonical
-  plain text. It does not write back to the PDF.
+  discovered model, validates the returned LaTeX, and copies plain text using
+  the same single-formula/mixed-content rule. It does not write back to the PDF.
 
 | Capability | Word | WPS Writer | WPS PDF |
 |---|---:|---:|---:|
@@ -65,16 +67,26 @@ The installer:
    `LocalReadTranslatePdf` PDF entry into
    `%APPDATA%\kingsoft\wps\jsaddons\publish.xml`, preserving unrelated entries
    and backing up an existing file;
-3. starts the strict loopback add-in host on `127.0.0.1:5443` if the tray app
-   is not already managing it.
+3. creates the current-user
+   `Startup\LocalReadTranslate Add-in Loader.lnk` shortcut, which starts only
+   `addon_host.py` with an owned PID file;
+4. starts that strict loopback loader on `127.0.0.1:5443` immediately if it is
+   not already available.
 
 Reopen the applications after installation. In Word, choose
 **Home → Add-ins → LocalReadTranslate 文档工作台**. In WPS Writer, choose
 **LocalReadTranslate → 阅读与公式**. In WPS PDF, choose
 **LocalReadTranslate → 阅读与翻译**.
 
+The login loader is intentionally separate from the full tray application.
+It does not start FastAPI, Kokoro, Ollama, a remote tunnel, or any model. When
+`127.0.0.1:5000` is offline, the loaded task pane shows **启动本地服务**.
+Clicking it sends the fixed `start` action to the loader, which opens the
+registered `localreadtranslate://start` handler and waits up to 120 seconds for
+the complete service to become ready.
+
 To remove only these three registrations and an installer-owned standalone
-host:
+loader:
 
 ```powershell
 .\uninstall-document-addins.bat
@@ -91,9 +103,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -Wp
 powershell -ExecutionPolicy Bypass -File scripts\install_document_addins.ps1 -NoStart
 ```
 
+`-NoStart` skips only the immediate loader launch. The login shortcut is still
+installed so Word/WPS can load after the next Windows sign-in without starting
+the full translation service.
+
 Local requirements:
 
-- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.19` environment;
+- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.20` environment;
 - Pandoc 3.x found through `PANDOC_PATH`, `PATH`, or a standard Windows path;
 - Microsoft Word desktop for the Office add-in;
 - a WPS build with JavaScript add-in support. WPS Writer and WPS PDF were
@@ -104,15 +120,17 @@ Local requirements:
 ## Runtime architecture
 
 ```text
-Word Office.js adapter ─────┐
-WPS Writer JSAPI adapter ───┼─ shared task pane ─ http://127.0.0.1:5443
-WPS PDF selection adapter ──┘                         │
-                                                     ├─ same-origin API proxy
-                                                     │
-                                                     ├─ fixed local control relay
-                                                     ▼
-                                        http://127.0.0.1:5000
-                               FastAPI + Pandoc + Ollama routing + Kokoro
+Windows login ─ lightweight add-in loader only ─ http://127.0.0.1:5443
+                                                  │
+Word Office.js adapter ─────┐                      ├─ allowlisted add-in assets
+WPS Writer JSAPI adapter ───┼─ shared task pane ──┤
+WPS PDF selection adapter ──┘                      ├─ fixed start control
+                                                  │
+                                                  └─ API proxy (when online)
+                                                                  │
+                                                                  ▼
+                                                     http://127.0.0.1:5000
+                                           FastAPI + routing + Kokoro (on demand)
 ```
 
 The add-in host is intentionally small:
@@ -134,9 +152,10 @@ trust store. `addon_host.py --cert ... --key ...` supports TLS when the caller
 already owns a suitable trusted certificate, but the installer deliberately
 does not create or trust one.
 
-The host process can be owned by the tray app. Stopping that optional host does
-not stop the remote tunnel; closing the tray app follows the tray application's
-existing lifecycle rules.
+The installer-owned login loader records its PID and remains independent of
+the tray. If the loader is already available, the tray reuses it instead of
+starting a second copy. Exiting the tray therefore stops only the complete
+service processes it owns and leaves Word/WPS package loading available.
 
 ## Components
 
@@ -156,6 +175,7 @@ existing lifecycle rules.
 | `wps-pdf/pdf-adapter.js` | Reads PDF text through `Application.ActiveDocument.Selection.Text()`, exposes model-assisted LaTeX copy, and declares all document-mutation capabilities unavailable |
 | `../addon_host.py` | Strict loopback static host, narrow API proxy and fixed-action tray relay |
 | `../addin_registration.py` | Atomic, idempotent WPS Writer/PDF `publish.xml` merge/remove |
+| `../windows_startup.py` | Separate full-app and lightweight add-in-loader Windows shortcuts |
 | `../scripts/install_document_addins.ps1` | Current-user installation |
 | `../scripts/uninstall_document_addins.ps1` | Exact current-user removal |
 
@@ -181,8 +201,9 @@ existing lifecycle rules.
    prose instead of fabricating math.
 5. `POST /translate` receives that canonical selection, the exact selected
    model and target language. Returned formula wrappers are normalized to
-   `$...$` / `$$...$$`; this same canonical text drives display, copy and
-   mutable-document replacement. WPS PDF intentionally offers copy only.
+   `$...$` / `$$...$$`; this canonical text drives display and mutable-document
+   replacement. Final copy converts only a single formula to bare LaTeX,
+   retaining wrappers for prose or multiple formulas. WPS PDF offers copy only.
 6. Preferences are stored per task-pane origin. A saved
    `remote:project-server:qwen3:30b` is restored only if discovery still lists
    that exact model on that source; a stale value is never injected into the
@@ -210,12 +231,35 @@ existing lifecycle rules.
 
 ### LaTeX to native equations (Word and WPS Writer)
 
+There are two different paste targets. For **one formula in the host's built-in
+equation editor**, userscript `1.15.9` provides bare LaTeX through the webpage
+selection **Copy** button: it removes the single outer math wrapper, rewrites
+bracketed matrix environments to equivalent `\left`/`\right` plus `matrix`,
+and drops valid matrix row-spacing options while keeping the row separators.
+Paste that result into the equation editor's LaTeX input mode. The webpage's
+own copy button and an older installed userscript do not receive this fix.
+
+For **prose with formulas or multiple formulas**, paste canonical `$...$` /
+`$$...$$` text into the document body, select it, and use the task pane's
+**转换为原生公式** action. This path uses local Pandoc rather than the host's
+built-in LaTeX paste parser:
+
 1. The task pane reads the current selection only when the user clicks.
 2. `POST /document/latex-fragment` canonicalizes supported wrappers and asks
    local Pandoc to create an editable DOCX/OMML fragment.
 3. Word inserts the returned base64 package; WPS inserts the returned local
    path.
 4. The selection becomes native equations that remain editable in the host.
+
+The reported two-column-vector example already produces two correct `2 × 1`
+OMML matrices through this backend path. The October copy fix applies at all
+final clipboard outputs: webpage selection, webpage translation card,
+document formula copy, and document translation copy. Backend conversion,
+API results, internal translation/read-aloud, and document writeback retain
+canonical LaTeX.
+See [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
+for the sample, upgrade steps, and the distinction between structural tests
+and an actual WPS editor paste check.
 
 ### Native equations to LaTeX (Word and WPS Writer)
 
@@ -229,8 +273,10 @@ existing lifecycle rules.
    clipboard failures.
 4. Word selection packages are placed into Pandoc's complete reference DOCX
    shell while preserving conventional `w:` and `m:` namespaces.
-5. Only canonical plain-text LaTeX plus surrounding prose is written to the
-   clipboard.
+5. The final clipboard text is bare LaTeX for one formula without prose, or
+   canonical `$...$` / `$$...$$` for prose or multiple formulas. The controller
+   preserves the canonical `result.latex` and returns `clipboard_text` alongside
+   it so callers can inspect the actual copied text.
 
 ### Selectable WPS PDF formulas to LaTeX
 
@@ -244,7 +290,8 @@ existing lifecycle rules.
 3. The selected discovered model reconstructs only formula structure supported
    by the text and visual line order. The server rejects output with no valid
    LaTeX and canonicalizes inline/display wrappers before returning it.
-4. The shared controller copies the canonical result as plain text. No PDF
+4. The shared controller preserves the canonical API result and copies plain
+   text using the same single-formula/mixed-content rule. No PDF
    content is replaced and no native equation is inserted.
 
 Word/Writer native formula conversion depends on Pandoc, not Ollama. Neither
@@ -255,6 +302,26 @@ release supports selectable/vector PDF text; image-only or scanned formulas
 need a future OCR/vision route.
 
 ## Current verification
+
+The merged `1.15.9` release passes `197/197` tests through `pnpm test`: `164`
+core/Office tests and `33` selection/DOM tests, including two new Copy-button
+interaction regressions. The focused Python formula suite passes `29` tests.
+The full Python regression passes `275`
+tests and `17` subtests, with one existing Starlette/httpx deprecation warning.
+Real Pandoc conversion of the reported
+input and the new clipboard output gives identical LaTeX round-trips and two
+`2 × 1` matrices, three fractions, and two dotted derivatives, without extra
+outer brackets. The DOM-simulated button checks are not WPS GUI tests; the WPS
+GUI paste path has not been exercised in this run.
+See [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
+for the scope and full-regression status.
+
+Release `1.15.9` also retains the remote ChatGPT formula-source and WPS bar
+compatibility fixes. The counts above are for the final merged version.
+
+The following live-host evidence comes from the earlier July releases. In
+particular, the single-formula clipboard example records the old wrapped
+output; the current final-copy rule removes that wrapper for a single formula.
 
 - The 50-formula corpus becomes 50 native OMML equations and round-trips as 50
   formulas.
@@ -310,15 +377,18 @@ need a future OCR/vision route.
 
   - remote `/api/ps` listed only `qwen3:30b` (`30.5B`, `Q4_K_M`); no 100B+
     model and no local Ollama were used.
-- The current assistant core has 27 Node subtests covering the translation,
+- The assistant core now has 29 Node subtests covering the translation,
   read/audio, source filtering, preference restore, explicit connection poll,
   Word/WPS selection replacement, formula controller, WPS Writer ribbon, PDF
   selection, PDF model recognition, canonical LaTeX translation, userscript-
   parity progressive formula reading, and the 30B-over-122B default rule.
-- The focused Python add-in-host/formula API suite has 27 passing tests,
-  including the explicit `/wps-pdf/*` static allowlist, normal proxying of PDF
-  selections without clipboard access, legacy-console-safe request logging,
-  font-run/plain-line reconstruction prompts, and canonical response checks.
+- The loader/startup, add-in-host and packaging coverage from
+  [iteration 14](../docs/iteration-14-2026-07-29-addin-on-demand-startup.md)
+  includes the explicit `/wps-pdf/*` static allowlist,
+  normal proxying of PDF selections without clipboard access,
+  legacy-console-safe request logging, the separate login-loader shortcut and
+  PID lifecycle, font-run/plain-line reconstruction prompts, and canonical
+  response checks.
 - The exact add-in proxy path was tested with
   `remote:project-server:qwen3:30b` (never a 100B+ model):
   - selected-text translation returned Simplified Chinese and preserved
@@ -349,6 +419,21 @@ See
 for the release record and exact evidence.
 
 ## Troubleshooting
+
+### Pasting into WPS's equation editor adds brackets or empty matrix cells
+
+Upgrade the installed Tampermonkey script to `1.15.9`, refresh the webpage,
+select only the formula, and use this script's floating **Copy**. Paste in the
+host's LaTeX equation input mode. A single-formula clipboard should start with
+the expression itself, such as `\left[\begin{matrix}`, rather than outer
+`\[` or `$$`; valid row-spacing instructions such as `\\[2mm]` are removed
+inside supported matrix environments. The mathematical matrix brackets and
+row separators remain.
+
+If the selection also contains prose or several formulas, use the body-text
+and task-pane conversion path above. This repair does not alter the webpage's
+own copy command or an old Tampermonkey installation. It also does not claim
+that every LaTeX command is accepted by every Word/WPS build.
 
 ### The task pane is missing
 

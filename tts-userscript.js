@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.8
+// @version      1.15.9
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -1334,6 +1334,173 @@ const KokoroTTSCore = (() => {
       .trim();
   }
 
+  // Only clipboard output uses equation-editor syntax. Paragraph interchange
+  // keeps its math delimiters through normalizeCopyTextWithLatex().
+  function clipboardSingleFormula(text) {
+    const value = normalizeDisplayMathWrappers(text)
+      .replace(/[\u200B-\u200F\uFEFF]/g, "")
+      .replace(/\r\n?/g, "\n")
+      .trim();
+    const pair = [["$$", "$$"], ["$", "$"], ["\\[", "\\]"], ["\\(", "\\)"]]
+      .find(([opening]) => value.startsWith(opening));
+    if (!pair) return null;
+    const [opening, closing] = pair;
+    let depth = 0;
+    for (let index = opening.length; index < value.length; index += 1) {
+      if (depth === 0 && value.startsWith(closing, index)) {
+        return value.slice(index + closing.length).trim()
+          ? null
+          : value.slice(opening.length, index).trim();
+      }
+      if (value[index] === "%") {
+        const newline = value.indexOf("\n", index);
+        if (newline < 0) return null;
+        index = newline;
+      } else if (value[index] === "\\") {
+        index += 1;
+      } else if (value[index] === "{") {
+        depth += 1;
+      } else if (value[index] === "}") {
+        depth -= 1;
+        if (depth < 0) return null;
+      }
+    }
+    return null;
+  }
+
+  function clipboardLatexGroupEnd(value, start) {
+    let depth = 0;
+    for (let index = start; index < value.length; index += 1) {
+      if (value[index] === "\\") {
+        index += 1;
+      } else if (value[index] === "%") {
+        const newline = value.indexOf("\n", index);
+        if (newline < 0) return -1;
+        index = newline;
+      } else if (value[index] === "{") {
+        depth += 1;
+      } else if (value[index] === "}" && --depth === 0) {
+        return index + 1;
+      }
+    }
+    return -1;
+  }
+
+  function clipboardCompatibleMatrices(formula) {
+    const fences = {
+      bmatrix: ["[", "]"],
+      pmatrix: ["(", ")"],
+      Bmatrix: ["\\{", "\\}"],
+      vmatrix: ["|", "|"],
+      Vmatrix: ["\\|", "\\|"],
+    };
+    const rowEnvironments = new Set([
+      "matrix", "bmatrix", "pmatrix", "Bmatrix", "vmatrix", "Vmatrix",
+      "smallmatrix", "array", "aligned", "alignedat", "gathered", "cases",
+      "split", "align", "align*", "alignat", "alignat*", "gather", "gather*",
+      "eqnarray", "eqnarray*",
+    ]);
+    const environments = [];
+    const replacements = [];
+    let depth = 0;
+    for (let index = 0; index < formula.length;) {
+      const character = formula[index];
+      if (character === "%") {
+        const newline = formula.indexOf("\n", index);
+        index = newline < 0 ? formula.length : newline + 1;
+        continue;
+      }
+      if (character !== "\\") {
+        if (character === "{") depth += 1;
+        if (character === "}") depth -= 1;
+        if (depth < 0) return formula;
+        index += 1;
+        continue;
+      }
+      const command = /^\\([A-Za-z]+|[^])/u.exec(formula.slice(index));
+      if (!command) break;
+      const next = index + command[0].length;
+      if (/^(?:text[A-Za-z]*|mbox|hbox|vbox|operatorname)$/.test(command[1])) {
+        let groupStart = next;
+        let sawStar = false;
+        while (groupStart < formula.length) {
+          if (/\s/.test(formula[groupStart])) {
+            groupStart += 1;
+          } else if (formula[groupStart] === "%") {
+            const newline = formula.indexOf("\n", groupStart);
+            groupStart = newline < 0 ? formula.length : newline + 1;
+          } else if (!sawStar && formula[groupStart] === "*") {
+            sawStar = true;
+            groupStart += 1;
+          } else {
+            break;
+          }
+        }
+        if (formula[groupStart] === "{") {
+          const groupEnd = clipboardLatexGroupEnd(formula, groupStart);
+          if (groupEnd < 0) return formula;
+          index = groupEnd;
+          continue;
+        }
+      }
+      if (command[1] === "verb") {
+        const delimiterStart = formula[next] === "*" ? next + 1 : next;
+        const delimiter = formula[delimiterStart];
+        const end = delimiter && formula.indexOf(delimiter, delimiterStart + 1);
+        if (end > delimiterStart) {
+          index = end + 1;
+          continue;
+        }
+      }
+      const environment = /^\\(begin|end)\s*\{([A-Za-z]+\*?)\}/.exec(formula.slice(index));
+      if (environment) {
+        const [token, action, name] = environment;
+        if (action === "begin") {
+          environments.push({ name, depth, start: index, end: index + token.length });
+        } else {
+          const opening = environments.pop();
+          if (!opening || opening.name !== name || opening.depth !== depth) return formula;
+          if (Object.prototype.hasOwnProperty.call(fences, name)) {
+            const [left, right] = fences[name];
+            replacements.push(
+              { start: opening.start, end: opening.end, text: "\\left" + left + "\\begin{matrix}" },
+              { start: index, end: index + token.length, text: "\\end{matrix}\\right" + right }
+            );
+          }
+        }
+        index += token.length;
+        continue;
+      }
+      const environmentContext = environments[environments.length - 1];
+      if (command[1] === "\\" && environmentContext &&
+          rowEnvironments.has(environmentContext.name) && environmentContext.depth === depth) {
+        const optionStart = formula[next] === "*" ? next + 1 : next;
+        // A dimensional option after a row break is spacing, not another cell.
+        // Non-dimensions such as [x], literal brackets and all & cells stay intact.
+        const spacing = /^\s*\[\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|pc|in|bp|cm|mm|dd|cc|sp|ex|em|mu)\s*\]/.exec(formula.slice(optionStart));
+        if (spacing) {
+          replacements.push({ start: optionStart, end: optionStart + spacing[0].length, text: "" });
+          index = optionStart + spacing[0].length;
+          continue;
+        }
+      }
+      index = next;
+    }
+    if (environments.length || depth !== 0) return formula;
+    let result = formula;
+    replacements.sort((a, b) => b.start - a.start).forEach(({ start, end, text }) => {
+      result = result.slice(0, start) + text + result.slice(end);
+    });
+    return result;
+  }
+
+  function prepareLatexForClipboard(text) {
+    const formula = clipboardSingleFormula(text);
+    return formula === null
+      ? normalizeCopyTextWithLatex(text)
+      : clipboardCompatibleMatrices(normalizeLatexBarArguments(formula));
+  }
+
   function splitLatexSegments(text) {
     const value = normalizeDisplayMathWrappers(text);
     const pattern =
@@ -1950,6 +2117,7 @@ const KokoroTTSCore = (() => {
     normalizeLlmSourceText,
     normalizeTargetLanguage,
     prepareProgressiveReadPlan,
+    prepareLatexForClipboard,
     prepareTextForRead,
     prepareTextForReadPlan,
     releaseAudio,
@@ -4622,6 +4790,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     const copyBtn = document.createElement("button");
     copyBtn.className = "tts-copy-btn";
+    copyBtn.title = "Copy LaTeX: single formulas fit Word/WPS equation boxes; paragraphs keep math delimiters.";
     setButtonHtml(copyBtn, "tts-copy-btn", "\u2398", "Copy");
 
     copyBtn.addEventListener("click", (e) => {
@@ -5355,7 +5524,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   }
 
   async function copySelectedTextAsLatex(text, btnElement) {
-    const copyText = KokoroTTSCore.normalizeCopyTextWithLatex(text);
+    const copyText = KokoroTTSCore.prepareLatexForClipboard(text);
     if (!copyText) {
       if (btnElement) {
         setButtonHtml(btnElement, "tts-copy-btn error", "\u274C", "Empty");
@@ -5468,6 +5637,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     metaText.textContent = `${payload.model || settings.translateModel} -> ${payload.target_language || settings.targetLanguage}`;
     const copyBtn = document.createElement("button");
     copyBtn.className = "tts-copy-translation-btn";
+    copyBtn.title = "Copy LaTeX: single formulas fit Word/WPS equation boxes; paragraphs keep math delimiters.";
     copyBtn.type = "button";
     copyBtn.textContent = "Copy";
     meta.appendChild(metaText);
@@ -5481,7 +5651,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
-      const copyText = KokoroTTSCore.normalizeCopyTextWithLatex(
+      const copyText = KokoroTTSCore.prepareLatexForClipboard(
         payload.translated_text || ""
       );
       copyTextToClipboard(copyText).then(() => {

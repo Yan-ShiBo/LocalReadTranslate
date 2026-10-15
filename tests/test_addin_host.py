@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -10,6 +11,55 @@ import addon_host
 
 def test_proxy_timeout_allows_cold_translation_models_to_initialize():
     assert addon_host.UPSTREAM_TIMEOUT_SECONDS >= 120
+
+
+def test_main_owns_pid_file_only_while_loader_is_running(tmp_path, monkeypatch):
+    pid_file = tmp_path / "LocalReadTranslate" / "addin-host.pid"
+
+    class FakeServer:
+        api_base_url = "http://127.0.0.1:5000"
+
+        def __init__(self):
+            self.closed = False
+
+        def serve_forever(self, poll_interval):
+            assert poll_interval == 0.25
+            assert pid_file.read_text(encoding="ascii") == str(os.getpid())
+
+        def server_close(self):
+            self.closed = True
+
+    server = FakeServer()
+    monkeypatch.setattr(addon_host, "create_server", lambda **_kwargs: server)
+
+    assert addon_host.main(["--pid-file", str(pid_file)]) == 0
+
+    assert server.closed is True
+    assert not pid_file.exists()
+
+
+def test_main_removes_owned_pid_file_when_server_close_fails(tmp_path, monkeypatch):
+    pid_file = tmp_path / "LocalReadTranslate" / "addin-host.pid"
+
+    class FakeServer:
+        api_base_url = "http://127.0.0.1:5000"
+
+        def serve_forever(self, poll_interval):
+            assert poll_interval == 0.25
+
+        def server_close(self):
+            raise RuntimeError("close failed")
+
+    monkeypatch.setattr(
+        addon_host,
+        "create_server",
+        lambda **_kwargs: FakeServer(),
+    )
+
+    with pytest.raises(RuntimeError, match="close failed"):
+        addon_host.main(["--pid-file", str(pid_file)])
+
+    assert not pid_file.exists()
 
 
 class _UpstreamHandler(BaseHTTPRequestHandler):

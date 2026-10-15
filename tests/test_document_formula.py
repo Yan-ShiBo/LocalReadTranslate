@@ -1,5 +1,7 @@
 import base64
 import io
+import shutil
+import subprocess
 import uuid
 import zipfile
 from pathlib import Path
@@ -7,6 +9,57 @@ from pathlib import Path
 import pytest
 
 import document_formula
+
+
+@pytest.mark.skipif(
+    document_formula.find_pandoc() is None or shutil.which("node") is None,
+    reason="Pandoc and Node are required for clipboard interoperability",
+)
+def test_equation_editor_clipboard_preserves_the_reported_two_column_vectors(tmp_path):
+    source = (
+        r"\[ \begin{bmatrix} \dot{\theta}\\ \dot{\omega} \end{bmatrix} = "
+        r"\begin{bmatrix} \omega\\[2mm] "
+        r"\displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right) "
+        r"+\frac{1}{ml^2}u \end{bmatrix} \]"
+    )
+    script = (
+        "const fs=require('node:fs');"
+        "const core=require('./tts-userscript.js');"
+        "process.stdout.write(core.prepareLatexForClipboard("
+        "fs.readFileSync(0,'utf8')));"
+    )
+    copied = subprocess.run(
+        [shutil.which("node"), "-e", script],
+        input=source,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+        timeout=10,
+        cwd=Path(__file__).resolve().parents[1],
+    ).stdout
+    assert not copied.startswith(("$", r"\["))
+    assert "[2mm]" not in copied
+    assert r"\left[\begin{matrix}" in copied
+
+    round_trips = []
+    for text in (source, f"$$\n{copied}\n$$"):
+        generated = document_formula.generate_formula_fragment(text, fragment_dir=tmp_path)
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(generated.docx_base64))) as archive:
+            root = document_formula.ElementTree.fromstring(archive.read("word/document.xml"))
+        ns = document_formula._WORD_XML_NAMESPACES
+        matrices = root.findall(".//m:m", ns)
+        assert [[len(row.findall("m:e", ns)) for row in matrix.findall("m:mr", ns)]
+                for matrix in matrices] == [[1, 1], [1, 1]]
+        assert len(root.findall(".//m:f", ns)) == 3
+        assert len(root.findall(".//m:acc", ns)) == 2
+        assert len(root.findall(".//m:d", ns)) == 3  # two vectors + the real parentheses
+        assert not root.findall(".//w:t", ns)  # no leaked display delimiters as prose
+        assert generated.native_formula_count == 1
+        round_trips.append(document_formula.native_formula_to_latex(
+            "docx-base64", generated.docx_base64, work_dir=tmp_path,
+        ).latex)
+    assert round_trips[0] == round_trips[1]
 
 
 def test_canonicalizes_every_supported_math_wrapper_to_latex():
