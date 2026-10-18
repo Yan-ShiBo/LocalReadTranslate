@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.10
+// @version      1.15.11
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -18,7 +18,6 @@
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_setClipboard
 // @connect      127.0.0.1
 // @compatible   chrome Requires Tampermonkey and the local API server.
 // @compatible   edge Requires Tampermonkey and the local API server.
@@ -4883,6 +4882,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
     document.body.appendChild(container);
     floatingBtn = container;
+    prepareClipboardFrame(container);
 
     requestAnimationFrame(() => {
       positionFloatingContainer(container, container._ttsSelectionRect);
@@ -5576,26 +5576,81 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     if (card) card.remove();
   }
 
-  function copyTextToClipboard(text) {
-    if (typeof GM_setClipboard === "function") {
-      GM_setClipboard(text, "text");
-      return Promise.resolve();
+  function prepareClipboardFrame(container) {
+    // The fallback document must exist before the next user gesture so it
+    // receives the browser's transient activation along with this page.
+    const frame = document.createElement("iframe");
+    frame.className = "tts-clipboard-frame";
+    frame.title = "LocalReadTranslate clipboard";
+    frame.setAttribute("aria-hidden", "true");
+    frame.tabIndex = -1;
+    frame.style.cssText = "position:fixed;left:-10000px;top:0;width:1px;height:1px;border:0;pointer-events:none";
+    container.appendChild(frame);
+  }
+
+  async function copyTextToClipboard(text, container) {
+    // Tampermonkey 5.5.1 implements GM_setClipboard with a copy event in the
+    // host document. A page's earlier capture listener can replace our text.
+    // The asynchronous Clipboard API does not dispatch that host-page event.
+    if (window.isSecureContext && typeof navigator.clipboard?.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch (_error) {
+        // A denied/unavailable native write may still allow a user-activated
+        // copy command in an isolated, same-origin blank document below.
+      }
     }
-    if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(text);
+
+    const selection = window.getSelection();
+    const ranges = [];
+    for (let index = 0; selection && index < selection.rangeCount; index += 1) {
+      ranges.push(selection.getRangeAt(index).cloneRange());
     }
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.style.position = "fixed";
-    area.style.left = "-9999px";
-    area.setAttribute("readonly", "");
-    document.body.appendChild(area);
-    area.select();
+    const activeElement = document.activeElement;
+    const frame = container?.querySelector(".tts-clipboard-frame");
+    const frameDocument = frame?.contentDocument;
+    let area;
+    let onCopy;
     try {
-      document.execCommand("copy");
-      return Promise.resolve();
+      // Clipboard events stay in this document: the page's window/document
+      // copy handlers cannot turn a bare equation back into \\[...\\].
+      if (!frame?.isConnected || !frameDocument?.body || typeof frameDocument.execCommand !== "function") {
+        throw new Error("Clipboard copy is unavailable in this browser");
+      }
+      area = frameDocument.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      frameDocument.body.appendChild(area);
+      let wroteText = false;
+      onCopy = (event) => {
+        if (!event.clipboardData) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.clipboardData.setData("text/plain", text);
+        wroteText = true;
+      };
+      frameDocument.addEventListener("copy", onCopy, { capture: true, once: true });
+      area.focus();
+      area.select();
+      if (!frameDocument.execCommand("copy") || !wroteText) {
+        throw new Error("The browser blocked clipboard writing");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
     } finally {
-      area.remove();
+      if (onCopy) frameDocument.removeEventListener("copy", onCopy, true);
+      area?.remove();
+      // Keep the empty frame until its toolbar closes: destroying its document
+      // here can cancel the browser's pending clipboard write after copy fires.
+      try {
+        activeElement?.focus({ preventScroll: true });
+        if (selection && ranges.length) {
+          selection.removeAllRanges();
+          ranges.forEach((range) => selection.addRange(range));
+        }
+      } catch (_error) {
+        // The page may have removed the original selection while copying.
+      }
     }
   }
 
@@ -5615,7 +5670,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       setButtonHtml(btnElement, "tts-copy-btn loading", "\u23F3", "Copying");
     }
     try {
-      await copyTextToClipboard(copyText);
+      await copyTextToClipboard(copyText, btnElement?.closest(".tts-float-container"));
       if (btnElement) {
         setButtonHtml(btnElement, "tts-copy-btn done", "\u2705", "Copied");
         setTimeout(() => {
@@ -5730,7 +5785,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       const copyText = KokoroTTSCore.prepareLatexForClipboard(
         payload.translated_text || ""
       );
-      copyTextToClipboard(copyText).then(() => {
+      copyTextToClipboard(copyText, container).then(() => {
         copyBtn.textContent = "Copied";
         setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
       }).catch(() => {

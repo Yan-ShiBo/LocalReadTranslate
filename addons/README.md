@@ -232,7 +232,7 @@ service processes it owns and leaves Word/WPS package loading available.
 ### LaTeX to native equations (Word and WPS Writer)
 
 There are two different paste targets. For **one formula in the host's built-in
-equation editor**, userscript `1.15.10` provides bare LaTeX through the webpage
+equation editor**, userscript `1.15.11` provides bare LaTeX through the webpage
 selection **Copy** button: it normalizes redundant whole-formula wrappers,
 including wrappers already present in webpage metadata, removes the wrappers
 from the single-formula clipboard output, and rewrites
@@ -240,6 +240,10 @@ bracketed matrix environments to equivalent `\left`/`\right` plus `matrix`,
 and drops valid matrix row-spacing options while keeping the row separators.
 Paste that result into the equation editor's LaTeX input mode. The webpage's
 own copy button and an older installed userscript do not receive this fix.
+The `1.15.11` webpage Copy path also isolates clipboard writing from the
+host page's `copy` handlers and waits for success before showing **Copied**.
+This is a browser-userscript transport repair; it does not change the add-in's
+native document APIs or the shared LaTeX output format.
 The shared reading core applies the same wrapper handling to the add-in's
 formula and translation copy actions. Mathematical brackets remain: copying
 `\(\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]\)` by itself produces
@@ -275,6 +279,8 @@ for wrapper and internal-marker boundaries, and
 [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
 for the matrix sample. Both distinguish structural tests from an actual WPS
 editor paste check.
+The browser clipboard event repair and its separate evidence limits are in
+[iteration 18](../docs/iteration-18-2026-10-18-clipboard-event-isolation.md).
 
 ### Native equations to LaTeX (Word and WPS Writer)
 
@@ -318,7 +324,15 @@ need a future OCR/vision route.
 
 ## Current verification
 
-The `1.15.10` / FastAPI `1.7.21` full regression passed `220` JavaScript tests
+The `1.15.11` local full regression passed `253` JavaScript tests and `305`
+Python tests plus `30` subtests, with one existing Starlette/httpx deprecation
+warning. In isolated headless Chrome, both the native writer and the fallback
+after forced native rejection produced the exact bare reported formula when
+read back from the real clipboard, without triggering host-document `copy`
+handlers. These checks did not capture the user's live page listeners or
+paste into WPS. See [iteration 18](../docs/iteration-18-2026-10-18-clipboard-event-isolation.md).
+
+The earlier `1.15.10` / FastAPI `1.7.21` full regression passed `220` JavaScript tests
 and `305` Python tests plus `30` subtests, with one existing Starlette/httpx
 deprecation warning. Coverage includes formula whitespace/comment boundaries,
 malformed legacy marker preservation, and single-dollar formulas not consuming
@@ -341,7 +355,7 @@ GUI paste path has not been exercised in this run.
 See [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
 for the scope and full-regression status.
 
-Release `1.15.10` retains the ChatGPT formula-source and WPS bar compatibility
+Release `1.15.11` retains the ChatGPT formula-source and WPS bar compatibility
 fixes. The `197` JavaScript / `275` Python / `17` subtest counts are historical
 results for the final merged `1.15.9` version, not the new wrapper-boundary run.
 
@@ -448,7 +462,7 @@ for the release record and exact evidence.
 
 ### Pasting into WPS's equation editor adds parentheses, brackets, or empty matrix cells
 
-Upgrade the installed Tampermonkey script to `1.15.10`, refresh the webpage,
+Upgrade the installed Tampermonkey script to `1.15.11`, refresh the webpage,
 select only the formula, and use this script's floating **Copy**. Paste in the
 host's LaTeX equation input mode. A single-formula clipboard should start with
 the expression itself, such as `\left[\begin{matrix}`, rather than outer
@@ -457,6 +471,11 @@ wrapper; valid row-spacing instructions such as `\\[2mm]` are removed
 inside supported matrix environments. The mathematical matrix brackets and
 row separators remain. In particular, a final `[x]` in `\Sigma[x]` remains
 complete and is not consumed as part of an internal `[[MATH:...]]` marker.
+If extraction is correct but a host-page clipboard listener reintroduces
+wrappers, the browser script now writes without dispatching a `copy` event in
+that host document. **Copied** waits for successful writing; a blocked write
+shows failure instead. Ordinary `Ctrl+C` is not intercepted. FastAPI remains
+`1.7.21`, and this browser-only fix needs no model startup.
 
 If the selection also contains prose or several formulas, use the body-text
 and task-pane conversion path above. This repair does not alter the webpage's

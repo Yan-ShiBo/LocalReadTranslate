@@ -78,7 +78,7 @@ function copySelection(page) {
   return core.normalizeCopyTextWithLatex(page.tools.getSelectedText());
 }
 
-function createUserscriptPage(t, html) {
+function createUserscriptPage(t, html, options = {}) {
   const dom = new JSDOM(html, {
     url: "https://selection.test/",
     runScripts: "outside-only",
@@ -86,6 +86,14 @@ function createUserscriptPage(t, html) {
   t.after(() => dom.window.close());
   const { window } = dom;
   const clipboard = [];
+  const nativeWrites = [];
+  const gmClipboardCalls = [];
+  const frameCopyCalls = [];
+  const clipboardFrames = [];
+  const clipboardFrameListeners = new Map();
+  const instrumentedFrameDocuments = new WeakSet();
+  let activatedClipboardFrames = new Set();
+  const hostCopyEvents = [];
   const listeners = new WeakMap();
   const timers = new Map();
   let timerId = 0;
@@ -109,23 +117,115 @@ function createUserscriptPage(t, html) {
   window.GM_addStyle = () => {};
   window.GM_getValue = (_key, fallback) => fallback;
   window.GM_setValue = () => {};
-  window.GM_setClipboard = (text, type) => clipboard.push({ text, type });
+  window.GM_setClipboard = (text, type) => {
+    gmClipboardCalls.push({ text, type });
+    clipboard.push({ text, type });
+  };
+  Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+  Object.defineProperty(window.navigator, "clipboard", {
+    configurable: true,
+    value: options.nativeClipboard === false ? undefined : {
+      writeText(text) {
+        nativeWrites.push(text);
+        if (typeof options.nativeClipboard === "function") {
+          return options.nativeClipboard(text, clipboard);
+        }
+        clipboard.push({ text, type: "text" });
+        return Promise.resolve();
+      },
+    },
+  });
+  if (options.hostileCopy) {
+    // Installed before the userscript, as in the isolated-browser reproduction. A
+    // parent-document copy event would gain unwanted display delimiters.
+    window.addEventListener("copy", (event) => {
+      hostCopyEvents.push(event);
+      event.clipboardData?.setData("text/plain", String.raw`\[ hijacked \]`);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  }
+  const appendChild = window.Node.prototype.appendChild;
+  window.Node.prototype.appendChild = function (node) {
+    const result = appendChild.call(this, node);
+    const frames = [node, ...Array.from(node.querySelectorAll?.("iframe") || [])];
+    for (const frame of frames) {
+      if (frame.tagName !== "IFRAME" || !frame.contentDocument || instrumentedFrameDocuments.has(frame.contentDocument)) continue;
+      if (!clipboardFrames.includes(frame)) clipboardFrames.push(frame);
+      const frameDocument = frame.contentDocument;
+      instrumentedFrameDocuments.add(frameDocument);
+      const copyListeners = new Map();
+      clipboardFrameListeners.set(frame, copyListeners);
+      const frameAddListener = frameDocument.addEventListener;
+      const frameRemoveListener = frameDocument.removeEventListener;
+      frameDocument.addEventListener = function (type, callback, eventOptions) {
+        if (type === "copy") copyListeners.set(callback, eventOptions);
+        return frameAddListener.call(this, type, callback, eventOptions);
+      };
+      frameDocument.removeEventListener = function (type, callback, eventOptions) {
+        if (type === "copy") copyListeners.delete(callback);
+        return frameRemoveListener.call(this, type, callback, eventOptions);
+      };
+      frameDocument.execCommand = (command) => {
+        frameCopyCalls.push(command);
+        // Match Chrome: a frame created after this user click begins has no
+        // inherited transient activation, even when its parent has activation.
+        if (!activatedClipboardFrames.has(frame)) return false;
+        if (options.clearHostSelection) window.getSelection().removeAllRanges();
+        if (options.frameCopyMode === "throw") throw new Error("Copy is blocked");
+        if (options.frameCopyMode !== "no-event") {
+          const data = new Map();
+          const event = new frame.contentWindow.Event("copy", { bubbles: true, cancelable: true });
+          Object.defineProperty(event, "clipboardData", {
+            value: {
+              setData(type, value) { data.set(type, value); },
+              getData(type) { return data.get(type) || ""; },
+              clearData() { data.clear(); },
+            },
+          });
+          (frameDocument.activeElement || frameDocument).dispatchEvent(event);
+          for (const [callback, eventOptions] of copyListeners) {
+            if (eventOptions?.once) copyListeners.delete(callback);
+          }
+          if (data.has("text/plain")) {
+            // Chrome commits the system clipboard later; destroying the frame
+            // before that task loses the pending write, despite execCommand=true.
+            window.setTimeout(() => {
+              if (frame.isConnected) clipboard.push({ text: data.get("text/plain"), type: "text" });
+            }, 0);
+          }
+        }
+        return options.frameCopyMode !== "false";
+      };
+    }
+    return result;
+  };
   window.GM_xmlhttpRequest = () => {
     throw new Error("Copy must not require a local service or model");
   };
   window.console.log = () => {};
+  window.console.warn = () => {};
   window.eval(fs.readFileSync(path.join(__dirname, "..", "tts-userscript.js"), "utf8"));
 
   return {
     window,
     document: window.document,
     clipboard,
+    nativeWrites,
+    gmClipboardCalls,
+    frameCopyCalls,
+    clipboardFrames,
+    clipboardFrameListeners,
+    hostCopyEvents,
     tools: core.createSelectionTools(window.document),
     invokeUserEvent(target, type, eventTarget = target) {
       // jsdom cannot create trusted DOM events. Invoke the actual registered
       // handler with the browser's user-event contract; production guards stay.
       const callbacks = listeners.get(target)?.get(type) || [];
       assert.ok(callbacks.length, `Expected a registered ${type} handler`);
+      if (type === "click") {
+        activatedClipboardFrames = new Set(clipboardFrames.filter((frame) => frame.isConnected));
+      }
       for (const callback of callbacks) callback.call(target, {
         isTrusted: true, target: eventTarget,
         preventDefault() {}, stopPropagation() {},
@@ -178,6 +278,265 @@ test("the Copy button preserves the merged bar fix for a solitary formula", asyn
   assert.deepEqual(page.clipboard, [{ text: String.raw`\bar{v}_z`, type: "text" }]);
   assert.equal(page.document.querySelector("#radius").getAttribute("data-math-source"), source);
 });
+
+const BARRIER_FORMULA = String.raw`B(x,\mathbf b)=\sum_{|\alpha|\le d_B}b_\alpha x^\alpha.`;
+// The first base is the exact visible KaTeX fragment supplied by the user.
+// It contains only the left side: a full equation can have several bases.
+const BARRIER_BASE = '<span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0502em;">B</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathbf">b</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span>';
+const POLYNOMIAL_BASE = '<span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">p</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mclose">)</span></span>';
+
+function reportedKatexFormula({ source, metadata, bases }) {
+  const annotation = metadata === "annotation"
+    ? '<span class="katex-mathml"><math><semantics><mrow><mi>not the source</mi></mrow>' +
+      `<annotation encoding="application/x-tex">${escapeAttribute(source)}</annotation>` +
+      '</semantics></math></span>'
+    : "";
+  const attribute = metadata === "annotation" ? "" :
+    ` ${metadata}="${escapeAttribute(source)}"`;
+  return `<span id="reported-formula" role="math"${attribute}>` +
+    `<span class="katex-display"><span class="katex">${annotation}` +
+    `<span class="katex-html" aria-hidden="true">${bases}</span></span></span></span>`;
+}
+
+async function clickSelectedFormulaCopy(page, selectedElement) {
+  page.invokeUserEvent(page.document, "mouseup", selectedElement);
+  page.runTimers(10);
+  const button = page.document.querySelector(".tts-copy-btn");
+  assert.ok(button, "The rendered selection should expose the floating Copy button");
+  page.invokeUserEvent(button, "click");
+  await Promise.resolve();
+}
+
+async function settleClipboardUi(page) {
+  // Native writes and a rejected-write fallback each add Promise continuations.
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+    page.runTimers(0);
+  }
+}
+
+function clipboardTestPage(t, options = {}) {
+  const page = createUserscriptPage(t,
+    '<button id="prior-focus">Keep focus here</button>' + sourceFormula({ source: BARRIER_FORMULA }),
+    options
+  );
+  page.document.querySelector("#prior-focus").focus();
+  selectText(page, "#radius-subscript", 0, "#radius-subscript", 1);
+  const selection = page.window.getSelection();
+  page.originalRange = selection.getRangeAt(0).cloneRange();
+  return page;
+}
+
+function assertClipboardFallbackCleanedUp(page) {
+  assert.ok(page.clipboardFrames.length, "The fallback should use its own iframe document");
+  assert.equal(page.clipboardFrames.length, 1, "The toolbar should reuse its pre-existing frame");
+  const frame = page.clipboardFrames[0];
+  assert.equal(frame.isConnected, true, "Keep the frame alive for the system clipboard commit");
+  assert.equal(frame.closest(".tts-float-container"), page.document.querySelector(".tts-float-container"));
+  assert.equal(frame.contentDocument.querySelectorAll("textarea").length, 0);
+  assert.equal(page.clipboardFrameListeners.get(frame).size, 0, "No copy listener may retain the old clipboard text");
+  assert.equal(page.document.querySelectorAll("textarea").length, 0);
+  assert.equal(page.document.activeElement.id, "prior-focus");
+  const selection = page.window.getSelection();
+  assert.equal(selection.rangeCount, 1, "The original page selection must be restored");
+  const range = selection.getRangeAt(0);
+  assert.equal(range.startContainer, page.originalRange.startContainer);
+  assert.equal(range.endContainer, page.originalRange.endContainer);
+  assert.equal(range.startOffset, page.originalRange.startOffset);
+  assert.equal(range.endOffset, page.originalRange.endOffset);
+}
+
+function closeClipboardToolbar(page) {
+  page.invokeUserEvent(page.document, "mousedown", page.document.querySelector("#prior-focus"));
+  page.runTimers(150);
+  assert.equal(page.document.querySelector(".tts-float-container"), null);
+  assert.equal(page.document.querySelectorAll(".tts-clipboard-frame").length, 0);
+  assert.ok(page.clipboardFrames.every((frame) => !frame.isConnected));
+}
+
+test("floating Copy prefers native clipboard writes and bypasses an earlier host copy interceptor", async (t) => {
+  const page = clipboardTestPage(t, { hostileCopy: true });
+  await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
+  await settleClipboardUi(page);
+
+  assert.deepEqual(page.nativeWrites, [BARRIER_FORMULA]);
+  assert.deepEqual(page.gmClipboardCalls, []);
+  assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+  assert.deepEqual(page.hostCopyEvents, []);
+  assert.equal(page.clipboardFrames.length, 1);
+  assert.equal(page.clipboardFrames[0].contentDocument.querySelectorAll("textarea").length, 0);
+  assert.equal(page.clipboardFrameListeners.get(page.clipboardFrames[0]).size, 0);
+  assert.match(page.document.querySelector(".tts-copy-btn").textContent, /Copied/);
+  closeClipboardToolbar(page);
+});
+
+test("floating Copy waits for the native clipboard promise before reporting Copied", async (t) => {
+  let resolveWrite;
+  const pendingWrite = new Promise((resolve) => { resolveWrite = resolve; });
+  const page = clipboardTestPage(t, {
+    nativeClipboard: (text, clipboard) => pendingWrite.then(() => {
+      clipboard.push({ text, type: "text" });
+    }),
+  });
+  await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
+  const button = page.document.querySelector(".tts-copy-btn");
+  assert.deepEqual(page.nativeWrites, [BARRIER_FORMULA]);
+  assert.deepEqual(page.clipboard, []);
+  assert.match(button.textContent, /Copying/);
+  assert.equal(button.classList.contains("done"), false);
+
+  resolveWrite();
+  await settleClipboardUi(page);
+  assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+  assert.match(button.textContent, /Copied/);
+  assert.deepEqual(page.gmClipboardCalls, []);
+});
+
+for (const native of ["missing", "rejected"]) {
+  test(`floating Copy uses an isolated iframe when native clipboard is ${native}`, async (t) => {
+    const page = clipboardTestPage(t, {
+      nativeClipboard: native === "missing" ? false : () => Promise.reject(new Error("Permission denied")),
+      hostileCopy: true,
+      clearHostSelection: true,
+    });
+    await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
+    await settleClipboardUi(page);
+
+    assert.deepEqual(page.nativeWrites, native === "missing" ? [] : [BARRIER_FORMULA]);
+    assert.deepEqual(page.gmClipboardCalls, []);
+    assert.deepEqual(page.frameCopyCalls, ["copy"]);
+    assert.deepEqual(page.hostCopyEvents, [], "The fallback must not dispatch copy in the host document");
+    assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+    assert.match(page.document.querySelector(".tts-copy-btn").textContent, /Copied/);
+    assertClipboardFallbackCleanedUp(page);
+    closeClipboardToolbar(page);
+  });
+}
+
+test("iframe Copy waits for the clipboard commit task and reuses the live toolbar frame", async (t) => {
+  const page = clipboardTestPage(t, { nativeClipboard: false, hostileCopy: true });
+  await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
+  const button = page.document.querySelector(".tts-copy-btn");
+  const frame = page.clipboardFrames[0];
+  assert.ok(frame?.isConnected, "The activated frame must stay alive through clipboard commit");
+  assert.deepEqual(page.clipboard, [], "The modeled system write has not committed yet");
+  assert.match(button.textContent, /Copying/);
+
+  await settleClipboardUi(page);
+  assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+  assert.match(button.textContent, /Copied/);
+  assertClipboardFallbackCleanedUp(page);
+
+  page.invokeUserEvent(button, "click");
+  await settleClipboardUi(page);
+  assert.equal(page.clipboardFrames.length, 1);
+  assert.equal(page.clipboardFrames[0], frame);
+  assert.deepEqual(page.clipboard, [
+    { text: BARRIER_FORMULA, type: "text" },
+    { text: BARRIER_FORMULA, type: "text" },
+  ]);
+  assert.deepEqual(page.hostCopyEvents, []);
+  assertClipboardFallbackCleanedUp(page);
+  closeClipboardToolbar(page);
+});
+
+for (const frameCopyMode of ["false", "no-event", "throw"]) {
+  test(`floating Copy reports Failed and restores the page when iframe copy returns ${frameCopyMode}`, async (t) => {
+    const page = clipboardTestPage(t, {
+      nativeClipboard: false,
+      hostileCopy: true,
+      clearHostSelection: true,
+      frameCopyMode,
+    });
+    await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
+    await settleClipboardUi(page);
+
+    const button = page.document.querySelector(".tts-copy-btn");
+    assert.match(button.textContent, /Failed/);
+    assert.equal(button.classList.contains("error"), true);
+    assert.equal(button.classList.contains("done"), false);
+    assert.deepEqual(page.frameCopyCalls, ["copy"]);
+    assert.deepEqual(page.gmClipboardCalls, []);
+    assert.deepEqual(page.hostCopyEvents, []);
+    assertClipboardFallbackCleanedUp(page);
+    closeClipboardToolbar(page);
+  });
+}
+
+for (const metadata of ["data-math-source", "aria-label", "annotation"]) {
+  for (const selection of ["left base", "right base", "partial glyph", "across bases"]) {
+    test(`floating Copy unwraps the reported display barrier from ${metadata} when selecting ${selection}`, async (t) => {
+      const source = String.raw`\[ ${BARRIER_FORMULA} \]`;
+      const page = createUserscriptPage(t, reportedKatexFormula({
+        source, metadata,
+        bases: BARRIER_BASE + '<span class="base"><span class="mop">∑</span><span class="mord mathnormal">b</span><span class="mord mathnormal">x</span><span class="mpunct">.</span></span>',
+      }));
+      const before = page.document.querySelector("#reported-formula").outerHTML;
+      const left = ".katex-html .base:first-child";
+      const right = ".katex-html .base:last-child";
+      if (selection === "left base") selectContents(page, left);
+      if (selection === "right base") selectContents(page, right);
+      if (selection === "partial glyph") selectText(page, `${left} .mathnormal`, 0, `${left} .mathnormal`, 1);
+      if (selection === "across bases") selectText(page, `${left} .mathnormal`, 0, `${right} .mpunct`, 1);
+      await clickSelectedFormulaCopy(page, page.document.querySelector(left));
+
+      assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+      assert.equal(page.document.querySelector("#reported-formula").outerHTML, before);
+    });
+  }
+
+  test(`floating Copy preserves the real p(x) parentheses in the reported base with ${metadata}`, async (t) => {
+    const page = createUserscriptPage(t, reportedKatexFormula({
+      source: String.raw`\(p(x)\)`, metadata, bases: POLYNOMIAL_BASE,
+    }));
+    selectText(page, ".katex-html .base .mathnormal", 0, ".katex-html .base .mathnormal", 1);
+    await clickSelectedFormulaCopy(page, page.document.querySelector(".base"));
+
+    assert.deepEqual(page.clipboard, [{ text: "p(x)", type: "text" }]);
+  });
+}
+
+for (const selection of [
+  "outer component", "display container", "complete KaTeX", "visible HTML",
+  "left base", "right base", "partial left glyph", "partial summation limit",
+  "across bases", "hidden MathML",
+]) {
+  test(`floating Copy from the exact reported DeepSeek DOM produces one unwrapped formula: ${selection}`, async (t) => {
+    const html = fs.readFileSync(
+      path.join(__dirname, "fixtures", "reported-deepseek-barrier.html"), "utf8"
+    );
+    const page = createUserscriptPage(t, html);
+    const component = page.document.querySelector('[data-d-component="math"]');
+    const before = component.outerHTML;
+    assert.equal(component.querySelector('annotation[encoding="application/x-tex"]').textContent, BARRIER_FORMULA);
+    const left = ".katex-html > .base:first-child";
+    const right = ".katex-html > .base:last-child";
+    const containers = {
+      "outer component": '[data-d-component="math"]',
+      "display container": ".katex-display",
+      "complete KaTeX": ".katex",
+      "visible HTML": ".katex-html",
+      "left base": left,
+      "right base": right,
+      "hidden MathML": ".katex-mathml math",
+    };
+    if (containers[selection]) selectContents(page, containers[selection]);
+    if (selection === "partial left glyph") {
+      selectText(page, `${left} .mathnormal`, 0, `${left} .mathnormal`, 1);
+    }
+    if (selection === "partial summation limit") {
+      selectText(page, `${right} .mop .mathnormal`, 0, `${right} .mop .mathnormal`, 1);
+    }
+    if (selection === "across bases") {
+      selectText(page, `${left} .mathnormal`, 0, `${right} > .mord:last-child`, 1);
+    }
+    await clickSelectedFormulaCopy(page, component);
+
+    assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+    assert.equal(copySelection(page), `$$\n${BARRIER_FORMULA}\n$$`);
+    assert.equal(component.outerHTML, before, "Copy must not rewrite the captured page DOM");
+  });
+}
 
 for (const display of [false, true]) {
   for (const [label, wrap] of [
