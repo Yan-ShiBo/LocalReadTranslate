@@ -547,6 +547,45 @@ for (const [name, core] of clipboardCores) {
 {literal \begin{pmatrix}q\\[2mm]r\end{pmatrix} \bar v}+\left[\begin{matrix}\bar{x}\end{matrix}\right]`;
     assert.equal(core.prepareLatexForClipboard(source), expected);
   });
+
+  test(`${name} equation-box copy groups the reported Lie derivative fonts without changing transpose`, () => {
+    const body = String.raw`\mathcal L_{F_p}B
+=\nabla B(x,\mathbf b)^\top f(x,p(x)).`;
+    const source = "\\[" + body + "\\]";
+    assert.equal(core.prepareLatexForClipboard(source), String.raw`\mathcal{L}_{F_p}B
+=\nabla B(x,\mathbf{b})^\top f(x,p(x)).`);
+    assert.equal(core.normalizeCopyTextWithLatex(source), "$$\n" + body + "\n$$");
+    assert.equal(core.prepareLatexForClipboard("Result: " + source),
+      core.normalizeCopyTextWithLatex("Result: " + source));
+  });
+
+  test(`${name} equation-box font grouping consumes only known single tokens`, () => {
+    for (const font of ["mathcal", "mathbf", "mathrm", "mathit", "mathsf", "mathtt", "mathbb", "mathfrak", "mathscr", "mathnormal", "boldsymbol"]) {
+      for (const [input, output] of [
+        [" L_{F_p}B", "{L}_{F_p}B"],
+        [" xy", "{x}y"],
+        [" 12", "{1}2"],
+        [String.raw` \alpha_i`, String.raw`{\alpha}_i`],
+        ["{x y}", "{x y}"],
+        [String.raw` \frac{a}{b}`, String.raw` \frac{a}{b}`],
+        [String.raw` \unknown x`, String.raw` \unknown x`],
+        ["% keep comment\nL", "% keep comment\nL"],
+      ]) {
+        const body = "\\" + font + input;
+        const source = "\\[" + body + "\\]";
+        assert.equal(core.prepareLatexForClipboard(source), "\\" + font + output);
+        assert.equal(core.normalizeCopyTextWithLatex(source), "$$\n" + body + "\n$$");
+      }
+    }
+  });
+
+  test(`${name} equation-box font compatibility protects literal text and escaped commands`, () => {
+    const body = String.raw`\text{keep  \mathcal L and \mathbf b}+\operatorname{\mathbf b}+\verb|\mathbf b|+\verb*|\mathcal L|+\\mathbf b+\mathbf{x}+x^\top+\mapsto`;
+    assert.equal(core.prepareLatexForClipboard("\\[" + body + "\\]"), body);
+    const commented = "\\text% note\n{\\mathbf b}+\\mathcal L% \\mathbf b\n+\\mathbf b";
+    assert.equal(core.prepareLatexForClipboard("\\[" + commented + "\\]"),
+      "\\text% note\n{\\mathbf b}+\\mathcal{L}% \\mathbf b\n+\\mathbf{b}");
+  });
 }
 
 

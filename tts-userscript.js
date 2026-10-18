@@ -3,7 +3,7 @@
 // @name:zh-CN   本地划词听译助手
 // @name:en      Local Selection Read & Translate
 // @namespace    https://github.com/Yan-ShiBo/LocalReadTranslate
-// @version      1.15.11
+// @version      1.15.12
 // @description  使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:zh-CN 使用本地中介服务发现真实可用模型，朗读或翻译网页选中文本。
 // @description:en Read or translate selected text using models discovered through the local mediator.
@@ -55,9 +55,14 @@ function createSelectionTools(document, window = document.defaultView) {
       .replace(/\r\n?/g, "\n")
       .replace(/\s+/g, " ")
       .replace(/\s*([{}_^=,+*/()])\s*/g, "$1")
-      .replace(/\s*(->|→|⇒|↦|\\to|\\rightarrow|\\mapsto)\s*/g, " \\to ")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function preserveMathSource(text) {
+    // TeX is source code, not rendered glyph text. Rewriting command prefixes
+    // changed \top into \to p; collapsing newlines also changes % comments.
+    return String(text || "").replace(/\r\n?/g, "\n").trim();
   }
 
   function mathOperatorToTex(value) {
@@ -266,7 +271,7 @@ function createSelectionTools(document, window = document.defaultView) {
     for (const annotation of annotations) {
       const encoding = String(annotation.getAttribute("encoding") || "").toLowerCase();
       if (encoding.includes("tex") || encoding.includes("latex")) {
-        const value = normalizeMathFormulaText(annotation.textContent);
+        const value = preserveMathSource(annotation.textContent);
         if (value) return value;
       }
     }
@@ -278,15 +283,12 @@ function createSelectionTools(document, window = document.defaultView) {
     const tag = (element.localName || element.tagName || "").toLowerCase();
 
     if (tag === "script" && /^math\/tex/i.test(element.getAttribute("type") || "")) {
-      return normalizeMathFormulaText(element.textContent);
+      return preserveMathSource(element.textContent);
     }
 
     for (const name of SOURCE_ATTRIBUTES) {
-      // ChatGPT keeps the original TeX on an outer wrapper. Do not normalize
-      // it like rendered glyphs: spaces inside commands such as \text matter.
-      const value = name === "data-math-source"
-        ? String(element.getAttribute(name) || "").trim()
-        : normalizeMathFormulaText(element.getAttribute(name));
+      // All explicit source attributes follow the same source-preserving path.
+      const value = preserveMathSource(element.getAttribute(name));
       if (value) return value;
     }
 
@@ -295,7 +297,7 @@ function createSelectionTools(document, window = document.defaultView) {
 
     const script = element.querySelector && element.querySelector('script[type^="math/tex"]');
     if (script) {
-      const value = normalizeMathFormulaText(script.textContent);
+      const value = preserveMathSource(script.textContent);
       if (value) return value;
     }
 
@@ -319,13 +321,13 @@ function createSelectionTools(document, window = document.defaultView) {
       }
       const texAnnotation = katexRoot.querySelector && katexRoot.querySelector('annotation[encoding*="TeX"], annotation[encoding*="tex"], annotation[encoding*="latex"]');
       if (texAnnotation) {
-        const value = normalizeMathFormulaText(texAnnotation.textContent);
+        const value = preserveMathSource(texAnnotation.textContent);
         if (value) return value;
       }
     }
 
     const aria = isSourceMathWrapper(element)
-      ? String(element.getAttribute("aria-label") || "").trim()
+      ? preserveMathSource(element.getAttribute("aria-label"))
       : normalizeMathFormulaText(element.getAttribute("aria-label"));
     if (aria && !/^math$/i.test(aria)) return aria;
 
@@ -1306,10 +1308,11 @@ const KokoroTTSCore = (() => {
     return result;
   }
 
-  function normalizeLatexBarArguments(formula) {
+  function normalizeLatexBarArguments(formula, equationEditor = false) {
     const value = String(formula || "");
     const textCommands = /^(?:text(?:bf|it|rm|sf|tt|normal|up|sl|sc)?|mbox|hbox|operatorname)$/;
     const symbolCommands = /^(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|varkappa|lambda|mu|nu|xi|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|imath|jmath|ell)$/;
+    const fontCommands = /^(?:mathcal|mathbf|mathrm|mathit|mathsf|mathtt|mathbb|mathfrak|mathscr|mathnormal|boldsymbol)$/;
     let result = "";
     let index = 0;
 
@@ -1393,10 +1396,11 @@ const KokoroTTSCore = (() => {
         }
       }
 
-      // WPS drops the accent from valid TeX shorthand such as \bar v.
+      // WPS drops the accent from valid TeX shorthand such as \bar v. At the
+      // equation-box clipboard boundary, make font arguments explicit as well.
       // Brace one unambiguous atom only; never guess a macro's arity, consume
       // a following subscript, or change an already grouped expression.
-      if (command[1] === "bar") {
+      if (command[1] === "bar" || (equationEditor && fontCommands.test(command[1]))) {
         const character = String.fromCodePoint(value.codePointAt(argumentStart) || 0);
         const symbol = /^\\([A-Za-z]+)/.exec(value.slice(argumentStart));
         const atom = /[\p{L}\p{N}]/u.test(character)
@@ -1591,7 +1595,7 @@ const KokoroTTSCore = (() => {
     const formula = clipboardSingleFormula(text);
     return formula === null
       ? normalizeCopyTextWithLatex(text)
-      : clipboardCompatibleMatrices(normalizeLatexBarArguments(formula));
+      : clipboardCompatibleMatrices(normalizeLatexBarArguments(formula, true));
   }
 
   function splitLatexSegments(text) {

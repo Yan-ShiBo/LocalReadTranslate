@@ -320,7 +320,7 @@
     const formula = clipboardSingleFormula(text);
     return formula === null
       ? normalizeCopyTextWithLatex(text)
-      : clipboardCompatibleMatrices(normalizeLatexBarArguments(formula));
+      : clipboardCompatibleMatrices(normalizeLatexBarArguments(formula, true));
   }
 
   function splitLatexSegments(text) {
@@ -348,10 +348,11 @@
     return segments.length ? segments : [{ type: "text", value, block: false }];
   }
 
-  function normalizeLatexBarArguments(formula) {
+  function normalizeLatexBarArguments(formula, equationEditor = false) {
     const value = String(formula || "");
     const textCommands = /^(?:text(?:bf|it|rm|sf|tt|normal|up|sl|sc)?|mbox|hbox|operatorname)$/;
     const symbolCommands = /^(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|varkappa|lambda|mu|nu|xi|pi|varpi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|imath|jmath|ell)$/;
+    const fontCommands = /^(?:mathcal|mathbf|mathrm|mathit|mathsf|mathtt|mathbb|mathfrak|mathscr|mathnormal|boldsymbol)$/;
     let result = "";
     let index = 0;
 
@@ -435,10 +436,11 @@
         }
       }
 
-      // WPS drops the accent from valid TeX shorthand such as \bar v.
+      // WPS drops the accent from valid TeX shorthand such as \bar v. At the
+      // equation-box clipboard boundary, make font arguments explicit as well.
       // Brace one unambiguous atom only; never guess a macro's arity, consume
       // a following subscript, or change an already grouped expression.
-      if (command[1] === "bar") {
+      if (command[1] === "bar" || (equationEditor && fontCommands.test(command[1]))) {
         const character = String.fromCodePoint(value.codePointAt(argumentStart) || 0);
         const symbol = /^\\([A-Za-z]+)/.exec(value.slice(argumentStart));
         const atom = /[\p{L}\p{N}]/u.test(character)

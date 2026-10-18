@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import shutil
 import subprocess
 import uuid
@@ -112,6 +113,64 @@ def test_redundant_dollar_runs_do_not_combine_adjacent_formulas():
         segments, warnings = document_formula.parse_latex_interchange(source)
         assert [part.value for part in segments if part.kind == "math"] == ["x", "y"]
         assert not warnings
+
+
+@pytest.mark.skipif(
+    document_formula.find_pandoc() is None or shutil.which("node") is None,
+    reason="Pandoc and Node are required for clipboard interoperability",
+)
+def test_reported_lie_derivative_dom_copy_preserves_native_math_structure(tmp_path):
+    # This tests the DOM -> clipboard -> OMML chain, not WPS's own paste parser.
+    script = r"""
+const fs = require('node:fs');
+const { JSDOM } = require('jsdom');
+const core = require('./tts-userscript.js');
+const html = fs.readFileSync('tests/fixtures/reported-deepseek-lie-derivative.html', 'utf8');
+const dom = new JSDOM(html);
+const document = dom.window.document;
+const range = document.createRange();
+range.selectNodeContents(document.querySelector('.katex-html'));
+dom.window.getSelection().addRange(range);
+const selected = core.createSelectionTools(document).getSelectedText();
+process.stdout.write(JSON.stringify({
+    original: document.querySelector('annotation').textContent.trim(),
+    copied: core.prepareLatexForClipboard(selected),
+}));
+dom.window.close();
+"""
+    result = subprocess.run(
+        [shutil.which("node"), "-e", script],
+        text=True, encoding="utf-8", capture_output=True, check=True, timeout=10,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    payload = json.loads(result.stdout)
+    assert r"^\top" in payload["copied"]
+    assert r"\to p" not in payload["copied"]
+    assert r"\mathcal{L}_{F_p}" in payload["copied"]
+    assert r"\mathbf{b}" in payload["copied"]
+
+    formulas = []
+    ns = document_formula._WORD_XML_NAMESPACES
+    math_value = "{" + ns["m"] + "}val"
+    for body in (payload["original"], payload["copied"]):
+        generated = document_formula.generate_formula_fragment(
+            "$$\n" + body + "\n$$", fragment_dir=tmp_path,
+        )
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(generated.docx_base64))) as archive:
+            root = document_formula.ElementTree.fromstring(archive.read("word/document.xml"))
+        formula = root.find(".//m:oMath", ns)
+        assert formula is not None
+        assert len(formula.findall(".//m:sSub", ns)) == 2  # L_{F_p}
+        assert formula.find(".//m:sSup/m:sup/m:r/m:t", ns).text == "⊤"
+        runs = formula.findall(".//m:r", ns)
+        script_l = next(run for run in runs if run.find("m:t", ns).text == "L")
+        bold_b = next(run for run in runs if run.find("m:t", ns).text == "b")
+        assert script_l.find("m:rPr/m:scr", ns).get(math_value) == "script"
+        assert bold_b.find("m:rPr/m:sty", ns).get(math_value) == "b"
+        assert "→" not in "".join(node.text or "" for node in formula.findall(".//m:t", ns))
+        assert generated.native_formula_count == 1
+        formulas.append(document_formula.ElementTree.tostring(formula))
+    assert formulas[0] == formulas[1]
 
 
 @pytest.mark.skipif(

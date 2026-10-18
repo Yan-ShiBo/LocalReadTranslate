@@ -280,6 +280,7 @@ test("the Copy button preserves the merged bar fix for a solitary formula", asyn
 });
 
 const BARRIER_FORMULA = String.raw`B(x,\mathbf b)=\sum_{|\alpha|\le d_B}b_\alpha x^\alpha.`;
+const BARRIER_CLIPBOARD = String.raw`B(x,\mathbf{b})=\sum_{|\alpha|\le d_B}b_\alpha x^\alpha.`;
 // The first base is the exact visible KaTeX fragment supplied by the user.
 // It contains only the left side: a full equation can have several bases.
 const BARRIER_BASE = '<span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0502em;">B</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathbf">b</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span>';
@@ -359,9 +360,9 @@ test("floating Copy prefers native clipboard writes and bypasses an earlier host
   await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
   await settleClipboardUi(page);
 
-  assert.deepEqual(page.nativeWrites, [BARRIER_FORMULA]);
+  assert.deepEqual(page.nativeWrites, [BARRIER_CLIPBOARD]);
   assert.deepEqual(page.gmClipboardCalls, []);
-  assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+  assert.deepEqual(page.clipboard, [{ text: BARRIER_CLIPBOARD, type: "text" }]);
   assert.deepEqual(page.hostCopyEvents, []);
   assert.equal(page.clipboardFrames.length, 1);
   assert.equal(page.clipboardFrames[0].contentDocument.querySelectorAll("textarea").length, 0);
@@ -380,14 +381,14 @@ test("floating Copy waits for the native clipboard promise before reporting Copi
   });
   await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
   const button = page.document.querySelector(".tts-copy-btn");
-  assert.deepEqual(page.nativeWrites, [BARRIER_FORMULA]);
+  assert.deepEqual(page.nativeWrites, [BARRIER_CLIPBOARD]);
   assert.deepEqual(page.clipboard, []);
   assert.match(button.textContent, /Copying/);
   assert.equal(button.classList.contains("done"), false);
 
   resolveWrite();
   await settleClipboardUi(page);
-  assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+  assert.deepEqual(page.clipboard, [{ text: BARRIER_CLIPBOARD, type: "text" }]);
   assert.match(button.textContent, /Copied/);
   assert.deepEqual(page.gmClipboardCalls, []);
 });
@@ -402,11 +403,11 @@ for (const native of ["missing", "rejected"]) {
     await clickSelectedFormulaCopy(page, page.document.querySelector("#radius-subscript"));
     await settleClipboardUi(page);
 
-    assert.deepEqual(page.nativeWrites, native === "missing" ? [] : [BARRIER_FORMULA]);
+    assert.deepEqual(page.nativeWrites, native === "missing" ? [] : [BARRIER_CLIPBOARD]);
     assert.deepEqual(page.gmClipboardCalls, []);
     assert.deepEqual(page.frameCopyCalls, ["copy"]);
     assert.deepEqual(page.hostCopyEvents, [], "The fallback must not dispatch copy in the host document");
-    assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+    assert.deepEqual(page.clipboard, [{ text: BARRIER_CLIPBOARD, type: "text" }]);
     assert.match(page.document.querySelector(".tts-copy-btn").textContent, /Copied/);
     assertClipboardFallbackCleanedUp(page);
     closeClipboardToolbar(page);
@@ -423,7 +424,7 @@ test("iframe Copy waits for the clipboard commit task and reuses the live toolba
   assert.match(button.textContent, /Copying/);
 
   await settleClipboardUi(page);
-  assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+  assert.deepEqual(page.clipboard, [{ text: BARRIER_CLIPBOARD, type: "text" }]);
   assert.match(button.textContent, /Copied/);
   assertClipboardFallbackCleanedUp(page);
 
@@ -432,8 +433,8 @@ test("iframe Copy waits for the clipboard commit task and reuses the live toolba
   assert.equal(page.clipboardFrames.length, 1);
   assert.equal(page.clipboardFrames[0], frame);
   assert.deepEqual(page.clipboard, [
-    { text: BARRIER_FORMULA, type: "text" },
-    { text: BARRIER_FORMULA, type: "text" },
+    { text: BARRIER_CLIPBOARD, type: "text" },
+    { text: BARRIER_CLIPBOARD, type: "text" },
   ]);
   assert.deepEqual(page.hostCopyEvents, []);
   assertClipboardFallbackCleanedUp(page);
@@ -480,7 +481,7 @@ for (const metadata of ["data-math-source", "aria-label", "annotation"]) {
       if (selection === "across bases") selectText(page, `${left} .mathnormal`, 0, `${right} .mpunct`, 1);
       await clickSelectedFormulaCopy(page, page.document.querySelector(left));
 
-      assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+      assert.deepEqual(page.clipboard, [{ text: BARRIER_CLIPBOARD, type: "text" }]);
       assert.equal(page.document.querySelector("#reported-formula").outerHTML, before);
     });
   }
@@ -532,9 +533,119 @@ for (const selection of [
     }
     await clickSelectedFormulaCopy(page, component);
 
-    assert.deepEqual(page.clipboard, [{ text: BARRIER_FORMULA, type: "text" }]);
+    assert.deepEqual(page.clipboard, [{ text: BARRIER_CLIPBOARD, type: "text" }]);
     assert.equal(copySelection(page), `$$\n${BARRIER_FORMULA}\n$$`);
     assert.equal(component.outerHTML, before, "Copy must not rewrite the captured page DOM");
+  });
+}
+
+const LIE_DERIVATIVE_FORMULA = String.raw`\mathcal L_{F_p}B` + "\n" + String.raw`=\nabla B(x,\mathbf b)^\top f(x,p(x)).`;
+const LIE_DERIVATIVE_CLIPBOARD = String.raw`\mathcal{L}_{F_p}B` + "\n" + String.raw`=\nabla B(x,\mathbf{b})^\top f(x,p(x)).`;
+
+for (const selection of ["outer component", "visible HTML", "left base", "right base", "calligraphic L", "transpose glyph"]) {
+  test(`floating Copy preserves the exact reported Lie derivative commands: ${selection}`, async (t) => {
+    const html = fs.readFileSync(
+      path.join(__dirname, "fixtures", "reported-deepseek-lie-derivative.html"), "utf8"
+    );
+    const page = createUserscriptPage(t, html);
+    const component = page.document.querySelector('[data-d-component="math"]');
+    const before = component.outerHTML;
+    const annotation = component.querySelector('annotation[encoding="application/x-tex"]').textContent;
+    assert.equal(annotation, LIE_DERIVATIVE_FORMULA);
+    const containers = {
+      "outer component": '[data-d-component="math"]',
+      "visible HTML": ".katex-html",
+      "left base": ".katex-html > .base:first-child",
+      "right base": ".katex-html > .base:last-child",
+    };
+    if (containers[selection]) selectContents(page, containers[selection]);
+    if (selection === "calligraphic L") selectText(page, ".katex-html .mathcal", 0, ".katex-html .mathcal", 1);
+    if (selection === "transpose glyph") {
+      const transpose = ".katex-html > .base:last-child .msupsub .mord.mtight";
+      selectText(page, transpose, 0, transpose, 1);
+    }
+    await clickSelectedFormulaCopy(page, component);
+
+    assert.deepEqual(page.clipboard, [{ text: LIE_DERIVATIVE_CLIPBOARD, type: "text" }]);
+    const canonical = copySelection(page);
+    assert.equal(canonical, `$$\n${LIE_DERIVATIVE_FORMULA}\n$$`);
+    assert.ok(canonical.includes(String.raw`\mathcal L`), "Canonical data must retain the original calligraphic command");
+    assert.ok(canonical.includes(String.raw`\mathbf b`), "Canonical data must retain the original bold command");
+    assert.ok(canonical.includes(String.raw`^\top`), "Transpose is not an arrow command followed by p");
+    assert.equal(component.outerHTML, before);
+  });
+}
+
+for (const [label, formula] of [
+  ["transpose", String.raw`A^\top`],
+  ["to arrow", String.raw`a \to b`],
+  ["right arrow", String.raw`a \rightarrow b`],
+  ["double right arrow", String.raw`a \Rightarrow b`],
+  ["maps-to arrow", String.raw`a \mapsto b`],
+]) {
+  test(`annotation extraction and floating Copy preserve ${label} semantics`, async (t) => {
+    const page = createUserscriptPage(t, reportedKatexFormula({
+      source: formula,
+      metadata: "annotation",
+      bases: '<span class="base"><span class="mord">x</span></span>',
+    }));
+    selectContents(page, ".katex-html .base");
+    await clickSelectedFormulaCopy(page, page.document.querySelector(".base"));
+
+    assert.deepEqual(page.clipboard, [{ text: formula, type: "text" }]);
+    assert.equal(copySelection(page), `$$\n${formula}\n$$`);
+  });
+}
+
+test("annotation command names are not truncated at an arrow-command prefix", async (t) => {
+  const formula = String.raw`a \rightarrowtail b`;
+  const page = createUserscriptPage(t, reportedKatexFormula({
+    source: formula,
+    metadata: "annotation",
+    bases: '<span class="base"><span class="mord">x</span></span>',
+  }));
+  selectContents(page, ".katex-html .base");
+  await clickSelectedFormulaCopy(page, page.document.querySelector(".base"));
+
+  assert.equal(copySelection(page), `$$\n${formula}\n$$`);
+  assert.deepEqual(page.clipboard, [{ text: formula, type: "text" }]);
+});
+
+test("MathML arrows without annotations retain distinct right, double-right, and maps-to semantics", async (t) => {
+  const formula = String.raw`a \to b \Rightarrow c \mapsto d`;
+  const page = createUserscriptPage(t,
+    '<math id="arrows" display="block"><mrow>' +
+    '<mi>a</mi><mo>→</mo><mi>b</mi><mo>⇒</mo><mi>c</mi><mo>↦</mo><mi>d</mi>' +
+    '</mrow></math>'
+  );
+  selectContents(page, "#arrows");
+  await clickSelectedFormulaCopy(page, page.document.querySelector("#arrows"));
+
+  assert.equal(copySelection(page), `$$\n${formula}\n$$`);
+  assert.deepEqual(page.clipboard, [{ text: formula, type: "text" }]);
+});
+
+for (const metadata of ["data-math-source", "data-latex", "data-tex", "data-math", "data-mathml", "aria-label", "annotation", "script"]) {
+  test(`${metadata} retains source command names, comment newline, and literal text spacing`, async (t) => {
+    const source = String.raw`\mathcal L + \text{two  spaces} % keep this comment` + "\n" +
+      String.raw`+\mathbf b^\top\quad x\mapsto y\Rightarrow z`;
+    const clipboard = String.raw`\mathcal{L} + \text{two  spaces} % keep this comment` + "\n" +
+      String.raw`+\mathbf{b}^\top\quad x\mapsto y\Rightarrow z`;
+    const bases = '<span class="base"><span class="mord">x</span></span>';
+    const html = metadata === "script"
+      ? '<span class="katex-display"><span class="katex">' +
+        `<script type="math/tex; mode=display">${source}</script>` +
+        `<span class="katex-html" aria-hidden="true">${bases}</span></span></span>`
+      : reportedKatexFormula({ source, metadata, bases });
+    const page = createUserscriptPage(t, html);
+    selectContents(page, ".katex-html .base");
+    await clickSelectedFormulaCopy(page, page.document.querySelector(".base"));
+
+    // Legacy source attributes on an outer shell are currently canonicalized
+    // inline; this test checks source fidelity, not display-mode inference.
+    const legacyOuterSource = ["data-latex", "data-tex", "data-math", "data-mathml"].includes(metadata);
+    assert.equal(copySelection(page), legacyOuterSource ? `$${source}$` : `$$\n${source}\n$$`);
+    assert.deepEqual(page.clipboard, [{ text: clipboard, type: "text" }]);
   });
 }
 

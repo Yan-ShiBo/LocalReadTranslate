@@ -232,13 +232,15 @@ service processes it owns and leaves Word/WPS package loading available.
 ### LaTeX to native equations (Word and WPS Writer)
 
 There are two different paste targets. For **one formula in the host's built-in
-equation editor**, userscript `1.15.11` provides bare LaTeX through the webpage
+equation editor**, userscript `1.15.12` provides bare LaTeX through the webpage
 selection **Copy** button: it normalizes redundant whole-formula wrappers,
 including wrappers already present in webpage metadata, removes the wrappers
 from the single-formula clipboard output, and rewrites
 bracketed matrix environments to equivalent `\left`/`\right` plus `matrix`,
 and drops valid matrix row-spacing options while keeping the row separators.
-Paste that result into the equation editor's LaTeX input mode. The webpage's
+Paste that result into the equation editor and convert to professional format.
+If the host offers an input-format selector, choose LaTeX; the selector and
+automatic recognition vary by build. The webpage's
 own copy button and an older installed userscript do not receive this fix.
 The `1.15.11` webpage Copy path also isolates clipboard writing from the
 host page's `copy` handlers and waits for success before showing **Copied**.
@@ -249,6 +251,12 @@ formula and translation copy actions. Mathematical brackets remain: copying
 `\(\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]\)` by itself produces
 `\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]`, not a parenthesized expression
 and not a truncated `\Sigma[x`.
+Version `1.15.12` additionally groups unambiguous font arguments only at the
+single-formula clipboard boundary, for example `\mathcal L` → `\mathcal{L}`
+and `\mathbf b` → `\mathbf{b}`. Canonical results and mixed paragraphs retain
+their source font commands; the earlier `\bar` normalization remains. Reopen
+the task pane after updating its shared script. This is equivalent TeX syntax,
+not a confirmed diagnosis of font rendering in the user's WPS build.
 
 For **prose with formulas or multiple formulas**, paste canonical `$...$` /
 `$$...$$` text into the document body, select it, and use the task pane's
@@ -281,6 +289,8 @@ for the matrix sample. Both distinguish structural tests from an actual WPS
 editor paste check.
 The browser clipboard event repair and its separate evidence limits are in
 [iteration 18](../docs/iteration-18-2026-10-18-clipboard-event-isolation.md).
+The raw-TeX command repair and clipboard font grouping are documented in
+[iteration 19](../docs/iteration-19-2026-10-18-tex-source-preservation.md).
 
 ### Native equations to LaTeX (Word and WPS Writer)
 
@@ -324,7 +334,18 @@ need a future OCR/vision route.
 
 ## Current verification
 
-The `1.15.11` local full regression passed `253` JavaScript tests and `305`
+The `1.15.12` full regression passed `280` JavaScript tests (`99` selection/DOM)
+and `306` Python tests plus `30` subtests, with one existing Starlette/httpx
+deprecation warning. The reported full DOM → clipboard → Pandoc OMML test
+matches the original annotation's OMML exactly, preserving script `L`, bold
+`b`, the nested `F_p` subscript and the U+22A4 transpose superscript. Real
+Chrome readbacks also passed for native writing and the forced-native-denial
+fallback, treating CRLF/LF as equivalent line endings. The backend and models
+were not started. Raw TeX preservation and clipboard-only font grouping are
+covered, but no WPS GUI paste or font-rendering verification is claimed.
+See [iteration 19](../docs/iteration-19-2026-10-18-tex-source-preservation.md).
+
+The earlier `1.15.11` local full regression passed `253` JavaScript tests and `305`
 Python tests plus `30` subtests, with one existing Starlette/httpx deprecation
 warning. In isolated headless Chrome, both the native writer and the fallback
 after forced native rejection produced the exact bare reported formula when
@@ -355,7 +376,7 @@ GUI paste path has not been exercised in this run.
 See [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
 for the scope and full-regression status.
 
-Release `1.15.11` retains the ChatGPT formula-source and WPS bar compatibility
+Release `1.15.12` retains the ChatGPT formula-source and WPS bar compatibility
 fixes. The `197` JavaScript / `275` Python / `17` subtest counts are historical
 results for the final merged `1.15.9` version, not the new wrapper-boundary run.
 
@@ -462,9 +483,10 @@ for the release record and exact evidence.
 
 ### Pasting into WPS's equation editor adds parentheses, brackets, or empty matrix cells
 
-Upgrade the installed Tampermonkey script to `1.15.11`, refresh the webpage,
+Upgrade the installed Tampermonkey script to `1.15.12`, refresh the webpage,
 select only the formula, and use this script's floating **Copy**. Paste in the
-host's LaTeX equation input mode. A single-formula clipboard should start with
+host's equation editor and convert to professional format; choose LaTeX only
+if an input-format selector is available. A single-formula clipboard should start with
 the expression itself, such as `\left[\begin{matrix}`, rather than outer
 `\(`, `\[`, or `$$`, even if webpage metadata already contained a formula
 wrapper; valid row-spacing instructions such as `\\[2mm]` are removed
@@ -476,6 +498,19 @@ wrappers, the browser script now writes without dispatching a `copy` event in
 that host document. **Copied** waits for successful writing; a blocked write
 shows failure instead. Ordinary `Ctrl+C` is not intercepted. FastAPI remains
 `1.7.21`, and this browser-only fix needs no model startup.
+
+### A transpose command becomes an arrow, or font shorthand needs an explicit argument
+
+In `1.15.12`, webpage TeX annotations, scripts and source attributes are kept
+as source rather than passed through rendered-glyph cleanup. This prevents
+the confirmed `\top` → `\to p` corruption and preserves distinct arrow
+commands such as `\mapsto` and `\rightarrowtail`. Single-formula copy also
+makes unambiguous font parameters explicit (`\mathcal{L}`, `\mathbf{b}`),
+without adding a new font style or changing mathematical meaning. Font
+grouping is a compatibility measure, not proof of a WPS rendering root cause.
+The backend remains `1.7.21`; refresh the webpage and reopen a document task
+pane after updating its shared files. See
+[iteration 19](../docs/iteration-19-2026-10-18-tex-source-preservation.md).
 
 If the selection also contains prose or several formulas, use the body-text
 and task-pane conversion path above. This repair does not alter the webpage's
