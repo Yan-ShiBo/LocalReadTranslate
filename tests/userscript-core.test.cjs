@@ -460,7 +460,9 @@ for (const [name, core] of clipboardCores) {
       ]) {
         const source = `[[${marker}: ${formula}]]`;
         assert.equal(core.normalizeCopyTextWithLatex(source), expected, source);
-        assert.equal(core.prepareLatexForClipboard(source), formula, source);
+        const clipboard = formula === "x % do not close ]] here\n+\\Sigma[x]"
+          ? String.raw`x +\Sigma[x]` : formula;
+        assert.equal(core.prepareLatexForClipboard(source), clipboard, source);
       }
     }
   });
@@ -543,8 +545,7 @@ for (const [name, core] of clipboardCores) {
   test(`${name} equation-box matrix compatibility preserves commented text arguments`, () => {
     const source = String.raw`$$\text% note
 {literal \begin{pmatrix}q\\[2mm]r\end{pmatrix} \bar v}+\begin{bmatrix}\bar x\end{bmatrix}$$`;
-    const expected = String.raw`\text% note
-{literal \begin{pmatrix}q\\[2mm]r\end{pmatrix} \bar v}+\left[\begin{matrix}\bar{x}\end{matrix}\right]`;
+    const expected = String.raw`\text{literal \begin{pmatrix}q\\[2mm]r\end{pmatrix} \bar v}+\left[\begin{matrix}\bar{x}\end{matrix}\right]`;
     assert.equal(core.prepareLatexForClipboard(source), expected);
   });
 
@@ -552,8 +553,7 @@ for (const [name, core] of clipboardCores) {
     const body = String.raw`\mathcal L_{F_p}B
 =\nabla B(x,\mathbf b)^\top f(x,p(x)).`;
     const source = "\\[" + body + "\\]";
-    assert.equal(core.prepareLatexForClipboard(source), String.raw`\mathcal{L}_{F_p}B
-=\nabla B(x,\mathbf{b})^\top f(x,p(x)).`);
+    assert.equal(core.prepareLatexForClipboard(source), String.raw`\mathcal{L}_{F_p}B =\nabla B(x,\mathbf{b})^\top f(x,p(x)).`);
     assert.equal(core.normalizeCopyTextWithLatex(source), "$$\n" + body + "\n$$");
     assert.equal(core.prepareLatexForClipboard("Result: " + source),
       core.normalizeCopyTextWithLatex("Result: " + source));
@@ -569,7 +569,7 @@ for (const [name, core] of clipboardCores) {
         ["{x y}", "{x y}"],
         [String.raw` \frac{a}{b}`, String.raw` \frac{a}{b}`],
         [String.raw` \unknown x`, String.raw` \unknown x`],
-        ["% keep comment\nL", "% keep comment\nL"],
+        ["% keep comment\nL", "{L}"],
       ]) {
         const body = "\\" + font + input;
         const source = "\\[" + body + "\\]";
@@ -584,7 +584,53 @@ for (const [name, core] of clipboardCores) {
     assert.equal(core.prepareLatexForClipboard("\\[" + body + "\\]"), body);
     const commented = "\\text% note\n{\\mathbf b}+\\mathcal L% \\mathbf b\n+\\mathbf b";
     assert.equal(core.prepareLatexForClipboard("\\[" + commented + "\\]"),
-      "\\text% note\n{\\mathbf b}+\\mathcal{L}% \\mathbf b\n+\\mathbf{b}");
+      "\\text{\\mathbf b}+\\mathcal{L}+\\mathbf{b}");
+  });
+
+  test(`${name} single-formula clipboard flattens physical line endings only`, () => {
+    for (const newline of ["\n", "\r\n", "\r", "\u0085", "\u2028", "\u2029"]) {
+      const body = String.raw`a^\top` + newline + "= b" + newline + "+ c";
+      const copied = core.prepareLatexForClipboard("\\[" + body + "\\]");
+      assert.equal(copied, String.raw`a^\top = b + c`);
+      assert.doesNotMatch(copied, /[\r\n\u0085\u2028\u2029]/);
+    }
+    const matrix = "\\[\\begin{bmatrix}\na&b\\\\[2mm]\nc&d\n\\end{bmatrix}\\]";
+    assert.equal(core.prepareLatexForClipboard(matrix),
+      String.raw`\left[\begin{matrix} a&b\\ c&d \end{matrix}\right]`);
+    const aligned = "\\[\\begin{aligned}\na&=b\\\\\nc&=d\n\\end{aligned}\\]";
+    assert.equal(core.prepareLatexForClipboard(aligned),
+      String.raw`\begin{aligned} a&=b\\ c&=d \end{aligned}`);
+  });
+
+  test(`${name} single-line copy removes comments without merging command tokens`, () => {
+    for (const [body, expected] of [
+      ["\\alpha% comment\nx", String.raw`\alpha x`],
+      ["\\alpha% comment\n% second\n  x", String.raw`\alpha x`],
+      ["\\alpha% comment\n_1", String.raw`\alpha_1`],
+      ["\\text{ab% comment\n  cd}", String.raw`\text{abcd}`],
+      ["\\text{a\nb  c}", String.raw`\text{a b  c}`],
+      ["\\\\alpha% comment\nx", String.raw`\\alphax`],
+      ["\\\\% comment\nx", String.raw`\\x`],
+      ["\\%\nx", String.raw`\% x`],
+      ["\\verb|a%b|\nx", String.raw`\verb|a%b| x`],
+      ["\\verb*%a b%\nx", String.raw`\verb*%a b% x`],
+      ["a\\\n  b", "a\\ b"],
+      ["a\\\n% trailing\n", "a\\ "],
+    ]) {
+      const copied = core.prepareLatexForClipboard("\\[" + body + "\\]");
+      assert.equal(copied, expected, body);
+      assert.doesNotMatch(copied, /[\r\n]/);
+    }
+  });
+
+  test(`${name} single-line adaptation leaves canonical and mixed paragraph newlines alone`, () => {
+    const body = "a^\\top\n= b% note\n+c";
+    const source = "\\[" + body + "\\]";
+    assert.equal(core.normalizeCopyTextWithLatex(source), "$$\n" + body + "\n$$");
+    for (const mixed of ["Before\n" + source + "\nAfter", source + "\n\\[y\nz\\]"]) {
+      assert.equal(core.prepareLatexForClipboard(mixed), core.normalizeCopyTextWithLatex(mixed));
+      assert.match(core.prepareLatexForClipboard(mixed), /\n/);
+    }
   });
 }
 

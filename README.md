@@ -195,7 +195,7 @@ Editing the repository file does not update a copy already installed in Tampermo
 For a single formula, use this userscript's floating **Copy**, paste into the
 built-in Word/WPS equation editor, and convert to professional format. If
 your version offers an input-format selector, choose LaTeX; not every build
-exposes that selector or automatically recognizes the same syntax. Version `1.15.12`
+exposes that selector or automatically recognizes the same syntax. Version `1.15.13`
 normalizes redundant whole-formula wrappers, including wrappers already
 present in webpage formula metadata, and removes them from single-formula
 clipboard output. It preserves mathematical brackets such as `\Sigma[x]`,
@@ -219,7 +219,7 @@ for the extra-parentheses example and validation limits, and the earlier
 for the matrix example.
 
 The webpage's own copy button and an older installed Tampermonkey copy do not
-use this fix. Install `tts-userscript.js` version `1.15.12` in Tampermonkey and
+use this fix. Install `tts-userscript.js` version `1.15.13` in Tampermonkey and
 refresh the source page before retrying.
 Version `1.15.11` also isolates the script's clipboard write from the host
 page's `copy` event handlers: it awaits the native Clipboard API, or uses an
@@ -239,6 +239,14 @@ mixed paragraphs keep their source font commands; the existing `\bar`
 normalization remains. This semantics-preserving grouping is not evidence of
 a particular WPS font-rendering defect. See
 [TeX source preservation](docs/iteration-19-2026-10-18-tex-source-preservation.md).
+
+Version `1.15.13` fixes a regression introduced by that source preservation:
+physical newlines were also copied into a single equation and could split it
+into multiple WPS equations. Only the final single-formula clipboard is now
+flattened to one line; source/canonical text, prose paragraphs, and multiple
+formulas retain their boundaries. Actual TeX `%` comments are removed safely,
+while literal `\%`, verbatim percent signs and matrix `\\` row commands are
+preserved. See [single-line formula copy](docs/iteration-20-2026-10-18-single-line-formula-copy.md).
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
@@ -402,9 +410,9 @@ checking state.
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.12` (FastAPI remains `1.7.21`). This version separates raw TeX preservation from rendered-glyph cleanup, retains distinct transpose/arrow commands, and makes single-formula clipboard font arguments explicit without changing their meaning. It retains `1.15.11`'s clipboard event isolation, `1.15.10`'s wrapper-boundary fixes, single-formula matrix compatibility, single-atom `\bar` shorthand normalization, and ChatGPT source preservation. The formula selection tests use jsdom only as a development dependency; the installed userscript has no new runtime dependency.
+The current repository metadata version is `1.15.13` (FastAPI remains `1.7.21`). This version flattens only final single-formula clipboard output to one physical line, with comment-aware handling that preserves commands and matrix row separators. Source/canonical text and mixed paragraphs retain their line structure. It retains `1.15.12`'s raw-TeX and font-argument repairs, `1.15.11`'s clipboard isolation, `1.15.10`'s wrapper-boundary fixes, matrix compatibility, single-atom `\bar` normalization, and ChatGPT source preservation. The formula selection tests use jsdom only as a development dependency; the installed userscript has no new runtime dependency.
 
-The current root cause and validation record is [iteration 19](docs/iteration-19-2026-10-18-tex-source-preservation.md). Earlier records remain in [iteration 18](docs/iteration-18-2026-10-18-clipboard-event-isolation.md), [iteration 17](docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md), [iteration 16](docs/iteration-16-2026-10-15-equation-editor-copy.md), [iteration 15](docs/iteration-15-2026-08-28-wps-bar-compatibility.md), and [iteration 14](docs/iteration-14-2026-08-27-chatgpt-formula-copy.md).
+The current root cause and validation record is [iteration 20](docs/iteration-20-2026-10-18-single-line-formula-copy.md). Earlier records remain in [iteration 19](docs/iteration-19-2026-10-18-tex-source-preservation.md), [iteration 18](docs/iteration-18-2026-10-18-clipboard-event-isolation.md), [iteration 17](docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md), [iteration 16](docs/iteration-16-2026-10-15-equation-editor-copy.md), [iteration 15](docs/iteration-15-2026-08-28-wps-bar-compatibility.md), and [iteration 14](docs/iteration-14-2026-08-27-chatgpt-formula-copy.md).
 
 For each release:
 
@@ -446,6 +454,7 @@ browser script and built-in test page are generated from this catalog.
 | `Kokoro TTS.bat` / `Kokoro TTS.pyw` | Legacy-compatible launchers retained for old installations |
 | `tts-userscript.js` | Tampermonkey script for local selection read-aloud and translation, with cached source/model state followed by background health refresh |
 | `docs/greasyfork-additional-info.md` | Markdown content for the Greasy Fork additional info field |
+| `docs/iteration-20-2026-10-18-single-line-formula-copy.md` | Single-line equation clipboard output without flattening source or prose |
 | `docs/iteration-19-2026-10-18-tex-source-preservation.md` | Raw TeX preservation, distinct arrow semantics, and clipboard-only font grouping |
 | `docs/iteration-18-2026-10-18-clipboard-event-isolation.md` | Browser clipboard event isolation and confirmed-copy feedback |
 | `docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md` | Redundant formula wrappers and closing-square-bracket marker boundaries |
@@ -618,7 +627,15 @@ Select **Local Ollama** in the Translation panel. If it is offline, click **Star
 
 ## ✅ Tests
 
-The `1.15.12` full regression passed `280` JavaScript tests (including `99`
+The `1.15.13` full regression passed `290` JavaScript tests (`103`
+selection/DOM) and `306` Python tests plus `30` subtests, with one existing
+Starlette/httpx deprecation warning. Real Chrome readbacks from both native
+and fallback writers strictly match the single-line sample, without newline
+normalization, and contain no physical line separators. Canonical source
+remains multiline and the clipboard-to-OMML equivalence test passes. The
+backend and models were not started; no WPS GUI paste check was performed.
+See [iteration 20](docs/iteration-20-2026-10-18-single-line-formula-copy.md).
+The earlier `1.15.12` full regression passed `280` JavaScript tests (including `99`
 selection/DOM tests) and `306` Python tests plus `30` subtests, with one
 existing Starlette/httpx deprecation warning. The exact reported DOM produces
 clipboard LaTeX whose Pandoc OMML matches the original annotation, including

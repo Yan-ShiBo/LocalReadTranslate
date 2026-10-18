@@ -540,7 +540,7 @@ for (const selection of [
 }
 
 const LIE_DERIVATIVE_FORMULA = String.raw`\mathcal L_{F_p}B` + "\n" + String.raw`=\nabla B(x,\mathbf b)^\top f(x,p(x)).`;
-const LIE_DERIVATIVE_CLIPBOARD = String.raw`\mathcal{L}_{F_p}B` + "\n" + String.raw`=\nabla B(x,\mathbf{b})^\top f(x,p(x)).`;
+const LIE_DERIVATIVE_CLIPBOARD = String.raw`\mathcal{L}_{F_p}B =\nabla B(x,\mathbf{b})^\top f(x,p(x)).`;
 
 for (const selection of ["outer component", "visible HTML", "left base", "right base", "calligraphic L", "transpose glyph"]) {
   test(`floating Copy preserves the exact reported Lie derivative commands: ${selection}`, async (t) => {
@@ -567,6 +567,7 @@ for (const selection of ["outer component", "visible HTML", "left base", "right 
     await clickSelectedFormulaCopy(page, component);
 
     assert.deepEqual(page.clipboard, [{ text: LIE_DERIVATIVE_CLIPBOARD, type: "text" }]);
+    assert.doesNotMatch(page.clipboard[0].text, /[\r\n]/, "One formula must paste into one WPS equation box");
     const canonical = copySelection(page);
     assert.equal(canonical, `$$\n${LIE_DERIVATIVE_FORMULA}\n$$`);
     assert.ok(canonical.includes(String.raw`\mathcal L`), "Canonical data must retain the original calligraphic command");
@@ -575,6 +576,29 @@ for (const selection of ["outer component", "visible HTML", "left base", "right 
     assert.equal(component.outerHTML, before);
   });
 }
+
+test("the multiline Lie derivative also reaches the isolated clipboard fallback as one physical line", async (t) => {
+  const html = fs.readFileSync(
+    path.join(__dirname, "fixtures", "reported-deepseek-lie-derivative.html"), "utf8"
+  );
+  const page = createUserscriptPage(t, html, {
+    nativeClipboard: () => Promise.reject(new Error("Permission denied")),
+    hostileCopy: true,
+  });
+  const component = page.document.querySelector('[data-d-component="math"]');
+  const before = component.outerHTML;
+  selectContents(page, ".katex-html");
+  await clickSelectedFormulaCopy(page, component);
+  await settleClipboardUi(page);
+
+  assert.deepEqual(page.nativeWrites, [LIE_DERIVATIVE_CLIPBOARD]);
+  assert.deepEqual(page.frameCopyCalls, ["copy"]);
+  assert.deepEqual(page.hostCopyEvents, []);
+  assert.deepEqual(page.clipboard, [{ text: LIE_DERIVATIVE_CLIPBOARD, type: "text" }]);
+  assert.doesNotMatch(page.clipboard[0].text, /[\r\n]/);
+  assert.equal(copySelection(page), `$$\n${LIE_DERIVATIVE_FORMULA}\n$$`);
+  assert.equal(component.outerHTML, before);
+});
 
 for (const [label, formula] of [
   ["transpose", String.raw`A^\top`],
@@ -629,8 +653,7 @@ for (const metadata of ["data-math-source", "data-latex", "data-tex", "data-math
   test(`${metadata} retains source command names, comment newline, and literal text spacing`, async (t) => {
     const source = String.raw`\mathcal L + \text{two  spaces} % keep this comment` + "\n" +
       String.raw`+\mathbf b^\top\quad x\mapsto y\Rightarrow z`;
-    const clipboard = String.raw`\mathcal{L} + \text{two  spaces} % keep this comment` + "\n" +
-      String.raw`+\mathbf{b}^\top\quad x\mapsto y\Rightarrow z`;
+    const clipboard = String.raw`\mathcal{L} + \text{two  spaces} +\mathbf{b}^\top\quad x\mapsto y\Rightarrow z`;
     const bases = '<span class="base"><span class="mord">x</span></span>';
     const html = metadata === "script"
       ? '<span class="katex-display"><span class="katex">' +
@@ -646,8 +669,50 @@ for (const metadata of ["data-math-source", "data-latex", "data-tex", "data-math
     const legacyOuterSource = ["data-latex", "data-tex", "data-math", "data-mathml"].includes(metadata);
     assert.equal(copySelection(page), legacyOuterSource ? `$${source}$` : `$$\n${source}\n$$`);
     assert.deepEqual(page.clipboard, [{ text: clipboard, type: "text" }]);
+    assert.doesNotMatch(page.clipboard[0].text, /[\r\n]/);
   });
 }
+
+test("single-formula Copy removes actual comments but preserves escaped and verbatim percent signs", async (t) => {
+  const source = String.raw`50\%+\verb|100%|+\verb*+20%+ % remove this comment` + "\n" +
+    String.raw`+\mathbf b`;
+  const expected = String.raw`50\%+\verb|100%|+\verb*+20%+ +\mathbf{b}`;
+  const page = createUserscriptPage(t, sourceFormula({ source }));
+  selectContents(page, "#radius");
+  await clickSelectedFormulaCopy(page, page.document.querySelector("#radius"));
+
+  assert.deepEqual(page.clipboard, [{ text: expected, type: "text" }]);
+  assert.doesNotMatch(page.clipboard[0].text, /[\r\n]/);
+  assert.equal(copySelection(page), `$$\n${source}\n$$`);
+  assert.equal(page.document.querySelector("#radius").getAttribute("data-math-source"), source);
+});
+
+test("single-formula Copy folds matrix source lines without deleting LaTeX row separators", async (t) => {
+  const source = String.raw`\begin{bmatrix}` + "\n  " + String.raw`a&b\\` + "\n  " +
+    String.raw`c&d` + "\n" + String.raw`\end{bmatrix}`;
+  const expected = String.raw`\left[\begin{matrix} a&b\\ c&d \end{matrix}\right]`;
+  const page = createUserscriptPage(t, sourceFormula({ source }));
+  selectContents(page, "#radius");
+  await clickSelectedFormulaCopy(page, page.document.querySelector("#radius"));
+
+  assert.deepEqual(page.clipboard, [{ text: expected, type: "text" }]);
+  assert.doesNotMatch(page.clipboard[0].text, /[\r\n]/);
+  assert.equal(copySelection(page), `$$\n${source}\n$$`);
+});
+
+test("Copy of surrounding paragraphs keeps multiline canonical math rather than flattening the document", async (t) => {
+  const page = createUserscriptPage(t,
+    '<section id="paragraphs"><p>Before.</p>' +
+    sourceFormula({ source: LIE_DERIVATIVE_FORMULA }) +
+    '<p>After.</p></section>'
+  );
+  selectContents(page, "#paragraphs");
+  await clickSelectedFormulaCopy(page, page.document.querySelector("#paragraphs"));
+  const expected = `Before.\n\n$$\n${LIE_DERIVATIVE_FORMULA}\n$$\n\nAfter.`;
+
+  assert.deepEqual(page.clipboard, [{ text: expected, type: "text" }]);
+  assert.equal(copySelection(page), expected);
+});
 
 for (const display of [false, true]) {
   for (const [label, wrap] of [

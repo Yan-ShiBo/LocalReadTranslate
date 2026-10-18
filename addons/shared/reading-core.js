@@ -316,11 +316,67 @@
     return result;
   }
 
+  function clipboardSingleLineLatex(formula) {
+    const value = formula.replace(/\r\n?|[\u0085\u2028\u2029]/g, "\n");
+    let result = "";
+    let controlWord = false;
+    for (let index = 0; index < value.length;) {
+      const character = value[index];
+      if (character === "%") {
+        // A TeX comment consumes its line ending, not just its visible text.
+        // Removing only the newline would comment out the rest of the formula.
+        const newline = value.indexOf("\n", index);
+        index = newline < 0 ? value.length : newline + 1;
+        while (/[ \t]/.test(value[index] || "")) index += 1;
+        continue;
+      }
+      if (character === "\n") {
+        if (!/[ \t]$/.test(result)) result += " ";
+        do { index += 1; } while (/[ \t\n]/.test(value[index] || ""));
+        controlWord = false;
+        continue;
+      }
+      if (character === "\\") {
+        const command = /^\\([A-Za-z]+|[\s\S])/.exec(value.slice(index));
+        if (command) {
+          const next = index + command[0].length;
+          if (command[1] === "verb") {
+            const delimiterStart = next + (value[next] === "*" ? 1 : 0);
+            const delimiter = value[delimiterStart];
+            const close = delimiter && !/\s/.test(delimiter)
+              ? value.indexOf(delimiter, delimiterStart + 1) : -1;
+            const end = close < 0 ? value.length : close + 1;
+            result += value.slice(index, end).replace(/\n/g, " ");
+            index = end;
+            controlWord = false;
+            continue;
+          }
+          // Keep escaped percent signs and \\ matrix rows as complete tokens.
+          // Backslash + physical newline is a TeX control-space, not a row.
+          result += command[1] === "\n" ? "\\ " : command[0];
+          index = next;
+          if (command[1] === "\n") {
+            while (/[ \t]/.test(value[index] || "")) index += 1;
+          }
+          controlWord = /^[A-Za-z]+$/.test(command[1]);
+          continue;
+        }
+      }
+      // Comments can separate a control word from a following letter. Keep
+      // that token boundary without adding spaces to ordinary text fragments.
+      if (controlWord && /[A-Za-z]/.test(character)) result += " ";
+      result += character;
+      controlWord = false;
+      index += 1;
+    }
+    return result;
+  }
+
   function prepareLatexForClipboard(text) {
     const formula = clipboardSingleFormula(text);
     return formula === null
       ? normalizeCopyTextWithLatex(text)
-      : clipboardCompatibleMatrices(normalizeLatexBarArguments(formula, true));
+      : clipboardCompatibleMatrices(normalizeLatexBarArguments(clipboardSingleLineLatex(formula), true));
   }
 
   function splitLatexSegments(text) {

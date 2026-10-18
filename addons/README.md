@@ -232,7 +232,7 @@ service processes it owns and leaves Word/WPS package loading available.
 ### LaTeX to native equations (Word and WPS Writer)
 
 There are two different paste targets. For **one formula in the host's built-in
-equation editor**, userscript `1.15.12` provides bare LaTeX through the webpage
+equation editor**, userscript `1.15.13` provides single-line bare LaTeX through the webpage
 selection **Copy** button: it normalizes redundant whole-formula wrappers,
 including wrappers already present in webpage metadata, removes the wrappers
 from the single-formula clipboard output, and rewrites
@@ -257,6 +257,12 @@ and `\mathbf b` → `\mathbf{b}`. Canonical results and mixed paragraphs retain
 their source font commands; the earlier `\bar` normalization remains. Reopen
 the task pane after updating its shared script. This is equivalent TeX syntax,
 not a confirmed diagnosis of font rendering in the user's WPS build.
+Version `1.15.13` fixes the subsequent newline regression: preserving source
+line breaks must not make a single equation-editor clipboard span multiple
+physical lines. Only final single-formula copy is flattened. Actual `%`
+comments are removed safely; escaped/verbatim percent signs and TeX `\\`
+matrix row commands remain. Canonical results and mixed paragraphs retain
+their source/paragraph line structure.
 
 For **prose with formulas or multiple formulas**, paste canonical `$...$` /
 `$$...$$` text into the document body, select it, and use the task pane's
@@ -291,6 +297,8 @@ The browser clipboard event repair and its separate evidence limits are in
 [iteration 18](../docs/iteration-18-2026-10-18-clipboard-event-isolation.md).
 The raw-TeX command repair and clipboard font grouping are documented in
 [iteration 19](../docs/iteration-19-2026-10-18-tex-source-preservation.md).
+The final-copy newline boundary is documented in
+[iteration 20](../docs/iteration-20-2026-10-18-single-line-formula-copy.md).
 
 ### Native equations to LaTeX (Word and WPS Writer)
 
@@ -334,7 +342,17 @@ need a future OCR/vision route.
 
 ## Current verification
 
-The `1.15.12` full regression passed `280` JavaScript tests (`99` selection/DOM)
+The `1.15.13` full regression passed `290` JavaScript tests (`103`
+selection/DOM) and `306` Python tests plus `30` subtests, with one existing
+Starlette/httpx deprecation warning. Real Chrome native and iframe-fallback
+readbacks strictly equal the single-line fixture output and reject physical
+line separators without newline normalization. Canonical source stays
+multiline; the DOM → clipboard → Pandoc OMML equality test also asserts that
+the clipboard has no newline. No backend/model startup or WPS GUI paste
+verification was performed. See
+[iteration 20](../docs/iteration-20-2026-10-18-single-line-formula-copy.md).
+
+The earlier `1.15.12` full regression passed `280` JavaScript tests (`99` selection/DOM)
 and `306` Python tests plus `30` subtests, with one existing Starlette/httpx
 deprecation warning. The reported full DOM → clipboard → Pandoc OMML test
 matches the original annotation's OMML exactly, preserving script `L`, bold
@@ -376,7 +394,7 @@ GUI paste path has not been exercised in this run.
 See [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
 for the scope and full-regression status.
 
-Release `1.15.12` retains the ChatGPT formula-source and WPS bar compatibility
+Release `1.15.13` retains the ChatGPT formula-source and WPS bar compatibility
 fixes. The `197` JavaScript / `275` Python / `17` subtest counts are historical
 results for the final merged `1.15.9` version, not the new wrapper-boundary run.
 
@@ -483,7 +501,7 @@ for the release record and exact evidence.
 
 ### Pasting into WPS's equation editor adds parentheses, brackets, or empty matrix cells
 
-Upgrade the installed Tampermonkey script to `1.15.12`, refresh the webpage,
+Upgrade the installed Tampermonkey script to `1.15.13`, refresh the webpage,
 select only the formula, and use this script's floating **Copy**. Paste in the
 host's equation editor and convert to professional format; choose LaTeX only
 if an input-format selector is available. A single-formula clipboard should start with
@@ -511,6 +529,19 @@ grouping is a compatibility measure, not proof of a WPS rendering root cause.
 The backend remains `1.7.21`; refresh the webpage and reopen a document task
 pane after updating its shared files. See
 [iteration 19](../docs/iteration-19-2026-10-18-tex-source-preservation.md).
+
+### A single pasted formula becomes several equations
+
+Version `1.15.12` correctly preserved raw TeX but also passed physical source
+newlines through final single-formula copy. Version `1.15.13` fixes that
+clipboard regression: the Lie-derivative sample is copied as one line,
+`\mathcal{L}_{F_p}B =\nabla B(x,\mathbf{b})^\top f(x,p(x)).`
+Source/canonical text remains multiline where originally supplied, while
+prose and multiple formulas keep their paragraph boundaries. Matrix `\\`
+commands are retained; they are not physical newline characters. Update the
+browser script, refresh the page, and reopen the document pane after updating
+its shared files. The backend stays at `1.7.21`, with no model needed for copy.
+See [iteration 20](../docs/iteration-20-2026-10-18-single-line-formula-copy.md).
 
 If the selection also contains prose or several formulas, use the body-text
 and task-pane conversion path above. This repair does not alter the webpage's

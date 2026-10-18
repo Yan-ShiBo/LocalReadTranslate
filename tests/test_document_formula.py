@@ -144,6 +144,8 @@ dom.window.close();
         cwd=Path(__file__).resolve().parents[1],
     )
     payload = json.loads(result.stdout)
+    assert "\n" in payload["original"]
+    assert not any(character in payload["copied"] for character in "\r\n\u0085\u2028\u2029")
     assert r"^\top" in payload["copied"]
     assert r"\to p" not in payload["copied"]
     assert r"\mathcal{L}_{F_p}" in payload["copied"]
