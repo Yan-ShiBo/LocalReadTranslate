@@ -151,30 +151,180 @@ def _is_escaped(value: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
-def _find_unescaped(
-    value: str,
-    marker: str,
-    start: int,
-    *,
-    stop_at_newline: bool = False,
-) -> int:
-    cursor = start
-    while cursor <= len(value) - len(marker):
-        if stop_at_newline and value[cursor] in "\r\n":
-            return -1
-        if value.startswith(marker, cursor) and not _is_escaped(value, cursor):
-            return cursor
+@dataclass(frozen=True)
+class FormulaWrapper:
+    end: int
+    body: str
+    display: bool
+    source: str
+
+
+def read_formula_wrapper(
+    value: str, start: int = 0, *, currency_guard: bool = False, _nesting: int = 0,
+) -> FormulaWrapper | None:
+    """Read one complete wrapper without treating TeX content as delimiters.
+
+    Legacy markers have no escaping contract. Match their structural brackets
+    conservatively and never cross another marker when a malformed one is open.
+    New browser selections use standard TeX delimiters instead.
+    """
+    if _nesting > 64 or _is_escaped(value, start):
+        return None
+    choices = (
+        ("[[MATH_BLOCK:", "]]", True, "math-block-wrapper"),
+        ("[[MATH:", "]]", False, "math-wrapper"),
+        ("$$", "$$", True, "double-dollar"),
+        (r"\[", r"\]", True, "bracket-display"),
+        (r"\(", r"\)", False, "parenthesis-inline"),
+        ("$", "$", False, "single-dollar"),
+    )
+    pair = next((item for item in choices if value.startswith(item[0], start)), None)
+    dollars = re.match(r"\${3,}", value[start:]) if value.startswith("$$$", start) else None
+    if dollars is not None:
+        pair = (dollars.group(), dollars.group(), True, "redundant-dollars")
+    if pair is None:
+        return None
+    opening, closing, display, source = pair
+    body_start = start + len(opening)
+    cursor = body_start
+    brace_depth = 0
+    delimiter_depth = 0
+    internal = opening.startswith("[[")
+    last_comment_newline = -1
+    while cursor < len(value):
+        char = value[cursor]
+        if char == "%":
+            newline = value.find("\n", cursor)
+            if newline < 0:
+                return None
+            last_comment_newline = newline
+            cursor = newline + 1
+            continue
+        if brace_depth == 0:
+            if opening == "$" and char in "\r\n":
+                return None
+            if internal and value.startswith(("[[MATH:", "[[MATH_BLOCK:"), cursor):
+                return None
+            if internal and char == "]":
+                run_end = cursor
+                while run_end < len(value) and value[run_end] == "]":
+                    run_end += 1
+                consumed = min(delimiter_depth, run_end - cursor)
+                delimiter_depth -= consumed
+                if run_end - cursor - consumed >= 2:
+                    return FormulaWrapper(run_end, value[body_start:run_end - 2], display, source)
+                cursor = run_end
+                continue
+            if not internal and value.startswith(closing, cursor):
+                if currency_guard and opening == "$" and (
+                    cursor == body_start or (
+                        value[cursor - 1].isspace()
+                        and not (last_comment_newline >= body_start
+                                 and not value[last_comment_newline + 1:cursor].strip())
+                    )
+                    or (cursor + 1 < len(value) and value[cursor + 1].isdigit())
+                ):
+                    cursor += 1
+                    continue
+                return FormulaWrapper(cursor + len(closing), value[body_start:cursor], display, source)
+            # A nested TeX wrapper is structural only outside a braced argument.
+            nested_opening = value.startswith((r"\(", r"\["), cursor)
+            if internal and char == "$":
+                nested_opening = True
+            if nested_opening:
+                nested = read_formula_wrapper(value, cursor, _nesting=_nesting + 1)
+                if nested is not None:
+                    cursor = nested.end
+                    continue
+        if char == "\\":
+            if internal and brace_depth == 0:
+                fence = re.match(r"\\(left|right|middle)(?![A-Za-z])\s*(?:\\[A-Za-z]+|\\.|[^\s])", value[cursor:])
+                if fence is not None:
+                    if fence.group(1) == "left":
+                        delimiter_depth += 1
+                    elif fence.group(1) == "right":
+                        delimiter_depth = max(0, delimiter_depth - 1)
+                    cursor += fence.end()
+                    continue
+            verb = re.match(r"\\verb\*?(?![A-Za-z])", value[cursor:])
+            if verb:
+                delimiter_start = cursor + verb.end()
+                if delimiter_start < len(value) and not value[delimiter_start].isspace():
+                    verb_end = value.find(value[delimiter_start], delimiter_start + 1)
+                    if verb_end < 0 or "\n" in value[delimiter_start:verb_end]:
+                        return None
+                    cursor = verb_end + 1
+                    continue
+            cursor += 2
+            continue
+        if char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                return None
+        elif internal and brace_depth == 0:
+            if char in "[(":
+                delimiter_depth += 1
+            elif char == ")":
+                delimiter_depth = max(0, delimiter_depth - 1)
         cursor += 1
-    return -1
+    return None
+
+
+def trim_formula_body(formula: str) -> str:
+    """Trim wrapper whitespace without removing a TeX comment's terminator."""
+    value = str(formula or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    cursor = 0
+    while cursor < len(value):
+        if value[cursor] == "\\":
+            verb = re.match(r"\\verb\*?(?![A-Za-z])", value[cursor:])
+            if verb is not None:
+                delimiter_start = cursor + verb.end()
+                if delimiter_start < len(value) and not value[delimiter_start].isspace():
+                    verb_end = value.find(value[delimiter_start], delimiter_start + 1)
+                    if verb_end >= 0 and "\n" not in value[delimiter_start:verb_end]:
+                        cursor = verb_end + 1
+                        continue
+            cursor += 2
+            continue
+        if value[cursor] == "%":
+            newline = value.find("\n", cursor)
+            if newline < 0:
+                return value + "\n"
+            cursor = newline + 1
+            continue
+        cursor += 1
+    return value
+
+
+def unwrap_formula_wrappers(formula: str) -> str:
+    """Strip only wrappers spanning the entire formula, never ordinary fences."""
+    value = trim_formula_body(formula)
+    while value:
+        wrapper = read_formula_wrapper(value)
+        if wrapper is None or wrapper.end != len(value):
+            break
+        value = trim_formula_body(wrapper.body)
+    return value
+
+
+def iter_formula_wrappers(value: str):
+    """Yield nonoverlapping wrapper spans for translation protection."""
+    cursor = 0
+    while cursor < len(value):
+        wrapper = read_formula_wrapper(value, cursor, currency_guard=True)
+        if wrapper is not None:
+            yield cursor, wrapper
+            cursor = wrapper.end
+        else:
+            if value.startswith(("[[MATH:", "[[MATH_BLOCK:"), cursor):
+                break
+            cursor += 1
 
 
 def _normalize_formula_body(value: str) -> str:
-    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    return "\n".join(line.rstrip() for line in lines).strip()
+    return unwrap_formula_wrappers(value)
 
 
 def _normalize_display_environment(environment: str, body: str) -> str:
@@ -183,24 +333,6 @@ def _normalize_display_environment(environment: str, body: str) -> str:
     if replacement is None:
         return cleaned
     return f"\\begin{{{replacement}}}\n{cleaned}\n\\end{{{replacement}}}"
-
-
-def _single_dollar_close(value: str, start: int) -> int:
-    cursor = start
-    while cursor < len(value):
-        char = value[cursor]
-        if char in "\r\n":
-            return -1
-        if char == "$" and not _is_escaped(value, cursor):
-            if cursor == start or value[cursor - 1].isspace():
-                cursor += 1
-                continue
-            if cursor + 1 < len(value) and value[cursor + 1].isdigit():
-                cursor += 1
-                continue
-            return cursor
-        cursor += 1
-    return -1
 
 
 def parse_latex_interchange(text: str) -> tuple[tuple[LatexSegment, ...], tuple[str, ...]]:
@@ -237,40 +369,40 @@ def parse_latex_interchange(text: str) -> tuple[tuple[LatexSegment, ...], tuple[
 
     while cursor < len(value):
         if value.startswith("[[MATH_BLOCK:", cursor):
-            close = value.find("]]", cursor + len("[[MATH_BLOCK:"))
-            if close >= 0:
-                body_start = cursor + len("[[MATH_BLOCK:")
+            wrapper = read_formula_wrapper(value, cursor)
+            if wrapper is not None:
                 push_math(
                     cursor,
-                    close + 2,
-                    value[body_start:close],
+                    wrapper.end,
+                    wrapper.body,
                     display=True,
                     source="math-block-wrapper",
                 )
                 continue
             warnings.append("Unclosed [[MATH_BLOCK: ...]] wrapper")
+            break
 
         if value.startswith("[[MATH:", cursor):
-            close = value.find("]]", cursor + len("[[MATH:"))
-            if close >= 0:
-                body_start = cursor + len("[[MATH:")
+            wrapper = read_formula_wrapper(value, cursor)
+            if wrapper is not None:
                 push_math(
                     cursor,
-                    close + 2,
-                    value[body_start:close],
+                    wrapper.end,
+                    wrapper.body,
                     display=False,
                     source="math-wrapper",
                 )
                 continue
             warnings.append("Unclosed [[MATH: ...]] wrapper")
+            break
 
         if value.startswith("$$", cursor) and not _is_escaped(value, cursor):
-            close = _find_unescaped(value, "$$", cursor + 2)
-            if close >= 0:
+            wrapper = read_formula_wrapper(value, cursor)
+            if wrapper is not None:
                 push_math(
                     cursor,
-                    close + 2,
-                    value[cursor + 2 : close],
+                    wrapper.end,
+                    wrapper.body,
                     display=True,
                     source="double-dollar",
                 )
@@ -278,12 +410,12 @@ def parse_latex_interchange(text: str) -> tuple[tuple[LatexSegment, ...], tuple[
             warnings.append("Unclosed $$ display formula")
 
         if value.startswith(r"\[", cursor) and not _is_escaped(value, cursor):
-            close = _find_unescaped(value, r"\]", cursor + 2)
-            if close >= 0:
+            wrapper = read_formula_wrapper(value, cursor)
+            if wrapper is not None:
                 push_math(
                     cursor,
-                    close + 2,
-                    value[cursor + 2 : close],
+                    wrapper.end,
+                    wrapper.body,
                     display=True,
                     source="bracket-display",
                 )
@@ -291,12 +423,12 @@ def parse_latex_interchange(text: str) -> tuple[tuple[LatexSegment, ...], tuple[
             warnings.append(r"Unclosed \[ display formula")
 
         if value.startswith(r"\(", cursor) and not _is_escaped(value, cursor):
-            close = _find_unescaped(value, r"\)", cursor + 2)
-            if close >= 0:
+            wrapper = read_formula_wrapper(value, cursor)
+            if wrapper is not None:
                 push_math(
                     cursor,
-                    close + 2,
-                    value[cursor + 2 : close],
+                    wrapper.end,
+                    wrapper.body,
                     display=False,
                     source="parenthesis-inline",
                 )
@@ -327,12 +459,12 @@ def parse_latex_interchange(text: str) -> tuple[tuple[LatexSegment, ...], tuple[
 
         if value[cursor] == "$" and not _is_escaped(value, cursor):
             if cursor + 1 < len(value) and not value[cursor + 1].isspace():
-                close = _single_dollar_close(value, cursor + 1)
-                if close >= 0:
+                wrapper = read_formula_wrapper(value, cursor, currency_guard=True)
+                if wrapper is not None:
                     push_math(
                         cursor,
-                        close + 1,
-                        value[cursor + 1 : close],
+                        wrapper.end,
+                        wrapper.body,
                         display=False,
                         source="single-dollar",
                     )
@@ -370,6 +502,15 @@ def canonicalize_latex_interchange(text: str) -> CanonicalLatex:
     pieces: list[str] = []
     inline_count = 0
     display_count = 0
+    protected_formulas: list[tuple[str, str]] = []
+    marker = "\x00LRT_FORMULA_"
+    while marker in str(text or ""):
+        marker += "_"
+
+    def protect_formula(rendered: str) -> str:
+        token = f"{marker}{len(protected_formulas)}\x00"
+        protected_formulas.append((token, rendered))
+        return token
 
     for segment in segments:
         if segment.kind == "text":
@@ -381,11 +522,11 @@ def canonicalize_latex_interchange(text: str) -> CanonicalLatex:
                 pieces.append("\n\n")
             elif pieces and pieces[-1].endswith("\n") and not pieces[-1].endswith("\n\n"):
                 pieces.append("\n")
-            pieces.append(f"$$\n{segment.value}\n$$")
+            pieces.append(protect_formula(f"$$\n{segment.value}\n$$"))
             pieces.append("\n\n")
         else:
             inline_count += 1
-            pieces.append(f"${segment.value}$")
+            pieces.append(protect_formula(f"${segment.value}$"))
 
     canonical = "".join(pieces)
     canonical = re.sub(r"[ \t]+\n", "\n", canonical)
@@ -396,6 +537,8 @@ def canonicalize_latex_interchange(text: str) -> CanonicalLatex:
     canonical = re.sub(r"([\(\[（])\s+", r"\1", canonical)
     canonical = re.sub(r"\s+([\)\]）])", r"\1", canonical)
     canonical = canonical.strip()
+    for token, formula in protected_formulas:
+        canonical = canonical.replace(token, formula)
 
     return CanonicalLatex(
         text=canonical,

@@ -179,6 +179,71 @@ test("the Copy button preserves the merged bar fix for a solitary formula", asyn
   assert.equal(page.document.querySelector("#radius").getAttribute("data-math-source"), source);
 });
 
+for (const display of [false, true]) {
+  for (const [label, wrap] of [
+    ["bare", (formula) => formula],
+    ["parenthesized", (formula) => String.raw`\(${formula}\)`],
+    ["bracketed", (formula) => String.raw`\[${formula}\]`],
+    ["inline dollars", (formula) => `$${formula}$`],
+    ["display dollars", (formula) => `$$${formula}$$`],
+  ]) {
+    test(`Copy from ${display ? "display" : "inline"} DOM with ${label} metadata unwraps the reported sigma formula`, async (t) => {
+      const formula = String.raw`\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]`;
+      const source = wrap(formula);
+      const page = createUserscriptPage(t, sourceFormula({ source, display }));
+      selectText(page, "#radius-subscript", 0, "#radius-subscript", 1);
+      page.invokeUserEvent(page.document, "mouseup", page.document.querySelector("#radius-subscript"));
+      page.runTimers(10);
+      const button = page.document.querySelector(".tts-copy-btn");
+      assert.ok(button, "Selecting the inner glyph should expose the actual Copy button");
+      page.invokeUserEvent(button, "click");
+      await Promise.resolve();
+
+      assert.deepEqual(page.clipboard, [{ text: formula, type: "text" }]);
+      assert.equal(page.document.querySelector("#radius").getAttribute("data-math-source"), source);
+    });
+  }
+}
+
+test("Copy keeps prose and multiple wrapped metadata formulas in canonical paragraph form", async (t) => {
+  const sigma = String.raw`\sigma_m\in\Sigma[x]`;
+  const page = createUserscriptPage(t,
+    '<p id="paragraph">设 ' +
+    sourceFormula({ id: "sigma", source: String.raw`\(${sigma}\)`, display: false }) +
+    "，并令 " + sourceFormula({ id: "interval", source: "$[a,b]$", display: false }) +
+    "。</p>"
+  );
+  selectContents(page, "#paragraph");
+  page.invokeUserEvent(page.document, "mouseup", page.document.querySelector("#paragraph"));
+  page.runTimers(10);
+  page.invokeUserEvent(page.document.querySelector(".tts-copy-btn"), "click");
+  await Promise.resolve();
+
+  const expected = `设 $${sigma}$，并令 $[a,b]$。`;
+  assert.deepEqual(page.clipboard, [{ text: expected, type: "text" }]);
+  assert.equal(copySelection(page), expected);
+  assert.equal(page.document.querySelector("#sigma").getAttribute("data-math-source"), String.raw`\(${sigma}\)`);
+  assert.equal(page.document.querySelector("#interval").getAttribute("data-math-source"), "$[a,b]$");
+});
+
+test("Copy preserves literal text spacing inside formulas while normalizing surrounding prose", async (t) => {
+  const formula = String.raw`\text{keep  two spaces [ x ]}+\Sigma[x]`;
+  const source = String.raw`\(${formula}\)`;
+  const page = createUserscriptPage(t,
+    '<p id="paragraph">Before   ' + sourceFormula({ source, display: false }) + "   after.</p>"
+  );
+  selectContents(page, "#paragraph");
+  page.invokeUserEvent(page.document, "mouseup", page.document.querySelector("#paragraph"));
+  page.runTimers(10);
+  page.invokeUserEvent(page.document.querySelector(".tts-copy-btn"), "click");
+  await Promise.resolve();
+
+  const expected = `Before $${formula}$ after.`;
+  assert.deepEqual(page.clipboard, [{ text: expected, type: "text" }]);
+  assert.equal(copySelection(page), expected);
+  assert.equal(page.document.querySelector("#radius").getAttribute("data-math-source"), source);
+});
+
 test("copying a ChatGPT HTML-only formula retains the outer LaTeX source", (t) => {
   const page = createPage(t, sourceFormula());
   selectContents(page, "#radius");

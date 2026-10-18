@@ -109,7 +109,7 @@ the full translation service.
 
 Local requirements:
 
-- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.20` environment;
+- Windows 10/11 with the LocalReadTranslate FastAPI `1.7.21` environment;
 - Pandoc 3.x found through `PANDOC_PATH`, `PATH`, or a standard Windows path;
 - Microsoft Word desktop for the Office add-in;
 - a WPS build with JavaScript add-in support. WPS Writer and WPS PDF were
@@ -232,12 +232,19 @@ service processes it owns and leaves Word/WPS package loading available.
 ### LaTeX to native equations (Word and WPS Writer)
 
 There are two different paste targets. For **one formula in the host's built-in
-equation editor**, userscript `1.15.9` provides bare LaTeX through the webpage
-selection **Copy** button: it removes the single outer math wrapper, rewrites
+equation editor**, userscript `1.15.10` provides bare LaTeX through the webpage
+selection **Copy** button: it normalizes redundant whole-formula wrappers,
+including wrappers already present in webpage metadata, removes the wrappers
+from the single-formula clipboard output, and rewrites
 bracketed matrix environments to equivalent `\left`/`\right` plus `matrix`,
 and drops valid matrix row-spacing options while keeping the row separators.
 Paste that result into the equation editor's LaTeX input mode. The webpage's
 own copy button and an older installed userscript do not receive this fix.
+The shared reading core applies the same wrapper handling to the add-in's
+formula and translation copy actions. Mathematical brackets remain: copying
+`\(\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]\)` by itself produces
+`\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]`, not a parenthesized expression
+and not a truncated `\Sigma[x`.
 
 For **prose with formulas or multiple formulas**, paste canonical `$...$` /
 `$$...$$` text into the document body, select it, and use the task pane's
@@ -257,9 +264,17 @@ final clipboard outputs: webpage selection, webpage translation card,
 document formula copy, and document translation copy. Backend conversion,
 API results, internal translation/read-aloud, and document writeback retain
 canonical LaTeX.
-See [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
-for the sample, upgrade steps, and the distinction between structural tests
-and an actual WPS editor paste check.
+FastAPI `1.7.21` also uses the shared Python wrapper parser for translation
+protection/restoration, output normalization, and native-document conversion.
+Webpage DOM extraction emits canonical math directly rather than creating
+legacy `[[MATH:...]]` markers; old markers remain compatible in both frontend
+and backend paths. Restart an already running local service after updating
+the backend; reopen the task pane to load the updated shared JavaScript.
+See [iteration 17](../docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md)
+for wrapper and internal-marker boundaries, and
+[iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
+for the matrix sample. Both distinguish structural tests from an actual WPS
+editor paste check.
 
 ### Native equations to LaTeX (Word and WPS Writer)
 
@@ -303,7 +318,17 @@ need a future OCR/vision route.
 
 ## Current verification
 
-The merged `1.15.9` release passes `197/197` tests through `pnpm test`: `164`
+The `1.15.10` / FastAPI `1.7.21` full regression passed `220` JavaScript tests
+and `305` Python tests plus `30` subtests, with one existing Starlette/httpx
+deprecation warning. Coverage includes formula whitespace/comment boundaries,
+malformed legacy marker preservation, and single-dollar formulas not consuming
+prose across ordinary line breaks. Details are recorded in
+[iteration 17](../docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md).
+This release addresses the identified formula-boundary issues, not every
+possible defect in the application. It does not claim a new WPS GUI paste
+verification.
+
+The earlier merged `1.15.9` release passed `197/197` tests through `pnpm test`: `164`
 core/Office tests and `33` selection/DOM tests, including two new Copy-button
 interaction regressions. The focused Python formula suite passes `29` tests.
 The full Python regression passes `275`
@@ -316,8 +341,9 @@ GUI paste path has not been exercised in this run.
 See [iteration 16](../docs/iteration-16-2026-10-15-equation-editor-copy.md)
 for the scope and full-regression status.
 
-Release `1.15.9` also retains the remote ChatGPT formula-source and WPS bar
-compatibility fixes. The counts above are for the final merged version.
+Release `1.15.10` retains the ChatGPT formula-source and WPS bar compatibility
+fixes. The `197` JavaScript / `275` Python / `17` subtest counts are historical
+results for the final merged `1.15.9` version, not the new wrapper-boundary run.
 
 The following live-host evidence comes from the earlier July releases. In
 particular, the single-formula clipboard example records the old wrapped
@@ -420,15 +446,17 @@ for the release record and exact evidence.
 
 ## Troubleshooting
 
-### Pasting into WPS's equation editor adds brackets or empty matrix cells
+### Pasting into WPS's equation editor adds parentheses, brackets, or empty matrix cells
 
-Upgrade the installed Tampermonkey script to `1.15.9`, refresh the webpage,
+Upgrade the installed Tampermonkey script to `1.15.10`, refresh the webpage,
 select only the formula, and use this script's floating **Copy**. Paste in the
 host's LaTeX equation input mode. A single-formula clipboard should start with
 the expression itself, such as `\left[\begin{matrix}`, rather than outer
-`\[` or `$$`; valid row-spacing instructions such as `\\[2mm]` are removed
+`\(`, `\[`, or `$$`, even if webpage metadata already contained a formula
+wrapper; valid row-spacing instructions such as `\\[2mm]` are removed
 inside supported matrix environments. The mathematical matrix brackets and
-row separators remain.
+row separators remain. In particular, a final `[x]` in `\Sigma[x]` remains
+complete and is not consumed as part of an internal `[[MATH:...]]` marker.
 
 If the selection also contains prose or several formulas, use the body-text
 and task-pane conversion path above. This repair does not alter the webpage's

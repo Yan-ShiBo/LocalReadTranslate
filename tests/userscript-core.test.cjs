@@ -393,6 +393,105 @@ const clipboardCores = [
 ];
 
 for (const [name, core] of clipboardCores) {
+  test(name + " wrapper normalization preserves comments, one-sided fences and adjacent equations", () => {
+    const sigma = String.raw`\Sigma[x]`;
+    assert.equal(core.prepareLatexForClipboard("$$$" + sigma + "$$$"), sigma);
+    assert.equal(core.prepareLatexForClipboard("$$$$" + sigma + "$$$$"), sigma);
+    assert.equal(core.prepareLatexForClipboard("$x$$y$"), "$x$$y$");
+    assert.equal(core.prepareLatexForClipboard("$$x$$$$y$$"), "$$\nx\n$$\n\n$$\ny\n$$");
+    for (const body of ["\\left[x\\right.", "\\left.x\\right]", "\\left(x\\right.", "\\left\\{x\\right."]) {
+      assert.equal(core.prepareLatexForClipboard("[[MATH: " + body + "]]"), body);
+    }
+    const commented = "\\(x % final comment\n\\)";
+    const canonical = core.normalizeCopyTextWithLatex(commented);
+    assert.equal(canonical, "$x % final comment\n$");
+    assert.equal(core.normalizeCopyTextWithLatex(canonical), canonical);
+    assert.equal(core.splitLatexSegments(canonical).filter(s => s.type === "latex").length, 1);
+    const malformed = "[[MATH: x [[MATH: y]] tail]]";
+    assert.equal(core.normalizeCopyTextWithLatex(malformed), malformed);
+    assert.equal(core.prepareLatexForClipboard(malformed), malformed);
+  });
+
+  test(`${name} clipboard unwraps the reported sigma formula without losing its polynomial brackets`, () => {
+    const formula = String.raw`\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]`;
+    const wrapped = [
+      formula,
+      `$${formula}$`,
+      `$$${formula}$$`,
+      String.raw`\(${formula}\)`,
+      String.raw`\[${formula}\]`,
+    ];
+    for (const body of wrapped) {
+      for (const marker of ["MATH", "MATH_BLOCK"]) {
+        const source = `[[${marker}: ${body}]]`;
+        assert.equal(core.prepareLatexForClipboard(source), formula, source);
+      }
+    }
+    for (const source of wrapped) {
+      assert.equal(core.prepareLatexForClipboard(source), formula, source);
+    }
+    assert.equal(
+      core.prepareLatexForClipboard(String.raw`$$\(${formula}\)$$`),
+      formula
+    );
+    assert.equal(
+      core.prepareLatexForClipboard(String.raw`\[$${formula}$\]`),
+      formula
+    );
+  });
+
+  test(`${name} internal formula markers preserve adjacent and nested mathematical brackets`, () => {
+    for (const formula of [
+      String.raw`\Sigma[x]`,
+      "[a,b]",
+      "[a,b)",
+      "(a,b]",
+      "[[x]]",
+      "f[x][y]",
+      String.raw`\left[x\right]`,
+      String.raw`\text{literal ]] and [}+\Sigma[x]`,
+      String.raw`\text{literal \(x\) and \[y\]}+\Sigma[x]`,
+      String.raw`\verb|]]|+\Sigma[x]`,
+      "x % do not close ]] here\n+\\Sigma[x]",
+    ]) {
+      for (const [marker, expected] of [
+        ["MATH", `$${formula}$`],
+        ["MATH_BLOCK", `$$\n${formula}\n$$`],
+      ]) {
+        const source = `[[${marker}: ${formula}]]`;
+        assert.equal(core.normalizeCopyTextWithLatex(source), expected, source);
+        assert.equal(core.prepareLatexForClipboard(source), formula, source);
+      }
+    }
+  });
+
+  test(`${name} removing markup wrappers never removes mathematical grouping`, () => {
+    for (const formula of [
+      "(x+y)",
+      "[a,b]",
+      "{x+y}",
+      String.raw`\left(\Sigma[x]\right)`,
+      String.raw`\text{keep \(x\) literally}`,
+    ]) {
+      assert.equal(core.prepareLatexForClipboard(String.raw`[[MATH: \(${formula}\)]]`), formula);
+      assert.equal(core.prepareLatexForClipboard(`$${formula}$`), formula);
+    }
+  });
+
+  test(`${name} nested wrappers in paragraphs and multiple equations keep canonical separators`, () => {
+    const sigma = String.raw`\sigma_m\in\Sigma[x]`;
+    const paragraph = String.raw`设 [[MATH: \(${sigma}\)]]，并令 [[MATH: $[a,b]$]]。`;
+    const expectedParagraph = `设 $${sigma}$，并令 $[a,b]$。`;
+    assert.equal(core.normalizeCopyTextWithLatex(paragraph), expectedParagraph);
+    assert.equal(core.prepareLatexForClipboard(paragraph), expectedParagraph);
+    const multiple = String.raw`[[MATH: \(${sigma}\)]] [[MATH: \([a,b]\)]]`;
+    assert.equal(core.prepareLatexForClipboard(multiple), `$${sigma}$ $[a,b]$`);
+    const displays = String.raw`[[MATH_BLOCK: \[${sigma}\]]]
+
+[[MATH_BLOCK: $$[a,b]$$]]`;
+    assert.equal(core.prepareLatexForClipboard(displays), `$$\n${sigma}\n$$\n\n$$\n[a,b]\n$$`);
+  });
+
   test(`${name} clipboard prepares the reported pendulum formula for a WPS equation box`, () => {
     const source = String.raw`\[ \begin{bmatrix} \dot{\theta}\\ \dot{\omega} \end{bmatrix} = \begin{bmatrix} \omega\\[2mm] \displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right) +\frac{1}{ml^2}u \end{bmatrix} \]`;
     const expected = String.raw`\left[\begin{matrix} \dot{\theta}\\ \dot{\omega} \end{matrix}\right] = \left[\begin{matrix} \omega\\ \displaystyle\frac{g}{l}\left(\theta-\frac{\theta^3}{6}\right) +\frac{1}{ml^2}u \end{matrix}\right]`;
@@ -623,6 +722,25 @@ test("math wrappers are split into progressive read formula segments", () => {
   assert.equal(plan.formulas[0], "D_I");
   assert.match(plan.segments[0].text, /The resulting sampled sets/);
   assert.equal(plan.segments[3].text, "and");
+});
+
+test("web and add-in reading keep the complete sigma formula separate from surrounding prose", () => {
+  const formula = String.raw`\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]`;
+  for (const [name, core] of clipboardCores) {
+    for (const math of [
+      String.raw`[[MATH: \(${formula}\)]]`,
+      String.raw`\(${formula}\)`,
+    ]) {
+      const plan = core.prepareProgressiveReadPlan(`Before ${math} after.`);
+      assert.deepEqual(plan.formulas, [formula], name);
+      assert.deepEqual(plan.segments, [
+        { type: "text", text: "Before" },
+        { type: "formula", index: 0, formula },
+        { type: "text", text: "after." },
+      ], name);
+      assert.equal(plan.text, "Before __LOCAL_READ_FORMULA_0__ after.", name);
+    }
+  }
 });
 
 

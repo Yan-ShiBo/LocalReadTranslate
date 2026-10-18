@@ -22,37 +22,159 @@
     ) / normalized.length;
   }
 
+  // Read a complete math wrapper without confusing TeX brackets, comments or
+  // literal text with the wrapper boundary. Legacy [[MATH: ...]] remains readable.
+  function readMathWrapper(value, start = 0) {
+    const wrappers = [
+      ["[[MATH_BLOCK:", "]]", true, true],
+      ["[[MATH:", "]]", false, true],
+      ["$$", "$$", true, false], ["$", "$", false, false],
+      ["\\[", "\\]", true, false], ["\\(", "\\)", false, false],
+    ];
+    const wrapper = wrappers.find(([opening]) => value.startsWith(opening, start));
+    if (!wrapper) return null;
+    let [opening, closing, block, internal] = wrapper;
+    if (opening === "$$" && value.startsWith("$$$", start)) {
+      // Only runs longer than two represent redundant wrappers, not $x$$y$.
+      let end = start;
+      while (value[end] === "$") end += 1;
+      opening = closing = value.slice(start, end);
+    }
+    const bodyStart = start + opening.length;
+    let braces = 0;
+    let brackets = 0;
+    let nested = 0;
+    for (let index = bodyStart; index < value.length;) {
+      const character = value[index];
+      if (character === "%") {
+        const newline = value.indexOf("\n", index);
+        if (newline < 0) return null;
+        index = newline + 1;
+        continue;
+      }
+      if (braces === 0) {
+        if (internal && character === "\\") {
+          const fence = /^\\(left|right|middle)(?![A-Za-z])\s*(\\[A-Za-z]+|\\[^\s]|[^\s\\])/.exec(value.slice(index));
+          if (fence) {
+            if (fence[1] === "left") brackets += 1;
+            if (fence[1] === "right") brackets = Math.max(0, brackets - 1);
+            index += fence[0].length;
+            continue;
+          }
+        }
+        if (internal && (value.startsWith("[[MATH:", index) || value.startsWith("[[MATH_BLOCK:", index))) {
+          return null; // A broken legacy token must not consume the next formula.
+        }
+        if (!internal && value.startsWith(closing, index)) {
+          if (nested === 0) {
+            return { body: value.slice(bodyStart, index), end: index + closing.length, block };
+          }
+          nested -= 1;
+          index += closing.length;
+          continue;
+        }
+        if (!internal && opening.startsWith("\\") && value.startsWith(opening, index)) {
+          nested += 1;
+          index += opening.length;
+          continue;
+        }
+        if (internal && character === "]") {
+          let end = index;
+          while (value[end] === "]") end += 1;
+          const consumed = Math.min(brackets, end - index);
+          brackets -= consumed;
+          if (end - index - consumed >= 2) {
+            return { body: value.slice(bodyStart, end - 2), end, block };
+          }
+          index = end;
+          continue;
+        }
+        if (internal && (character === "[" || character === "(")) brackets += 1;
+        if (internal && character === ")" && brackets > 0) brackets -= 1;
+        if (opening === "$" && character === "\n") return null;
+      }
+      if (character === "\\") {
+        const verb = /^\\verb\*?([^\sA-Za-z])/.exec(value.slice(index));
+        if (verb) {
+          const end = value.indexOf(verb[1], index + verb[0].length);
+          if (end < 0) return null;
+          index = end + 1;
+        } else {
+          index += Math.min(2, value.length - index);
+        }
+        continue;
+      }
+      if (character === "{") braces += 1;
+      if (character === "}") {
+        braces -= 1;
+        if (braces < 0) return null;
+      }
+      index += 1;
+    }
+    return null;
+  }
+
   function normalizeDisplayMathWrappers(text) {
-    return String(text || "")
-      .replace(
-        /\[\[MATH_BLOCK:\s*([\s\S]*?)\s*\]\]/g,
-        (_match, formula) => {
-          const value = String(formula || "").trim();
-          return value ? `$$${value}$$` : "";
+    const value = String(text || "");
+    let result = "";
+    for (let index = 0; index < value.length;) {
+      if (value[index] === "$" || value.startsWith("\\(", index) || value.startsWith("\\[", index)) {
+        const wrapper = readMathWrapper(value, index);
+        if (wrapper) {
+          result += value.slice(index, wrapper.end);
+          index = wrapper.end;
+          continue;
         }
-      )
-      .replace(
-        /\[\[MATH:\s*([\s\S]*?)\s*\]\]/g,
-        (_match, formula) => {
-          const value = String(formula || "").trim();
-          return value ? `$${value}$` : "";
+      }
+      if (value[index] === "\\") {
+        result += value.slice(index, index + 2);
+        index += 2;
+        continue;
+      }
+      if (value.startsWith("[[MATH:", index) || value.startsWith("[[MATH_BLOCK:", index)) {
+        const wrapper = readMathWrapper(value, index);
+        if (wrapper) {
+          const body = stripLatexDelimiters(wrapper.body);
+          const delimiter = wrapper.block ? "$$" : "$";
+          result += body ? delimiter + body + delimiter : "";
+          index = wrapper.end;
+          continue;
         }
-      );
+        // There is no unambiguous end for this legacy token. Preserve its
+        // remainder verbatim instead of making a second pass reinterpret it.
+        return result + value.slice(index);
+      }
+      result += value[index++];
+    }
+    return result;
+  }
+
+  function trimMathBody(formula) {
+    const value = String(formula || "").trim();
+    for (let index = 0; index < value.length;) {
+      if (value[index] === "%") {
+        const newline = value.indexOf("\n", index);
+        // Keep a final comment from swallowing the closing math delimiter.
+        if (newline < 0) return value + "\n";
+        index = newline + 1;
+      } else if (value[index] === "\\") {
+        const verb = /^\\verb\*?([^\sA-Za-z])/.exec(value.slice(index));
+        const end = verb ? value.indexOf(verb[1], index + verb[0].length) : -1;
+        index = end >= 0 ? end + 1 : index + 2;
+      } else {
+        index += 1;
+      }
+    }
+    return value;
   }
 
   function stripLatexDelimiters(formula) {
-    let value = String(formula || "").trim();
-    if (value.startsWith("$$") && value.endsWith("$$")) {
-      value = value.slice(2, -2);
-    } else if (value.startsWith("$") && value.endsWith("$")) {
-      value = value.slice(1, -1);
-    } else if (
-      (value.startsWith("\\(") && value.endsWith("\\)")) ||
-      (value.startsWith("\\[") && value.endsWith("\\]"))
-    ) {
-      value = value.slice(2, -2);
+    let value = trimMathBody(formula);
+    for (;;) {
+      const wrapper = readMathWrapper(value);
+      if (!wrapper || wrapper.end !== value.length) return value;
+      value = trimMathBody(wrapper.body);
     }
-    return value.trim();
   }
 
   // Only clipboard output uses equation-editor syntax. Paragraph interchange
@@ -62,31 +184,10 @@
       .replace(/[\u200B-\u200F\uFEFF]/g, "")
       .replace(/\r\n?/g, "\n")
       .trim();
-    const pair = [["$$", "$$"], ["$", "$"], ["\\[", "\\]"], ["\\(", "\\)"]]
-      .find(([opening]) => value.startsWith(opening));
-    if (!pair) return null;
-    const [opening, closing] = pair;
-    let depth = 0;
-    for (let index = opening.length; index < value.length; index += 1) {
-      if (depth === 0 && value.startsWith(closing, index)) {
-        return value.slice(index + closing.length).trim()
-          ? null
-          : value.slice(opening.length, index).trim();
-      }
-      if (value[index] === "%") {
-        const newline = value.indexOf("\n", index);
-        if (newline < 0) return null;
-        index = newline;
-      } else if (value[index] === "\\") {
-        index += 1;
-      } else if (value[index] === "{") {
-        depth += 1;
-      } else if (value[index] === "}") {
-        depth -= 1;
-        if (depth < 0) return null;
-      }
-    }
-    return null;
+    const wrapper = readMathWrapper(value);
+    return wrapper && wrapper.end === value.length
+      ? stripLatexDelimiters(value)
+      : null;
   }
 
   function clipboardLatexGroupEnd(value, start) {
@@ -224,55 +325,27 @@
 
   function splitLatexSegments(text) {
     const value = normalizeDisplayMathWrappers(text);
-    const pattern =
-      /(\$\$(?:\\[\s\S]|[^\\])*?\$\$|\\\[(?:\\(?!\])[\s\S]|[^\\])*?\\\]|\\\((?:\\(?!\))[\s\S]|[^\\])*?\\\)|\$(?:\\[^\n]|[^$\\\n])+\$)/y;
-    const openings = /\$\$|\$|\\\[|\\\(/g;
     const segments = [];
     let lastIndex = 0;
-    let opening;
-    while ((opening = openings.exec(value)) !== null) {
-      let backslashes = 0;
-      for (let cursor = opening.index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) {
-        backslashes += 1;
+    for (let index = 0; index < value.length;) {
+      if (value.startsWith("[[MATH:", index) || value.startsWith("[[MATH_BLOCK:", index)) break;
+      const wrapper = readMathWrapper(value, index);
+      if (wrapper) {
+        if (index > lastIndex) {
+          segments.push({ type: "text", value: value.slice(lastIndex, index), block: false });
+        }
+        segments.push({ type: "latex", value: value.slice(index, wrapper.end), block: wrapper.block });
+        index = wrapper.end;
+        lastIndex = index;
+      } else {
+        // Skip escaped delimiters before scanning a suffix.
+        index += value[index] === "\\" ? 2 : 1;
       }
-      if (backslashes % 2) {
-        // Reject literal delimiters before scanning for a close. Otherwise
-        // repeated escaped prices force a full suffix scan for each dollar.
-        openings.lastIndex = opening.index + 1;
-        continue;
-      }
-      pattern.lastIndex = opening.index;
-      const match = pattern.exec(value);
-      if (!match) {
-        openings.lastIndex = opening.index + 1;
-        continue;
-      }
-      if (match.index > lastIndex) {
-        segments.push({
-          type: "text",
-          value: value.slice(lastIndex, match.index),
-          block: false,
-        });
-      }
-      const formula = match[0];
-      segments.push({
-        type: "latex",
-        value: formula,
-        block: formula.startsWith("$$") || formula.startsWith("\\["),
-      });
-      lastIndex = pattern.lastIndex;
-      openings.lastIndex = lastIndex;
     }
     if (lastIndex < value.length) {
-      segments.push({
-        type: "text",
-        value: value.slice(lastIndex),
-        block: false,
-      });
+      segments.push({ type: "text", value: value.slice(lastIndex), block: false });
     }
-    return segments.length
-      ? segments
-      : [{ type: "text", value, block: false }];
+    return segments.length ? segments : [{ type: "text", value, block: false }];
   }
 
   function normalizeLatexBarArguments(formula) {
@@ -387,13 +460,18 @@
     const normalized = normalizeDisplayMathWrappers(text)
       .replace(/[\u200B-\u200F\uFEFF]/g, "")
       .replace(/\r\n?/g, "\n");
+    // Protect formula bytes from the prose-only whitespace cleanup below.
+    let tokenPrefix = "\uE000LRT_FORMULA_";
+    while (normalized.includes(tokenPrefix)) tokenPrefix += "_";
+    const formulas = [];
     const pieces = splitLatexSegments(normalized).map((segment) => {
       if (segment.type === "latex") {
         const formula = normalizeLatexBarArguments(stripLatexDelimiters(segment.value));
         if (!formula) return "";
-        return segment.block
-          ? `\n\n$$\n${formula}\n$$\n\n`
-          : `$${formula}$`;
+        const formatted = segment.block ? "$$\n" + formula + "\n$$" : "$" + formula + "$";
+        const token = tokenPrefix + formulas.length + "\uE001";
+        formulas.push(formatted);
+        return segment.block ? "\n\n" + token + "\n\n" : token;
       }
       return String(segment.value || "")
         .split("\n")
@@ -408,7 +486,8 @@
       .replace(/[ \t]+([,.;:!?，。；：！？])/g, "$1")
       .replace(/([([{（])[ \t]+/g, "$1")
       .replace(/[ \t]+([)\]}）])/g, "$1")
-      .trim();
+      .trim()
+      .replace(new RegExp(tokenPrefix + "(\\d+)\uE001", "g"), (_match, index) => formulas[Number(index)]);
   }
 
   function verbalizeSimpleFormula(formula) {
@@ -496,23 +575,13 @@
 
   function replaceFormulaDelimiters(text, formulas = null, options = {}) {
     const forcePlaceholders = Boolean(options && options.forcePlaceholders);
-    const replaceFormula = (_match, body) => {
-      if (forcePlaceholders) {
-        return ` ${formulaFallback(formulas, body)} `;
-      }
+    return splitLatexSegments(text).map((segment) => {
+      if (segment.type !== "latex") return segment.value;
+      const body = stripLatexDelimiters(segment.value);
+      if (forcePlaceholders) return " " + formulaFallback(formulas, body) + " ";
       const spoken = verbalizeSimpleFormula(body);
-      return ` ${
-        spoken === "formula omitted"
-          ? formulaFallback(formulas, body)
-          : spoken
-      } `;
-    };
-    return String(text || "")
-      .replace(/\[\[MATH:\s*([\s\S]*?)\s*\]\]/g, replaceFormula)
-      .replace(/\$\$([\s\S]*?)\$\$/g, replaceFormula)
-      .replace(/\\\[([\s\S]*?)\\\]/g, replaceFormula)
-      .replace(/\\\(([\s\S]*?)\\\)/g, replaceFormula)
-      .replace(/\$([^$\n]{2,160})\$/g, replaceFormula);
+      return " " + (spoken === "formula omitted" ? formulaFallback(formulas, body) : spoken) + " ";
+    }).join("");
   }
 
   function looksLikeMathLine(line) {

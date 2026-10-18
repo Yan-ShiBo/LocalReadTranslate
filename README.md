@@ -193,8 +193,11 @@ Editing the repository file does not update a copy already installed in Tampermo
 > ⌨️ Shortcut: `Ctrl+Shift+S` to read selected text directly.
 
 For a single formula, use this userscript's floating **Copy**, enter the
-built-in Word/WPS equation editor in LaTeX mode, and paste. Version `1.15.9`
-removes only a single outer math wrapper, rewrites bracketed matrix
+built-in Word/WPS equation editor in LaTeX mode, and paste. Version `1.15.10`
+normalizes redundant whole-formula wrappers, including wrappers already
+present in webpage formula metadata, and removes them from single-formula
+clipboard output. It preserves mathematical brackets such as `\Sigma[x]`,
+including a closing `]` next to an internal formula marker. It also rewrites bracketed matrix
 environments as equivalent `\left...\begin{matrix}...\end{matrix}\right...`,
 and removes valid row-spacing options such as `\\[2mm]` while retaining the
 row break. This avoids passing display delimiters and layout-only row options
@@ -203,13 +206,22 @@ once, should instead be pasted into the document body and converted with the
 add-in's **转换为原生公式** action. The same final-copy rule applies to the
 webpage translation card, the document add-in's formula copy, and the
 document add-in's translation copy. Translation/read-aloud internals, API
-results, and document writeback retain canonical LaTeX. See the
+results, and document writeback retain canonical LaTeX. DOM extraction now
+emits one canonical math wrapper instead of creating `[[MATH:...]]` markers;
+legacy markers remain supported. FastAPI `1.7.21` applies the same boundary
+rules to translation protection/restoration and native-document conversion.
+See the
+[formula-wrapper boundary note](docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md)
+for the extra-parentheses example and validation limits, and the earlier
 [equation-editor copy note](docs/iteration-16-2026-10-15-equation-editor-copy.md)
-for the reported matrix example and validation limits.
+for the matrix example.
 
 The webpage's own copy button and an older installed Tampermonkey copy do not
-use this fix. Install `tts-userscript.js` version `1.15.9` in Tampermonkey and
+use this fix. Install `tts-userscript.js` version `1.15.10` in Tampermonkey and
 refresh the source page before retrying.
+Update the local backend as well; if it is running, restart it to load
+FastAPI `1.7.21`. An offline backend can load the update on its next explicit
+start. Formula-copy normalization itself remains local and needs no model.
 
 If the floating gear does not appear on a site such as Gemini, first check Tampermonkey and Chrome extension site access for that domain. The script is declared for `*://*/*`, so a missing gear usually means the userscript did not get injected. If the gear appears but selection buttons do not, the page likely uses custom selection DOM; the script also listens to `selectionchange` as a fallback and expands partial formula selections to full math frames where possible. The UI avoids `innerHTML` and related HTML sinks for Trusted Types compatibility.
 
@@ -373,9 +385,9 @@ checking state.
 
 For a local pre-push check, open the installed script in Tampermonkey's editor, replace its contents with the complete local `tts-userscript.js`, and save. A repository edit alone cannot change Tampermonkey storage.
 
-The current repository metadata version is `1.15.9` (FastAPI `1.7.20`). This version adds single-formula equation-editor clipboard compatibility while retaining both the single-atom `\bar` shorthand normalization and ChatGPT source-preservation repairs. The formula selection tests use jsdom only as a development dependency; the installed userscript has no new runtime dependency.
+The current repository metadata version is `1.15.10` (FastAPI `1.7.21`). This version fixes redundant formula wrappers and closing-square-bracket boundaries in legacy internal formula markers across copying, translation, read preparation, and native-document conversion, while retaining single-formula equation-editor clipboard compatibility, single-atom `\bar` shorthand normalization, and ChatGPT source preservation. DOM extraction now emits canonical math directly. The formula selection tests use jsdom only as a development dependency; the installed userscript has no new runtime dependency.
 
-The root cause and validation records are in [iteration 16](docs/iteration-16-2026-10-15-equation-editor-copy.md), [iteration 15](docs/iteration-15-2026-08-28-wps-bar-compatibility.md), and [iteration 14](docs/iteration-14-2026-08-27-chatgpt-formula-copy.md).
+The current root cause and validation record is [iteration 17](docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md). Earlier records remain in [iteration 16](docs/iteration-16-2026-10-15-equation-editor-copy.md), [iteration 15](docs/iteration-15-2026-08-28-wps-bar-compatibility.md), and [iteration 14](docs/iteration-14-2026-08-27-chatgpt-formula-copy.md).
 
 For each release:
 
@@ -417,6 +429,7 @@ browser script and built-in test page are generated from this catalog.
 | `Kokoro TTS.bat` / `Kokoro TTS.pyw` | Legacy-compatible launchers retained for old installations |
 | `tts-userscript.js` | Tampermonkey script for local selection read-aloud and translation, with cached source/model state followed by background health refresh |
 | `docs/greasyfork-additional-info.md` | Markdown content for the Greasy Fork additional info field |
+| `docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md` | Redundant formula wrappers and closing-square-bracket marker boundaries |
 | `docs/iteration-16-2026-10-15-equation-editor-copy.md` | Single-formula copy compatibility for the built-in Word/WPS equation editor |
 | `docs/iteration-13-2026-07-26-userscript-health-cache.md` | Current userscript cached-health and background-refresh release record |
 | `docs/iteration-12-2026-07-26-windows-launch-repair.md` | Current Windows protocol, isolated launcher and Start Menu migration release record |
@@ -585,6 +598,12 @@ Select **Project Server** in the Translation panel. If it is disconnected, click
 Select **Local Ollama** in the Translation panel. If it is offline, click **Start**; the tray starts the installed `ollama serve` process and the page waits for discovery. Pull a generation model if the connected row is still empty. The panel never invents defaults or mixes server models into the local selector. Once discovered, use **Advanced → Load & keep** if residency is useful. Kokoro is independent and loads only on the first **Read** request.
 
 ## ✅ Tests
+
+The `1.15.10` / FastAPI `1.7.21` full regression passed `220` JavaScript tests
+and `305` Python tests plus `30` subtests, with one existing Starlette/httpx
+deprecation warning. These automated checks do not constitute a WPS GUI paste
+test; see [iteration 17](docs/iteration-17-2026-10-18-formula-wrapper-boundaries.md)
+for formula-boundary coverage and validation limits.
 
 The JavaScript tests use Node.js 24 and the pnpm version pinned in `package.json`.
 

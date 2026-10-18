@@ -19,6 +19,47 @@ from fastapi.testclient import TestClient
 import server
 
 
+class FormulaWrapperRegressionTests(unittest.TestCase):
+    def test_protect_restore_preserves_nested_wrappers_and_square_brackets(self):
+        examples = [
+            (r"[[MATH: \(\Sigma[x]\)]]", r"$\Sigma[x]$"),
+            (r"[[MATH: A[[i]]+B[j]]]", r"$A[[i]]+B[j]$"),
+            (r"[[MATH: [0,1)]]", r"$[0,1)$"),
+            (r"[[MATH: \text{a]]b}+x]]", r"$\text{a]]b}+x$"),
+            (r"[[MATH: \verb|a]]b|+x]]", r"$\verb|a]]b|+x$"),
+            ("[[MATH: x % ignored ]]\n+y]]", "$x % ignored ]]\n+y$"),
+        ]
+        for source, expected in examples:
+            with self.subTest(source=source):
+                original = f"Before {source}, then \\(y\\)."
+                protected, formulas = server._protect_formulas(original)
+                self.assertEqual(protected, "Before __MATH_0__, then __MATH_1__.")
+                self.assertEqual(len(formulas), 2)
+                self.assertEqual(server._restore_formulas_for_display(protected, formulas),
+                                 f"Before {expected}, then $y$.")
+                self.assertEqual(server._normalize_translated_math_wrappers(source), expected)
+
+    def test_unwrap_preserves_math_parentheses_and_separate_formulas(self):
+        for source in [r"(x+y)", r"\left(x+y\right)", r"\(x\), \(y\)", r"$x$ $y$"]:
+            with self.subTest(source=source):
+                self.assertEqual(server._unwrap_formula_for_translation(source), source)
+
+    def test_translation_preserves_formula_spaces_and_comment_terminators(self):
+        examples = [
+            (r"\(\text{two  words ( spaced )}+\verb| a   b |\)",
+             r"$\text{two  words ( spaced )}+\verb| a   b |$"),
+            ("\\(x % final comment\n\\)", "$x % final comment\n$"),
+            ("[[MATH: \\(x % final comment\n\\)]]", "$x % final comment\n$"),
+        ]
+        for source, expected in examples:
+            with self.subTest(source=source):
+                result = server._format_formula_for_translation(source)
+                self.assertEqual(result, expected)
+                protected, formulas = server._protect_formulas(result)
+                self.assertEqual(protected, "__MATH_0__")
+                self.assertEqual(server._restore_formulas_for_display(protected, formulas), expected)
+
+
 class FakePipeline:
     def __init__(self, segments=None, error=None):
         self.segments = segments or [np.array([0.0, 0.25, -0.25, 0.0], dtype=np.float32)]

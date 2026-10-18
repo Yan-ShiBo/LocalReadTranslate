@@ -55,8 +55,11 @@ from document_formula import (
     NativeToLatexResult,
     PandocUnavailableError,
     generate_formula_fragment,
+    iter_formula_wrappers,
     native_formula_to_latex,
     pandoc_health,
+    trim_formula_body,
+    unwrap_formula_wrappers,
 )
 from tts_catalog import (
     AVAILABLE_VOICES,
@@ -573,7 +576,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kokoro TTS 本地服务",
     description="本地运行的高质量英文 TTS 服务（Kokoro 82M）",
-    version="1.7.20",
+    version="1.7.21",
     lifespan=lifespan,
 )
 
@@ -1303,14 +1306,6 @@ def _wait_for_ollama_model_state(
 
 def _protect_formulas(text: str) -> tuple[str, list[tuple[str, str]]]:
     formulas = []
-    pattern = re.compile(
-        r"(\[\[MATH_BLOCK:\s*(.*?)\s*\]\]|"
-        r"\[\[MATH:\s*(.*?)\s*\]\]|"
-        r"\$\$([\s\S]*?)\$\$|"
-        r"\\\[([\s\S]*?)\\\]|"
-        r"\\\(([\s\S]*?)\\\)|"
-        r"\$([^$\n]+?)\$)"
-    )
 
     def replace(match):
         full_match = match.group(0)
@@ -1319,7 +1314,15 @@ def _protect_formulas(text: str) -> tuple[str, list[tuple[str, str]]]:
         formulas.append((placeholder, full_match))
         return placeholder
 
-    protected_text = pattern.sub(replace, text)
+    pieces = []
+    cursor = 0
+    for start, wrapper in iter_formula_wrappers(text):
+        placeholder = f"__MATH_{len(formulas)}__"
+        formulas.append((placeholder, text[start:wrapper.end]))
+        pieces.extend((text[cursor:start], placeholder))
+        cursor = wrapper.end
+    pieces.append(text[cursor:])
+    protected_text = "".join(pieces)
     bare_pattern = re.compile(
         r"(?<![A-Za-z0-9_\\])("
         r"\\hat\s*\{?[A-Za-z][A-Za-z0-9]*\}?(?:\([^()\n]+\))?|"
@@ -1335,30 +1338,17 @@ def _restore_formulas(text: str, formulas: list[tuple[str, str]]) -> str:
     for placeholder, original in formulas:
         cleaned = original
         if cleaned.startswith("[[MATH_BLOCK:") and cleaned.endswith("]]"):
-            content = cleaned[13:-2].strip()
+            content = unwrap_formula_wrappers(cleaned)
             cleaned = f"$${content}$$"
         elif cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
-            content = cleaned[7:-2].strip()
+            content = unwrap_formula_wrappers(cleaned)
             cleaned = f"${content}$"
         result = result.replace(placeholder, cleaned)
     return result
 
 
 def _unwrap_formula_for_translation(formula: str) -> str:
-    cleaned = (formula or "").strip()
-    if cleaned.startswith("[[MATH_BLOCK:") and cleaned.endswith("]]"):
-        return cleaned[13:-2].strip()
-    if cleaned.startswith("[[MATH:") and cleaned.endswith("]]"):
-        return cleaned[7:-2].strip()
-    if cleaned.startswith("$$") and cleaned.endswith("$$"):
-        return cleaned[2:-2].strip()
-    if cleaned.startswith("\\[") and cleaned.endswith("\\]"):
-        return cleaned[2:-2].strip()
-    if cleaned.startswith("\\(") and cleaned.endswith("\\)"):
-        return cleaned[2:-2].strip()
-    if cleaned.startswith("$") and cleaned.endswith("$"):
-        return cleaned[1:-1].strip()
-    return cleaned
+    return unwrap_formula_wrappers(formula)
 
 
 _FORMULA_SYMBOL_LATEX = {
@@ -1416,7 +1406,7 @@ def _formula_content_as_latex(formula: str) -> str:
     )
     for symbol, latex in _FORMULA_SYMBOL_LATEX.items():
         value = value.replace(symbol, latex)
-    return value.strip()
+    return trim_formula_body(value)
 
 
 def _format_formula_for_translation(formula: str) -> str:
@@ -1430,28 +1420,18 @@ def _format_formula_for_translation(formula: str) -> str:
 
 
 def _normalize_translated_math_wrappers(text: str) -> str:
-    def replace_block(match: re.Match) -> str:
-        content = match.group(1).strip()
-        if not content:
-            return ""
-        return _format_formula_for_translation(f"[[MATH_BLOCK: {content}]]")
-
-    def replace_inline(match: re.Match) -> str:
-        content = match.group(1).strip()
-        if not content:
-            return ""
-        return _format_formula_for_translation(f"[[MATH: {content}]]")
-
-    normalized = re.sub(
-        r"\[\[MATH_BLOCK:\s*([\s\S]*?)\s*\]\]",
-        replace_block,
-        text or "",
-    )
-    return re.sub(
-        r"\[\[MATH:\s*([\s\S]*?)\s*\]\]",
-        replace_inline,
-        normalized,
-    )
+    value = text or ""
+    pieces = []
+    cursor = 0
+    for start, wrapper in iter_formula_wrappers(value):
+        if wrapper.source not in ("math-wrapper", "math-block-wrapper"):
+            continue
+        pieces.extend((value[cursor:start],
+                       _format_formula_for_translation(value[start:wrapper.end])
+                       if wrapper.body.strip() else ""))
+        cursor = wrapper.end
+    pieces.append(value[cursor:])
+    return "".join(pieces)
 
 
 def _restore_formulas_for_display(text: str, formulas: list[tuple[str, str]]) -> str:

@@ -11,6 +11,109 @@ import pytest
 import document_formula
 
 
+@pytest.mark.parametrize("body", [
+    r"\sigma_0,\sigma_1,\ldots,\sigma_m\in\Sigma[x]",
+    r"A[[i]]+B[j]",
+    r"\text{a]]b}+x",
+    r"\verb|a]]b|+x",
+    "x % ignored ]]\n+y",
+    r"[0,1)",
+    r"\left[0,1\right)",
+    r"\left[x\right.",
+    r"\left\langle x\middle|y\right\}",
+    r"x\leftrightarrow y",
+    r"(x+y)",
+    r"\left(x+y\right)",
+])
+def test_legacy_formula_wrapper_preserves_body_and_adjacent_formulas(body):
+    source = f"Before [[MATH: {body}]], then [[MATH: y]]."
+    segments, warnings = document_formula.parse_latex_interchange(source)
+    assert [part.value for part in segments if part.kind == "math"] == [body, "y"]
+    assert [part.value for part in segments if part.kind == "text"] == [
+        "Before ", ", then ", ".",
+    ]
+    assert not warnings
+
+
+@pytest.mark.parametrize("source", [
+    r"[[MATH: \(\Sigma[x]\)]]",
+    r"$\(\Sigma[x]\)$",
+    r"\(\(\Sigma[x]\)\)",
+    r"[[MATH: $\(\Sigma[x]\)$]]",
+])
+def test_nested_formula_wrappers_unwrap_only_full_formula(source):
+    result = document_formula.canonicalize_latex_interchange(source)
+    assert result.text == r"$\Sigma[x]$"
+    assert result.formula_count == 1
+
+
+def test_formula_wrappers_keep_text_literals_comments_and_multiple_formulas():
+    source = r"\(\text{literal \) and $}+\Sigma[x]\), \(y\)."
+    segments, warnings = document_formula.parse_latex_interchange(source)
+    assert [part.value for part in segments if part.kind == "math"] == [
+        r"\text{literal \) and $}+\Sigma[x]", "y",
+    ]
+    assert not warnings
+
+
+def test_canonicalization_preserves_formula_whitespace_but_cleans_prose():
+    body = r"\text{two  words ( spaced )}+\verb| a   b |"
+    result = document_formula.canonicalize_latex_interchange(
+        f"  Before   \\({body}\\)   ,  after.  "
+    )
+    assert result.text == f"Before ${body}$, after."
+    assert document_formula.canonicalize_latex_interchange(result.text).text == result.text
+
+
+@pytest.mark.parametrize("source", [
+    "\\(x % final comment\n\\)",
+    "[[MATH: \\(x % final comment\n\\)]]",
+    "\\[x % final comment\n\\]",
+])
+def test_canonicalization_preserves_trailing_comment_terminator(source):
+    result = document_formula.canonicalize_latex_interchange(source)
+    assert result.segments[0].value == "x % final comment\n"
+    reparsed = document_formula.canonicalize_latex_interchange(result.text)
+    assert reparsed.formula_count == 1
+    assert reparsed.segments[0].value == "x % final comment\n"
+    assert reparsed.text == result.text
+
+
+@pytest.mark.parametrize("body", [r"x+50\%", r"\verb|50%|+x", r"\verb*|50%|+x"])
+def test_literal_percent_is_not_a_trailing_comment(body):
+    assert document_formula.trim_formula_body(body) == body
+    assert document_formula.canonicalize_latex_interchange(f"\\({body}\\)").text == f"${body}$"
+
+
+def test_single_dollar_does_not_capture_prose_across_a_line_break():
+    source = "Price $5\nThe variable $x$ is positive."
+    segments, _warnings = document_formula.parse_latex_interchange(source)
+    assert [part.value for part in segments if part.kind == "math"] == ["x"]
+    spans = list(document_formula.iter_formula_wrappers(source))
+    assert [wrapper.body for _start, wrapper in spans] == ["x"]
+    assert document_formula.canonicalize_latex_interchange(source).text == source
+    assert document_formula.unwrap_formula_wrappers("$x\n y$") == "$x\n y$"
+
+
+def test_malformed_legacy_wrapper_is_not_reinterpreted_on_round_trip():
+    source = "[[MATH: x [[MATH: y]] tail]]"
+    canonical = document_formula.canonicalize_latex_interchange(source)
+    assert canonical.text == source
+    assert canonical.formula_count == 0
+    assert document_formula.canonicalize_latex_interchange(canonical.text).text == source
+    assert list(document_formula.iter_formula_wrappers(source)) == []
+
+
+def test_redundant_dollar_runs_do_not_combine_adjacent_formulas():
+    result = document_formula.canonicalize_latex_interchange(r"$$$\Sigma[x]$$$")
+    assert result.text == "$$\n\\Sigma[x]\n$$"
+    assert result.formula_count == 1
+    for source in ["$x$$y$", "$$x$$$$y$$"]:
+        segments, warnings = document_formula.parse_latex_interchange(source)
+        assert [part.value for part in segments if part.kind == "math"] == ["x", "y"]
+        assert not warnings
+
+
 @pytest.mark.skipif(
     document_formula.find_pandoc() is None or shutil.which("node") is None,
     reason="Pandoc and Node are required for clipboard interoperability",
